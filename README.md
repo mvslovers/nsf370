@@ -16,7 +16,7 @@ compatibility.
 |---|---|
 | `docs/Project-Brief-v2.md` | Why / scope / constraints / milestones (frozen) |
 | `docs/Architecture-Specification-v1.2.md` | How: interfaces, data structures, lifetimes |
-| `docs/CLAUDE.md` | Operating rules, conventions, milestone status |
+| `CLAUDE.md` (repo root) | Operating rules, conventions, milestone status |
 | `docs/adr/` | Architecture Decision Records |
 
 ## Toolchain
@@ -35,10 +35,13 @@ cp .env.example .env          # fill in your MVS connection details
 make test-host                # build + run the portable tests natively (no MVS)
 
 make run-mvs                  # optional: start a local MVS/CE in Docker
-make bootstrap                # resolve deps + allocate datasets on MVS
-make build && make link       # cross-compile + assemble/link on MVS
-make test-mvs                 # run the tests on MVS
+make deps                     # resolve deps + allocate datasets on MVS
+make test-mvs                 # deploy + run the tests on MVS
 ```
+
+Once there are load modules to build (from M0-2/M1 on), `make modules`,
+`make package` and `make deploy` build, XMIT and upload them. Run `make help`
+for the full target list.
 
 If you cloned without `--recursive`:
 
@@ -57,7 +60,7 @@ include/       public headers (one per component)
 test/          dual host+MVS tests; test/mvs/ MVS-only; test/asm/ asm callers
 cfg/           sample PROFILE.TCPIP members
 jcl/           install / SAMPLIB jobs
-docs/          brief, spec, CLAUDE.md, ADRs
+docs/          brief, spec, ADRs   (CLAUDE.md is at the repo root)
 ```
 
 ## License

@@ -136,63 +136,75 @@ Violating one is a review-blocking defect, not a style nit.
 **Toolchain (decided — ADR-0013):**
 - **C compiler:** `cc370` — complete host cross-compile suite. **Not**
   `c2asm370`.
-- **C runtime:** `libc370` — the `cc370` target library. **Not** `CRENT370`.
+- **C runtime:** `libc370` — the `cc370` **sysroot** (target C library),
+  provided by the toolchain; **not** a `[dependencies]` entry (ADR-0014).
+  **Not** `CRENT370`.
 - **Assembler / linker:** IFOX00 / IEWL on the target (HLASM modules).
 - **Build orchestration:** **MBT V2** (MVS Build Tools). Repo shape is an MBT
   project: `project.toml` at root; local MVS connection in an un-committed
   `.env` (from `.env.example`).
 
-**Two separate build worlds — keep them separate:**
+**Two build worlds, both driven by MBT (ADR-0014):**
 
-| World | Builds | Uses MBT? | Needs MVS? | Runs in CI? |
+| World | Builds | Compiler | Needs MVS? | Runs in CI? |
 |---|---|---|---|---|
-| Host tests (`host.mk`) | portable protocol code + `src/host/` | **No** (native cc) | No | **Yes** |
-| Target (MBT V2) | full stack incl. `src/mvs/` | Yes | Yes (live 3.8j over IP) | No |
+| Host (`make test-host`) | portable C + `nsf*_host.c` shims | native cc | No | **Yes** |
+| MVS (`make test-mvs`, `deploy`, …) | full stack incl. `asm/*.asm` | cc370 + IFOX00 | Yes (live 3.8j over IP) | No |
 
-Rules: `src/mvs/` never compiles on host; `src/host/` never cross-compiles;
-the host test build never invokes MBT; the MBT build never pulls in
-`src/host/` or `test/host/`. Warnings-as-errors everywhere.
+Both are MBT V2 targets — there is **no** separate `host.mk`. The host build
+is configured by the `[host]` table in `project.toml`; a `[host].replace`
+map swaps each MVS-only CSECT (`asm/*.asm`) for its `src/*_host.c` shim.
+Rules: `asm/*.asm` never compiles on host; everything else compiles both
+ways; warnings-as-errors everywhere. The distinction between the worlds is
+MVS reachability, not MBT vs. not-MBT.
 
-**Commands (MBT V2):**
+**Commands (MBT V2 — real target names; `make help` for the full list):**
 ```
 cp .env.example .env      # once: fill in MVS connection details
-make bootstrap            # resolve deps (cc370, libc370, macros), allocate datasets
-make build                # host cross-compile + assemble HLASM on MVS
-make link                 # link-edit into load module on MVS
+make test-host            # native build + run of the portable tests (no MVS)
+make deps                 # resolve deps + allocate target datasets on MVS
+make test-mvs             # deploy + run the tests on MVS
+make modules              # cross-compile + assemble the load modules on MVS
 make package              # TRANSMIT/XMIT the load library for download
-make -f host.mk test      # host unit/integration tests (native, no MVS)
+make deploy               # upload modules + RECV370 on MVS
 ```
+There is no `bootstrap`/`build`/`link` target (`deps` is the former
+`bootstrap`). At M0-1 the project is module-less (test-only), so `modules`/
+`package`/`deploy` become meaningful from M0-2/M1 onward.
 
-**C dialect:** conservative C90 — no VLAs, no runtime allocation, fixed-width
-via the project typedefs (`UCHAR/USHORT/UINT/INT`), big-endian S/370, AMODE 24 /
-RMODE 24, EBCDIC on target. Confirm exact `cc370` limits during M0-1 and record
-surprises in an ADR. Comments and documentation in **English**.
+**C dialect:** `-std=gnu99` (as set in `project.toml`), used conservatively —
+no VLAs, no runtime allocation, fixed-width via the project typedefs
+(`UCHAR/USHORT/UINT/INT`), big-endian S/370, AMODE 24 / RMODE 24, EBCDIC on
+target. `cc370` accepted these flags on both host and MVS at M0-1; record any
+later `cc370` limit surprises in an ADR. Comments and documentation in
+**English**.
 
 ---
 
 ## 6. Repository Layout (spec §16.2)
 
+Flat layout (ADR-0014); the `nsf*` prefix namespaces every source, so no
+per-layer subdirectories. Components stay grouped by prefix and the §9 map.
+
 ```
 <repo>/
-├── project.toml      MBT V2: modules, sources, deps (cc370, libc370), products
+├── project.toml      MBT V2: modules, sources, tests, deps, [host] table
+├── Makefile          two lines: MBT_ROOT := mbt + include mbt/mk/mbt.mk
 ├── .env.example      MVS connection template (.env is git-ignored)
-├── CLAUDE.md         this file
-├── host.mk           native host-test build (no MBT)
-├── src/
-│   ├── foundation/   nsfmm nsfbuf nsfque nsftmr nsfevt nsftrc nsfsts  (.c)
-│   ├── net/          nsfip nsficmp nsfudp nsftcp (nsfarp)             (.c)
-│   ├── sock/         nsfsoc nsfreq                                    (.c)
-│   ├── api/          nsfeza (+ nsfeza.asm stub interface)
-│   ├── drv/          nsfdev nsfctci (nsflcs)                          (.c)
-│   ├── mvs/          nsfctci.asm nsfxq.asm nsfstim.asm nsfwto.asm
-│   │                 nsfestae.asm         ← ONLY MVS-specific code
-│   └── host/         nsfhost.c + host shims (storage, post/wait, wto)
-├── include/          one header per component
+├── CLAUDE.md         this file (repo root — NOT under docs/)
+├── mbt/              MBT V2 — a git submodule
+├── src/              portable C: nsfmm.c nsfbuf.c nsfque.c nsftmr.c
+│                     nsfevt.c nsftrc.c nsfsts.c nsfip.c nsficmp.c
+│                     nsfudp.c nsftcp.c nsfsoc.c nsfreq.c nsfeza.c
+│                     nsfdev.c nsfctci.c … + nsf*_host.c host shims
+├── asm/              HLASM: nsfctci.asm nsfxq.asm nsfstim.asm nsfwto.asm
+│                     nsfestae.asm         ← ONLY MVS-specific code
+├── include/          one header per component (nsf.h + nsf*.h)
 ├── cfg/              sample PROFILE.TCPIP members
 ├── jcl/              install/SAMPLIB jobs (driven by MBT)
-├── test/
-│   ├── host/         Level 0/1: native unit/integration, packet corpora, loss harness
-│   └── mvs/          Level 2/3: on-MVS component & integration jobs (MBT)
+├── test/             dual host+MVS tests (tstsmoke.c, …)
+│   ├── mvs/          Level 2/3: on-MVS component & integration jobs
+│   └── asm/          HLASM test callers
 └── docs/
     ├── Project-Brief-v2.md
     ├── Architecture-Specification-v1.2.md
@@ -211,7 +223,7 @@ quiesce) + spec/ADRs updated.
 
 | MS | Scope | Exit gate | Status |
 |----|-------|-----------|--------|
-| **M0** | Foundation: MM, buffers, queues, timers, event loop, trace, stats, config, STC skeleton + ESTAE | `F NSF,DISPLAY,STATS` answers; clean stop, pools at baseline; CI green | ⏳ **Next up** |
+| **M0** | Foundation: MM, buffers, queues, timers, event loop, trace, stats, config, STC skeleton + ESTAE | `F NSF,DISPLAY,STATS` answers; clean stop, pools at baseline; CI green | 🔨 **In progress** — M0-1 done (skeleton, CI green); M0-2 (NSFQUE/NSFMM) next |
 | **M1** | CTCI driver (HLASM top / C bottom) + NSFDEV + NSFHOST | ping → hexdump in trace; crafted packet seen in host `tcpdump` | ☐ Planned |
 | **M2** | IPv4 in/out + routing + ICMP echo/errors + checksum | `ping <mvs-ip>` sustained, 0 loss on loopback link | ☐ Planned |
 | **M3** | Sockets + NSFRQE + UDP + EZASOKET (M3 set) | UDP echo via EZASOKET from host; leak-free. **`NSFRQE` freezes here.** | ☐ Planned |
@@ -234,8 +246,8 @@ isolated so M0–M4 already deliver a usable in-process stack.
 3. **Respect the invariants in §3.** Especially: no allocation on hot paths,
    single-owner buffers, one destroy function per object, `NSF_SIZE_ASSERT` on
    every CB, ESTAE coverage.
-4. **On-MVS validation** via `make build`/`link` at milestone boundaries and
-   before merging anything touching `src/mvs/`.
+4. **On-MVS validation** via `make test-mvs` at milestone boundaries and
+   before merging anything touching `asm/*.asm`.
 5. **Definition of Done** (§7) must hold, including the leak gate.
 6. **Keep docs honest:** when a decision changes, update the affected spec
    chapter and add/append an ADR in the same change. Update §7 status here.

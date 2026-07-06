@@ -2,12 +2,13 @@
 # Build orchestration via MBT V2 (MVS Build Tools).
 #
 # Targets come from mbt/mk/mbt.mk (run `make help` for the full list):
-#   make bootstrap    resolve deps (cc370 sysroot, macros), allocate datasets
-#   make build        host cross-compile + assemble HLASM on MVS
-#   make link         link-edit into load modules on MVS
 #   make test-host    build + run the portable tests natively (no MVS)
-#   make test-mvs     build + run the tests on MVS
+#   make deps         resolve deps (cc370 sysroot, macros), allocate datasets
+#   make test-mvs     deploy + run the tests on MVS
+#   make modules      cross-compile + assemble the load modules on MVS
 #   make package      TRANSMIT/XMIT the load library for download
+#   make deploy       upload modules + RECV370 on MVS
+# (no bootstrap/build/link target; deps is the former bootstrap)
 #
 # First-time setup:  git submodule update --init  &&  cp .env.example .env
 MBT_ROOT := mbt
