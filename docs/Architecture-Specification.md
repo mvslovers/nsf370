@@ -2,7 +2,9 @@
 ## Architecture Specification
 
 *Version 1.2 — Draft for implementation. Companion document to the frozen
-Project Brief v2 (`docs/Project-Brief-v2.md`).*
+Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
+unversioned; the current version is stated here and in the changelog
+(Appendix A).*
 
 ---
 
@@ -1136,7 +1138,7 @@ nsf370/
 │   └── asm/          HLASM test callers
 └── docs/
     ├── Project-Brief-v2.md
-    ├── Architecture-Specification-v1.2.md
+    ├── Architecture-Specification.md
     └── adr/          ADR-0001 …
 ```
 
