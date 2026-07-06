@@ -20,7 +20,7 @@ Consult in this order. Do not contradict a higher row without an ADR.
 | Document | Role | Status |
 |---|---|---|
 | `docs/Project-Brief-v2.md` | Why / scope / constraints / milestones | **Frozen** — do not expand |
-| `docs/Architecture-Specification-v1.1.md` | How: interfaces, data structures, lifetimes | Living, versioned |
+| `docs/Architecture-Specification-v1.2.md` | How: interfaces, data structures, lifetimes | Living, versioned |
 | `docs/adr/ADR-*.md` | Rationale for individual decisions | Append-only |
 | `CLAUDE.md` (this file) | Operating rules + status | Update on convention changes |
 | Notion → *Issues & Tasks*, project **mvs38j-ip (NSF)** | Task tracking (`[NSF] Mx-y`) | Mirrors §7 below |
@@ -195,7 +195,7 @@ surprises in an ADR. Comments and documentation in **English**.
 │   └── mvs/          Level 2/3: on-MVS component & integration jobs (MBT)
 └── docs/
     ├── Project-Brief-v2.md
-    ├── Architecture-Specification-v1.1.md
+    ├── Architecture-Specification-v1.2.md
     └── adr/          ADR-0001 …
 ```
 

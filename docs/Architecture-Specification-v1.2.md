@@ -1,8 +1,8 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.1 — Draft for implementation. Companion document to the frozen
-Project Brief v2 (`MVS38J-TCPIP-PROJECT_2.md`).*
+*Version 1.2 — Draft for implementation. Companion document to the frozen
+Project Brief v2 (`docs/Project-Brief-v2.md`).*
 
 ---
 
@@ -211,31 +211,47 @@ resolution and how tests are driven, so it is stated here up front.
 - **C compiler: `cc370`** — the complete host-side cross-compilation suite
   (compiles S/370 objects on Linux/macOS). This replaces the older
   `c2asm370` C-to-assembler path; NSF does **not** use `c2asm370`.
-- **C runtime: `libc370`** — the `cc370` target C library (headers,
-  `libc.a`, `crt0/crt1/crtm` startfiles, SYS1/crent macros). This replaces
-  `CRENT370`; all NSF C code links against `libc370`.
+- **C runtime: `libc370`** — the `cc370` **sysroot** (target C library:
+  headers, `libc.a`, `crt0/crt1/crtm` startfiles, SYS1/crent macros),
+  provided by the toolchain. It replaces `CRENT370`. Because it is the
+  sysroot, `libc370` is **not** a `[dependencies]` entry in `project.toml`
+  (ADR-0014, correcting v1.1, which had listed it as a resolved dependency).
 - **Assembler:** IFOX00 on the target for HLASM modules (unchanged).
 - **Linkage editor:** IEWL on the target (unchanged).
 - **Build orchestration: MBT V2 (MVS Build Tools, v2)** — the Python-based
   build system already used across the mvslovers ecosystem (e.g. mvsMF).
-  MBT owns:
+  A two-line `Makefile` (`MBT_ROOT := mbt` + `include $(MBT_ROOT)/mk/mbt.mk`)
+  wires it in; `mbt` is a git submodule. MBT owns:
   - **Repository shape:** a top-level `project.toml` declares modules,
-    sources, dependencies and build products; local MVS connection settings
-    live in an un-committed `.env` (copied from `.env.example`).
-  - **Build flow:** `bootstrap` (resolve dependencies, allocate target
-    datasets, TSO RECEIVE deps), `build` (host cross-compile with cc370 +
-    assemble HLASM on MVS), `link` (IEWL link-edit on MVS into a load
-    module), `package` (TRANSMIT/XMIT the load library for download).
-  - **Dependencies** (cc370, libc370, macro libraries) are resolved by MBT
-    rather than vendored into the repo.
+    sources, tests, dependencies and build products; local MVS connection
+    settings live in an un-committed `.env` (copied from `.env.example`).
+  - **Build flow (real MBT V2 target names):** `deps` (resolve
+    dependencies, allocate target datasets, TSO RECEIVE), `test-host`
+    (native build + run of the portable tests — see next bullet),
+    `modules`/`lib` (cross-compile with cc370 + assemble HLASM on MVS),
+    `package` (TRANSMIT/XMIT the load library), `deploy` (upload + RECV370
+    on MVS), `test-mvs` (deploy + run the suite on MVS). There is **no**
+    `bootstrap`/`build`/`link` target — those names in v1.1 predate the real
+    MBT V2 target set (ADR-0014; `deps` is the former `bootstrap`).
+  - **Both build worlds run through MBT.** The host build is a first-class
+    MBT target (`make test-host`, native compiler) configured by a `[host]`
+    table in `project.toml`; a `[host].replace` map swaps MVS-only CSECTs
+    (`asm/*.asm`) for host shims (`src/*_host.c`) as they appear. This
+    corrects v1.1, which placed the host build outside MBT in a separate
+    `host.mk` (ADR-0014).
+  - **Dependencies** (cc370 macro libraries, later mvslovers modules) are
+    resolved by MBT rather than vendored; `libc370` is the sysroot, not a
+    dependency.
 
 Consequences that this specification depends on elsewhere:
-- The **host unit tests** (Ch. 16, Level 0/1) use a native compiler and do
-  **not** go through MBT — they never touch MVS. MBT drives everything from
-  **Level 2 up** (on-MVS component jobs, integration), against a live
-  MVS 3.8j reachable over IP.
-- The repository layout in Ch. 16.2 is an MBT `project.toml` layout, not a
-  hand-rolled Makefile tree.
+- The **host unit tests** (Ch. 16, Level 0/1) build with a native compiler
+  and need **no MVS**, so they are the CI gate — but they are still driven
+  through MBT via `make test-host`, not a separate `host.mk` (ADR-0014).
+  MBT drives **both** worlds; what distinguishes Level 2+ is that it reaches
+  a live MVS 3.8j over IP, not that it "uses MBT" while Level 0/1 does not.
+- The repository layout in Ch. 16.2 is a **flat** MBT `project.toml` layout
+  (`src/*.c`, `asm/*.asm`), not the grouped tree described in v1.1
+  (ADR-0014).
 
 ---
 
@@ -1070,67 +1086,75 @@ operator messages, trace) and later the DNS resolver's name handling.
 
 ```
 Level 0  Host unit tests        checksum vectors, queue/pool/timer logic,
-         (native cc, CI,        TCP state machine against scripted segments,
-          no MBT)               PROFILE parser corpus
+         (native cc via         TCP state machine against scripted segments,
+          make test-host, CI)   PROFILE parser corpus
 Level 1  Host integration       full stack on NSFHOST loopback/TUN driver:
-         (native cc, CI,        ping, UDP echo, TCP echo, packet-loss
-          no MBT)               harness (drop/duplicate/reorder injection)
+         (native cc via         ping, UDP echo, TCP echo, packet-loss
+          make test-host, CI)   harness (drop/duplicate/reorder injection)
 Level 2  MVS component jobs     per component: pool exercise, timer accuracy
-         (MBT build/link)       (validates ADR-0011), EXCP smoke
+         (MBT test-mvs)         (validates ADR-0011), EXCP smoke
 Level 3  MVS integration        ping/UDP echo/TCP echo from the Hercules
-         (MBT build/link)       host against the STC
+         (MBT test-mvs)         host against the STC
 Level 4  Acceptance             HTTPD serving pages, mvsMF REST calls, over
-         (MBT build/link)       NSF instead of X'75'
+         (MBT test-mvs)         NSF instead of X'75'
 ```
 
 Levels 0–1 are the CI gate on every change; they build with a native
-compiler and require no MVS. Levels 2–4 are driven by MBT V2 (`build` +
-`link`) against a live MVS 3.8j reachable over IP, run at milestone
-boundaries and before merges that touch MVS-specific code.
+compiler (via `make test-host`) and require no MVS. Levels 2–4 run on a
+live MVS 3.8j reachable over IP (via `make test-mvs`, which deploys then
+runs the suite), at milestone boundaries and before merges that touch
+MVS-specific code. Both are MBT V2 targets (ADR-0014); the distinction is
+MVS reachability, not MBT vs. not-MBT.
 
 ### 16.2 Repository Layout (enforces host/MVS separation)
 
-The tree is an **MBT V2 project** (`project.toml` at the root); MBT resolves
-cc370/libc370 and drives the on-MVS build.
+The tree is an **MBT V2 project** (`project.toml` at the root; the `Makefile`
+is the two-line MBT include). The layout is **flat** — portable C in
+`src/*.c`, HLASM in `asm/*.asm` — matching the mvslovers ecosystem
+(rexx370, mvsMF, httpd). The `nsf*` filename prefix already namespaces every
+source, so no per-layer subdirectories are needed; components stay grouped by
+prefix and by the module map in CLAUDE.md §9 (ADR-0014, superseding the
+grouped tree of v1.1).
 
 ```
-nsf/
-├── project.toml      MBT V2: modules, sources, deps (cc370, libc370), products
+nsf370/
+├── project.toml      MBT V2: modules, sources, tests, deps, [host] table
+├── Makefile          two lines: MBT_ROOT := mbt + include mbt/mk/mbt.mk
 ├── .env.example      MVS connection template (.env is git-ignored)
-├── src/
-│   ├── foundation/   nsfmm.c nsfbuf.c nsfque.c nsftmr.c nsfevt.c
-│   │                 nsftrc.c nsfsts.c
-│   ├── net/          nsfip.c nsficmp.c nsfudp.c nsftcp.c (nsfarp.c)
-│   ├── sock/         nsfsoc.c nsfreq.c
-│   ├── api/          nsfeza.c (nsfeza.asm stub interface)
-│   ├── drv/          nsfdev.c nsfctci.c (nsflcs.c)
-│   ├── mvs/          nsfctci.asm nsfxq.asm nsfstim.asm nsfwto.asm
-│   │                 nsfestae.asm            ← ONLY MVS-specific code
-│   └── host/         nsfhost.c host shims (storage, post/wait, wto)
-├── include/          one header per component
-├── cfg/              sample PROFILE members
-├── jcl/              install/SAMPLIB jobs generated/driven by MBT
-├── test/
-│   ├── host/         Level 0/1: native-compiler unit tests, packet corpora,
-│   │                 loss harness — built WITHOUT MBT
-│   └── mvs/          Level 2/3: on-MVS component & integration jobs (MBT)
-├── docs/adr/         ADR-0001 …
-└── host.mk           thin host-test build (native cc), separate from MBT
+├── mbt/              MBT V2 — a git submodule
+├── src/              portable C: nsfmm.c nsfbuf.c nsfque.c nsftmr.c
+│                     nsfevt.c nsftrc.c nsfsts.c nsfip.c nsficmp.c
+│                     nsfudp.c nsftcp.c nsfsoc.c nsfreq.c nsfeza.c
+│                     nsfdev.c nsfctci.c … plus nsf*_host.c host shims
+├── asm/              HLASM: nsfctci.asm nsfxq.asm nsfstim.asm nsfwto.asm
+│                     nsfestae.asm            ← ONLY MVS-specific code
+├── include/          one header per component (nsf.h + nsf*.h)
+├── cfg/              sample PROFILE.TCPIP members
+├── jcl/              install/SAMPLIB jobs (driven by MBT)
+├── test/             dual host+MVS tests (tstsmoke.c, …)
+│   ├── mvs/          Level 2/3: on-MVS component & integration jobs
+│   └── asm/          HLASM test callers
+└── docs/
+    ├── Project-Brief-v2.md
+    ├── Architecture-Specification-v1.2.md
+    └── adr/          ADR-0001 …
 ```
 
 Two build rules, both enforced in review:
-1. `src/mvs/` never compiles on host; `src/host/` never cross-compiles;
-   everything else compiles both ways, warnings-as-errors.
-2. The **host test build (`host.mk`) never invokes MBT**, and the **MBT
-   build never pulls in `src/host/` or `test/host/`** — the two worlds share
-   only the portable protocol sources. This is what keeps Level 0/1 runnable
-   in CI without an MVS system in the loop.
+1. `asm/*.asm` never compiles on the host; the `[host].replace` map in
+   `project.toml` swaps each MVS-only CSECT for its `src/*_host.c` shim.
+   Everything else compiles both ways, warnings-as-errors.
+2. Host tests (`make test-host`) use the native compiler and need **no
+   MVS**, so CI runs them without an MVS system in the loop. They are still
+   an MBT target — there is no separate `host.mk` (ADR-0014). The two worlds
+   share the portable protocol sources; only `asm/*.asm` and the host shims
+   differ.
 
 ### 16.3 Definition of Done (every milestone)
 
 1. All Level 0/1 tests green in CI (native build, no MBT).
-2. The milestone's demonstrable deliverable shown on Hercules via an MBT
-   `build`/`link` (Level 3).
+2. The milestone's demonstrable deliverable shown on Hercules via
+   `make test-mvs` (Level 3).
 3. `DISPLAY STATS` after the demo shows zero unexplained drops and all
    pools return to baseline in-use counts after quiesce (leak gate).
 4. Documentation updated: this spec's affected chapters + ADRs.
@@ -1189,7 +1213,8 @@ normative until the files exist.
 | **0010** | Delta-queue timers, no wheel | Tiny active-timer population; zero fixed memory cost; trivially correct. |
 | **0011** | 100 ms tick via STIMERM | Sufficient for RTO ≥ 1 s and 200 ms delayed ACK. Gate: M0 timer-accuracy test job on Hercules before freeze. |
 | **0012** | No IP fragmentation/reassembly in v1 | Reassembly is unbounded memory by nature; explicitly dropped + counted. MSS/EMSGSIZE keep NSF-originated traffic unfragmented. M5+ option with its own budget. |
-| **0013** | Toolchain: cc370 + libc370, orchestrated by MBT V2 | cc370 is a complete host cross-compile suite (no c2asm370 assembler round-trip); libc370 is its target C library. MBT V2 is the ecosystem-standard Python build system (project.toml, host cross-compile + on-MVS assemble/link, XMIT packaging) already proven on mvsMF — so NSF inherits a known-good build/dependency/test model instead of a bespoke one. The host unit-test build stays outside MBT so CI needs no MVS. Rejected: GCCMVS/CRENT370 (superseded in the ecosystem), c2asm370 (extra assembler step, not needed with cc370). |
+| **0013** | Toolchain: cc370 + libc370, orchestrated by MBT V2 | cc370 is a complete host cross-compile suite (no c2asm370 assembler round-trip); libc370 is its target C library. MBT V2 is the ecosystem-standard Python build system (project.toml, host cross-compile + on-MVS assemble/link, XMIT packaging) already proven on mvsMF — so NSF inherits a known-good build/dependency/test model instead of a bespoke one. Rejected: GCCMVS/CRENT370 (superseded in the ecosystem), c2asm370 (extra assembler step, not needed with cc370). |
+| **0014** | Build model & repo layout follow MBT V2 conventions | Building the M0-1 skeleton against the real ecosystem repos showed v1.1's §1.6/§16.2 assumptions were wrong. MBT V2 drives **both** builds — the host build is a first-class target (`make test-host` + a `[host]` table with a `replace` map for MVS-only CSECTs), **not** a separate `host.mk`. Layout is **flat** (`src/*.c`, `asm/*.asm`), not grouped by layer. `libc370` is the cc370 sysroot, not a `[dependencies]` entry. Real targets are `deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs` — no `bootstrap`/`build`/`link`. Supersedes §1.6 and §16.1/§16.2/§16.3, corrected inline in this version. Full record: `docs/adr/ADR-0014-build-model-and-repo-layout.md`. |
 
 ---
 
@@ -1204,7 +1229,7 @@ week-equivalent), L (multi-week-equivalent).
 
 | WP | Deliverable | Size |
 |---|---|---|
-| M0-1 | Repo layout (16.2): MBT V2 `project.toml` (cc370 + libc370 deps, `.env.example`), `bootstrap`/`build`/`link` green on a live MVS 3.8j; separate `host.mk` native-test build in CI running an empty test | M |
+| M0-1 | Repo layout (16.2): MBT V2 `project.toml` + two-line `Makefile`, `mbt` submodule, `.env.example`; `make test-host` (native, via the `[host]` table) and `make test-mvs` green on a live MVS 3.8j, running the TSTSMOKE build-skeleton test; CI green. **Done** (ADR-0014). | M |
 | M0-2 | NSFQUE + NSFMM + size-assert discipline, host unit tests | M |
 | M0-3 | NSFBUF (PBUF, headroom, chains) + tests | S |
 | M0-4 | NSFTRC (ring + macros) and NSFSTS (registry) | S |
@@ -1323,3 +1348,17 @@ orchestrator and recorded its impact on repository shape (`project.toml`,
 `.env`) and the test model (host Level 0/1 outside MBT for CI; MBT-driven
 Level 2–4 on a live MVS). Added §1.6 Build Toolchain & Environment,
 ADR-0013, and updated §16.1/§16.2 and work package M0-1 accordingly.
+
+**v1.2:** Build-model reconciliation with **ADR-0014**, after the M0-1
+skeleton was built against the real MBT V2 ecosystem repos. Corrected §1.6
+and §16.1/§16.2/§16.3 to the real MBT V2 target set
+(`deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs`; there is no
+`bootstrap`/`build`/`link`); recorded that MBT drives **both** builds — the
+host build via `make test-host` + the `[host]` table, replacing the separate
+`host.mk` of v1.1; adopted the **flat** repository layout (`src/*.c`,
+`asm/*.asm`) in place of the grouped tree; clarified that `libc370` is the
+cc370 sysroot, not a `[dependencies]` entry. Added ADR-0014 to the §18 index
+and fixed the Project Brief filename reference in the header. **No change to
+any component interface, data structure, invariant, or milestone** — this
+version only aligns the build/layout narrative with what the repository
+already implements.

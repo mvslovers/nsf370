@@ -15,7 +15,7 @@ compatibility.
 | Document | Role |
 |---|---|
 | `docs/Project-Brief-v2.md` | Why / scope / constraints / milestones (frozen) |
-| `docs/Architecture-Specification-v1.1.md` | How: interfaces, data structures, lifetimes |
+| `docs/Architecture-Specification-v1.2.md` | How: interfaces, data structures, lifetimes |
 | `docs/CLAUDE.md` | Operating rules, conventions, milestone status |
 | `docs/adr/` | Architecture Decision Records |
 

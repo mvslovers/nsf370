@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 ADR-0001 … ADR-0013 are summarized normatively in
-`../Architecture-Specification-v1.1.md` §18; standalone files will be split
+`../Architecture-Specification-v1.2.md` §18; standalone files will be split
 out as they are revisited. ADR-0014 onward are authored directly here.
 
 | ADR | Decision | File |
