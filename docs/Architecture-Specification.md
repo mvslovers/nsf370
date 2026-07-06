@@ -276,16 +276,20 @@ Consequences that this specification depends on elsewhere:
 int      mm_init(const MMCFG *cfg);              /* init-time only        */
 MMPOOL  *mm_pool_create(const char *name8,       /* init-time only        */
                         USHORT objsize, USHORT count);
+void     mm_init_complete(void);                 /* seal: no more pools   */
 void    *mm_alloc(MMPOOL *pool);                 /* NULL = pool exhausted */
 void     mm_free(MMPOOL *pool, void *obj);
-void     mm_stats(MMPOOL *pool, MMSTATS *out);
+void     mm_stats(const MMPOOL *pool, MMSTATS *out);
 void     mm_shutdown(void);                      /* FREEMAIN everything   */
 ```
 
 Rules:
-- `mm_pool_create` is legal only between `mm_init` and end of initialization;
-  it ABENDs (user completion code) if called later. This *enforces* the
-  no-runtime-allocation goal instead of merely documenting it.
+- `mm_pool_create` is legal only between `mm_init` and `mm_init_complete`;
+  it ABENDs (user completion code) if called later. `mm_init_complete` is the
+  seal that marks the end of the initialization window (the executive's
+  startup sequencing, ch. 5, calls it once all component inits have created
+  their pools). This *enforces* the no-runtime-allocation goal instead of
+  merely documenting it.
 - `mm_alloc` returning NULL is a normal, expected condition. Every caller
   must handle it (drop packet + count, reject connection, fail API call
   with ENOBUFS). Exhaustion is graceful degradation, never an ABEND.
@@ -322,9 +326,13 @@ NSF_SIZE_ASSERT(MMPOOL, 40);
   8-byte aligned.
 - Free list is LIFO (hot objects stay cache/TLB-friendly; and on S/370,
   recently used pages stay resident).
-- **Host build:** the region comes from one `malloc` at init; the MVS build
-  uses GETMAIN (subpool 0, private area). Same code above the two-line
-  acquisition primitive.
+- **Region acquisition (both builds):** a single primitive
+  (`mm_region_get`/`mm_region_free`) draws each region from libc370 `malloc`
+  and releases it with `free`. On MVS 3.8j that `malloc` resolves to `GETMAIN`
+  below the 16 MB line (24-bit, so inherently AMODE/RMODE 24); the host build
+  uses the identical calls. NSFMM therefore stays pure portable C — no raw
+  GETMAIN SVC in assembler — and this is the only place in the whole stack a
+  storage service is touched. See **ADR-0015**.
 
 ### 2.4 Object Lifetime
 
@@ -1217,6 +1225,7 @@ normative until the files exist.
 | **0012** | No IP fragmentation/reassembly in v1 | Reassembly is unbounded memory by nature; explicitly dropped + counted. MSS/EMSGSIZE keep NSF-originated traffic unfragmented. M5+ option with its own budget. |
 | **0013** | Toolchain: cc370 + libc370, orchestrated by MBT V2 | cc370 is a complete host cross-compile suite (no c2asm370 assembler round-trip); libc370 is its target C library. MBT V2 is the ecosystem-standard Python build system (project.toml, host cross-compile + on-MVS assemble/link, XMIT packaging) already proven on mvsMF — so NSF inherits a known-good build/dependency/test model instead of a bespoke one. Rejected: GCCMVS/CRENT370 (superseded in the ecosystem), c2asm370 (extra assembler step, not needed with cc370). |
 | **0014** | Build model & repo layout follow MBT V2 conventions | Building the M0-1 skeleton against the real ecosystem repos showed v1.1's §1.6/§16.2 assumptions were wrong. MBT V2 drives **both** builds — the host build is a first-class target (`make test-host` + a `[host]` table with a `replace` map for MVS-only CSECTs), **not** a separate `host.mk`. Layout is **flat** (`src/*.c`, `asm/*.asm`), not grouped by layer. `libc370` is the cc370 sysroot, not a `[dependencies]` entry. Real targets are `deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs` — no `bootstrap`/`build`/`link`. Supersedes §1.6 and §16.1/§16.2/§16.3, corrected inline in this version. Full record: `docs/adr/ADR-0014-build-model-and-repo-layout.md`. |
+| **0015** | NSFMM pool regions via libc370 `malloc`, not a raw GETMAIN SVC | The one region-per-pool acquisition (§2.3) uses libc370 `malloc`/`free` from portable C. On 24-bit MVS 3.8j that resolves to `GETMAIN` below the 16 MB line, released at `mm_shutdown` — realizing §2.3's intent while keeping NSFMM pure C (no assembler region helper). Load-bearing consequence: do not "restore" a raw GETMAIN SVC believing §2.3 mandates one. Full record: `docs/adr/ADR-0015-region-acquisition-via-libc370-malloc.md`. |
 
 ---
 
@@ -1232,7 +1241,7 @@ week-equivalent), L (multi-week-equivalent).
 | WP | Deliverable | Size |
 |---|---|---|
 | M0-1 | Repo layout (16.2): MBT V2 `project.toml` + two-line `Makefile`, `mbt` submodule, `.env.example`; `make test-host` (native, via the `[host]` table) and `make test-mvs` green on a live MVS 3.8j, running the TSTSMOKE build-skeleton test; CI green. **Done** (ADR-0014). | M |
-| M0-2 | NSFQUE + NSFMM + size-assert discipline, host unit tests | M |
+| M0-2 | NSFQUE + NSFMM + size-assert discipline, host unit tests (also: `nsf_abend` enforcement primitive; region seam per ADR-0015). **Done.** | M |
 | M0-3 | NSFBUF (PBUF, headroom, chains) + tests | S |
 | M0-4 | NSFTRC (ring + macros) and NSFSTS (registry) | S |
 | M0-5 | NSFTMR + host tests; **MVS timer-accuracy job (gate for ADR-0011)** | M |
