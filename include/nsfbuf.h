@@ -70,9 +70,11 @@ NSF_SIZE_ASSERT(PBUF, 32);
 /* Initialization (init window only -- calls mm_pool_create, so it must run
  * between mm_init and mm_init_complete). Creates the BUFSMALL and BUFLARGE
  * pools at the hardcoded default counts above and remembers them for
- * class->pool selection. Added beyond the published spec 3.2 interface at
+ * class->pool selection. Returns 0 on success, non-zero if either pool could
+ * not be created, so the executive startup (M0-8) can refuse to start rather
+ * than run with NULL pools. Added beyond the published spec 3.2 interface at
  * M0-3 (see the spec 3.2 note). */
-void    buf_init(void);
+int     buf_init(void);
 
 /* Allocate an outbound buffer sized by hint_len (the intended payload). Picks
  * BUFSMALL when HEADROOM + hint_len <= NSFBUF_SMALL_DATA (hint_len <= 192),
@@ -96,8 +98,11 @@ int     buf_prepend(PBUF *b, USHORT n);
  * against len. Returns 0 on success, nonzero (buffer unchanged) if n > len. */
 int     buf_trim_head(PBUF *b, USHORT n);
 
-/* Drop n bytes from the tail (len shrinks; data and capacity unchanged).
- * Bounds-checked against len. Returns 0 on success, nonzero if n > len. */
+/* Drop n bytes from the logical tail of the packet: on a chain this trims the
+ * LAST element (the one with chain == NULL), shrinking its len; data and
+ * capacity are unchanged and the head's chainlen is decremented by n. Single-
+ * buffer behaviour is unchanged. Bounds-checked against the tail element's len.
+ * Returns 0 on success, nonzero (unchanged) if n exceeds it. */
 int     buf_trim_tail(PBUF *b, USHORT n);
 
 /* Copy up to n bytes from src into the buffer/chain, appended after the

@@ -92,7 +92,7 @@ static void buf_assert_chainlen(const PBUF *head)
 
 /* --- public interface ----------------------------------------------------- */
 
-void buf_init(void)
+int buf_init(void)
 {
     /* Init window only: mm_pool_create is legal solely between mm_init and
      * mm_init_complete (it ABENDs afterwards -- nsfmm.h). The MM object size is
@@ -105,6 +105,14 @@ void buf_init(void)
                                   (USHORT)(sizeof(PBUF) + NSFBUF_LARGE_DATA),
                                   NSFBUF_LARGE_COUNT);
     g_allocseq = 0;
+
+    /* Report a pool-creation failure so the executive startup (M0-8) can refuse
+     * to run rather than limp along with NULL pools. No WTO here -- operator
+     * reporting belongs to that startup path. */
+    if (g_pool_small == NULL || g_pool_large == NULL) {
+        return -1;
+    }
+    return 0;
 }
 
 PBUF *buf_alloc(USHORT hint_len)
@@ -199,13 +207,22 @@ int buf_trim_head(PBUF *b, USHORT n)
 
 int buf_trim_tail(PBUF *b, USHORT n)
 {
-    if (n > b->len) {
+    PBUF *last = b;
+
+    /* The logical tail of a packet is the LAST buffer of the chain; trimming
+     * the head element would drop bytes from the MIDDLE of the packet. Walk to
+     * it and bounds-check n against ITS len (b == last for a single buffer, so
+     * that case is unchanged). */
+    while (last->chain != NULL) {
+        last = last->chain;
+    }
+    if (n > last->len) {
         return -1;                      /* nothing that far back to drop */
     }
-    b->len      = (USHORT)(b->len - n);
-    b->chainlen = (USHORT)(b->chainlen - n);   /* size unchanged: data fixed */
+    last->len   = (USHORT)(last->len - n);      /* size unchanged: data fixed */
+    b->chainlen = (USHORT)(b->chainlen - n);    /* fold into the head's total  */
 
-    BUF_ASSERT_BOUNDS(b);
+    BUF_ASSERT_BOUNDS(last);
     BUF_ASSERT_CHAIN(b);
     return 0;
 }

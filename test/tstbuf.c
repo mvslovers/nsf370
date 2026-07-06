@@ -47,7 +47,7 @@ int main(void)
 
     /* ---- init: pools live inside the mm init window ---- */
     CHECK_EQ(mm_init(NULL), 0, "mm_init returns 0");
-    buf_init();                                 /* creates BUFSMALL + BUFLARGE */
+    CHECK_EQ(buf_init(), 0, "buf_init creates both pools");
     mm_init_complete();
 
     /* ---- field initialization (first alloc: allocseq deterministic) ---- */
@@ -154,6 +154,24 @@ int main(void)
     CHECK_EQ(b->len, 0, "reset_rx clears len");
     CHECK_EQ(b->size, NSFBUF_SMALL_DATA, "reset_rx opens the full data area (size == B)");
     buf_free(b);
+
+    /* ---- trim_tail on a chain trims the LOGICAL tail (the last element),
+     * not the head; the surviving bytes stay contiguous from the front ---- */
+    small = buf_alloc(0);                        /* small head: src[0..9]   */
+    large = buf_alloc(500);                      /* large tail: src[10..29] */
+    buf_copyin(small, src, 10);
+    buf_copyin(large, src + 10, 20);
+    buf_chain_append(small, large);
+    CHECK_EQ(buf_chain_len(small), 30, "chain holds 30 bytes before trim");
+    CHECK_EQ(buf_trim_tail(small, 5), 0, "trim_tail on the head trims the chain's last element");
+    CHECK_EQ(small->len, 10, "the head element is untouched by a tail trim");
+    CHECK_EQ(large->len, 15, "the tail element lost the 5 bytes");
+    CHECK_EQ(small->chainlen, 25, "head chainlen dropped by 5");
+    CHECK_EQ(buf_chain_len(small), 25, "walk-sum agrees with the cached chainlen");
+    got = buf_copyout(small, dst, 100);
+    CHECK_EQ(got, 25, "copyout returns the surviving 25 bytes");
+    CHECK(memcmp(dst, src, 25) == 0, "survivors are the contiguous logical head src[0..24]");
+    buf_free(small);                             /* frees both via the chain */
 
     /* ---- chaining: append links, chain_len sums, copyout spans the chain ---- */
     small = buf_alloc(0);                        /* small */
