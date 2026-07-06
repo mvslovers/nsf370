@@ -25,14 +25,28 @@ typedef unsigned int    UINT;    /* 32 bits */
 typedef int             INT;     /* 32 bits, signed */
 
 /*
- * Compile-time size guard. Every control block asserts its byte size so a
- * layout change can never silently break the fixed-pool memory budget.
- * Fails to compile (negative array bound) when the size is wrong.
+ * Compile-time size guard. Every pooled control block asserts its on-target
+ * byte size so a layout change can never silently break the fixed-pool memory
+ * budget (spec 1.5). The declared sizes are the S/370 target sizes: char=8,
+ * short=16, int=32 bits, and 4-byte (24-bit) pointers.
+ *
+ * The value check is therefore only meaningful under cc370, which predefines
+ * __MVS__. A native host test build uses 8-byte pointers, so any control block
+ * containing a pointer has a different sizeof there and asserting the target
+ * size would fail to compile. Host binaries are never exchanged with MVS, so
+ * the target budget is irrelevant on the host: the macro stays callable
+ * everywhere but drops the value check off-target. (Same reasoning rexx370
+ * uses to guard its ENVBLOCK size lock behind __MVS__.)
  *
  *   typedef struct { UINT a, b; } MYCB;
- *   NSF_SIZE_ASSERT(MYCB, 8);   // OK; would fail if sizeof(MYCB) != 8
+ *   NSF_SIZE_ASSERT(MYCB, 8);   // enforced on MVS; no-op placeholder on host
  */
+#ifdef __MVS__
 #define NSF_SIZE_ASSERT(type, size) \
     typedef char nsf_assert_##type[(sizeof(type) == (size)) ? 1 : -1]
+#else
+#define NSF_SIZE_ASSERT(type, size) \
+    typedef char nsf_assert_##type[1]
+#endif
 
 #endif /* NSF_H */

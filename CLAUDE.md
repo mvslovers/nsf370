@@ -223,7 +223,7 @@ quiesce) + spec/ADRs updated.
 
 | MS | Scope | Exit gate | Status |
 |----|-------|-----------|--------|
-| **M0** | Foundation: MM, buffers, queues, timers, event loop, trace, stats, config, STC skeleton + ESTAE | `F NSF,DISPLAY,STATS` answers; clean stop, pools at baseline; CI green | 🔨 **In progress** — M0-1 done (skeleton, CI green); M0-2 (NSFQUE/NSFMM) next |
+| **M0** | Foundation: MM, buffers, queues, timers, event loop, trace, stats, config, STC skeleton + ESTAE | `F NSF,DISPLAY,STATS` answers; clean stop, pools at baseline; CI green | 🔨 **In progress** — M0-1 done (skeleton); M0-2 done (NSFQUE + NSFMM + nsf_abend, host tests green, CI); M0-3 (NSFBUF) next |
 | **M1** | CTCI driver (HLASM top / C bottom) + NSFDEV + NSFHOST | ping → hexdump in trace; crafted packet seen in host `tcpdump` | ☐ Planned |
 | **M2** | IPv4 in/out + routing + ICMP echo/errors + checksum | `ping <mvs-ip>` sustained, 0 loss on loopback link | ☐ Planned |
 | **M3** | Sockets + NSFRQE + UDP + EZASOKET (M3 set) | UDP echo via EZASOKET from host; leak-free. **`NSFRQE` freezes here.** | ☐ Planned |

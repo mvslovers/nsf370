@@ -9,10 +9,13 @@ cflags = ["-std=gnu99", "-I", "include"]
 
 [host]
 # Fast native inner loop for the portable foundation/protocol tests
-# (`make test-host`). MVS-only CSECTs (asm/*.asm) get swapped for host
-# shims here via a `replace` map as they appear (M1+); none needed at M0-1:
-#   replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c" }
-cflags = ["-Wall", "-Wextra"]
+# (`make test-host`). NSF_DEBUG=1 turns on the eyecatcher / double-free /
+# leak-gate checks (compiled out of production; see nsfmm.c).
+cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1"]
+# The exit->mainline handoff (spec 4.2) is a CS loop on MVS (asm/nsfxq.asm)
+# and a compiler-atomic on the host (src/nsfxq_host.c). Swap the MVS CSECT for
+# its host shim so an asm-carrying [[test]] still builds and runs natively.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -21,11 +24,32 @@ cflags = ["-Wall", "-Wextra"]
 # -- M0-1 build-skeleton smoke test -------------------------------------
 # Trivial dual (host + MVS) test proving the toolchain, the base types and
 # the NSF_SIZE_ASSERT machinery compile and run (exit 0 = pass, 1 = fail).
-# Superseded by the real foundation unit tests in M0-2 (NSFQUE/NSFMM).
+# Complemented by the M0-2 foundation unit tests below.
 [[test]]
 name = "TSTSMOKE"
 startup = "crt1"
 sources = ["test/tstsmoke.c"]
+
+# -- M0-2 foundation unit tests (NSFQUE / NSFXQ / NSFMM) ----------------
+# NSFQUE: FIFO order, q_remove from the middle, bounded reject, Q_ENTRY.
+[[test]]
+name = "TSTQUE"
+startup = "crt1"
+sources = ["test/tstque.c", "src/nsfque.c"]
+
+# NSFXQ: exit->mainline handoff push/drain ordering. asm/nsfxq.asm is swapped
+# for src/nsfxq_host.c on the host by [host].replace above (on-MVS assembly of
+# nsfxq.asm is deferred to M0-6; not part of the M0-2 CI gate).
+[[test]]
+name = "TSTXQ"
+startup = "crt1"
+sources = ["test/tstxq.c", "asm/nsfxq.asm"]
+
+# NSFMM: alloc/exhaustion/free, counters, enforcement ABENDs, leak gate.
+[[test]]
+name = "TSTMM"
+startup = "crt1"
+sources = ["test/tstmm.c", "src/nsfmm.c", "src/nsfabend.c"]
 
 [release]
 version_files = ["VERSION"]
