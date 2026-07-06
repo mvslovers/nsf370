@@ -51,5 +51,15 @@ name = "TSTMM"
 startup = "crt1"
 sources = ["test/tstmm.c", "src/nsfmm.c", "src/nsfabend.c"]
 
+# -- M0-3 buffer manager unit tests (NSFBUF) ---------------------------
+# NSFBUF: class selection at the 192/193 boundary, field init, headroom
+# prepend/reject, head/tail trim, chain-aware copyin/copyout, chaining, and
+# the two-pool leak gate (buf_free of a mixed chain returns both pools to
+# baseline). Links NSFMM + nsf_abend (buf_free routes through mm_free).
+[[test]]
+name = "TSTBUF"
+startup = "crt1"
+sources = ["test/tstbuf.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c"]
+
 [release]
 version_files = ["VERSION"]
