@@ -1,0 +1,25 @@
+# --- Local config (never commit; .env.example is the tracked template) ---
+.env
+.env.*
+!.env.example
+
+# --- MBT build state and outputs ---
+.mbt/
+build/
+dist/
+*.xmit
+
+# --- Compiled artifacts ---
+*.o
+*.a
+*.s
+*.d
+*.obj
+
+# --- Editor / tooling ---
+compile_commands.json
+.cache/
+*.dSYM/
+
+# --- macOS ---
+.DS_Store

@@ -1,0 +1,31 @@
+[project]
+name = "nsf370"
+version = "0.1.0-dev"
+type = "application"
+
+[build]
+# NSF builds warnings-clean. -I include exposes the public headers.
+cflags = ["-std=gnu99", "-I", "include"]
+
+[host]
+# Fast native inner loop for the portable foundation/protocol tests
+# (`make test-host`). MVS-only CSECTs (asm/*.asm) get swapped for host
+# shims here via a `replace` map as they appear (M1+); none needed at M0-1:
+#   replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c" }
+cflags = ["-Wall", "-Wextra"]
+
+# No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
+# the toolchain), NOT a project dependency -- same model as rexx370 v2.
+[dependencies]
+
+# -- M0-1 build-skeleton smoke test -------------------------------------
+# Trivial dual (host + MVS) test proving the toolchain, the base types and
+# the NSF_SIZE_ASSERT machinery compile and run (exit 0 = pass, 1 = fail).
+# Superseded by the real foundation unit tests in M0-2 (NSFQUE/NSFMM).
+[[test]]
+name = "TSTSMOKE"
+startup = "crt1"
+sources = ["test/tstsmoke.c"]
+
+[release]
+version_files = ["VERSION"]

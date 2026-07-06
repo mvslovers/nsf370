@@ -1,0 +1,65 @@
+# nsf370 — Network Services Facility for MVS 3.8j
+
+An event-driven networking subsystem for MVS 3.8j whose first responsibility
+is a **native TCP/IP stack** — a from-scratch revival of the abandoned
+`mvs38j-ip` project (not a port of its Xinu code). The goal is to run existing
+applications (HTTPD, mvsMF) **unchanged, relink-only** over a native stack
+instead of the Hercules X'75' hack, with full EZASOKET / PROFILE.TCPIP
+compatibility.
+
+> Status: **M0-1** — build skeleton. Foundation services (NSFMM, NSFQUE, …)
+> land from M0-2 onward. See `docs/` for the full picture.
+
+## Documentation
+
+| Document | Role |
+|---|---|
+| `docs/Project-Brief-v2.md` | Why / scope / constraints / milestones (frozen) |
+| `docs/Architecture-Specification-v1.1.md` | How: interfaces, data structures, lifetimes |
+| `docs/CLAUDE.md` | Operating rules, conventions, milestone status |
+| `docs/adr/` | Architecture Decision Records |
+
+## Toolchain
+
+- **cc370** — host cross-compile suite (S/370 objects on Linux/macOS)
+- **libc370** — the cc370 target C library (sysroot; not a project dependency)
+- **MBT V2** (MVS Build Tools) — build orchestration; `mbt` is a git submodule
+
+## Quick start
+
+```sh
+git clone --recursive https://github.com/mvslovers/nsf370.git
+cd nsf370
+cp .env.example .env          # fill in your MVS connection details
+
+make test-host                # build + run the portable tests natively (no MVS)
+
+make run-mvs                  # optional: start a local MVS/CE in Docker
+make bootstrap                # resolve deps + allocate datasets on MVS
+make build && make link       # cross-compile + assemble/link on MVS
+make test-mvs                 # run the tests on MVS
+```
+
+If you cloned without `--recursive`:
+
+```sh
+git submodule update --init
+```
+
+## Layout
+
+```
+project.toml   MBT V2 project (modules, tests, deps)
+Makefile       includes mbt/mk/mbt.mk
+src/           portable C sources (nsf*.c)
+asm/           HLASM sources (nsf*.asm)
+include/       public headers (one per component)
+test/          dual host+MVS tests; test/mvs/ MVS-only; test/asm/ asm callers
+cfg/           sample PROFILE.TCPIP members
+jcl/           install / SAMPLIB jobs
+docs/          brief, spec, CLAUDE.md, ADRs
+```
+
+## License
+
+TBD.
