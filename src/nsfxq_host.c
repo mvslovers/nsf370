@@ -16,12 +16,15 @@ void xq_init(XQ *xq)
 
 void xq_push(XQ *xq, QELEM *e)
 {
-    QELEM *old;
+    QELEM *old = __atomic_load_n(&xq->head, __ATOMIC_SEQ_CST);
 
     do {
-        old = xq->head;
         e->next = old;                  /* prepend: e becomes the new top */
-    } while (!__sync_bool_compare_and_swap(&xq->head, old, e));
+        /* Strong SEQ_CST CAS; on failure it reloads `old` with the current
+         * head, so the next iteration re-links e above it. Same family and
+         * ordering as xq_drain's exchange. */
+    } while (!__atomic_compare_exchange_n(&xq->head, &old, e, 0,
+                                          __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
 }
 
 QELEM *xq_drain(XQ *xq)

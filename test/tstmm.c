@@ -4,7 +4,8 @@
  * Covers the whole pool contract: alloc to exhaustion (NULL + fails++), free
  * returning objects, the inuse/hiwater/allocs/frees accounting, the
  * enforcement ABENDs (post-seal mm_pool_create; double free; eyecatcher
- * corruption), and the region-level leak gate after mm_shutdown.
+ * corruption; wrong-pool free), and the region-level leak gate after
+ * mm_shutdown.
  *
  * The enforcement checks drive nsf_abend through a longjmp hook so the test
  * survives an intentional "this must never happen" and asserts it fired. The
@@ -33,6 +34,7 @@ static void catch_abend(UINT code)
 int main(void)
 {
     MMPOOL *pool;
+    MMPOOL *pool2;
     MMSTATS st;
     void   *objs[4];
     void   *p;
@@ -44,6 +46,11 @@ int main(void)
     CHECK_EQ(mm_init(NULL), 0, "mm_init returns 0");
     pool = mm_pool_create("TESTOBJ", 32, 4);   /* 4 objects, 32B payload */
     CHECK(pool != NULL, "mm_pool_create returns a pool");
+    /* A second, independent pool -- its own region, free list and poolid.
+     * Used by the wrong-pool enforcement case below; the single-pool
+     * assertions on `pool` are unaffected. */
+    pool2 = mm_pool_create("OTHER", 32, 2);
+    CHECK(pool2 != NULL, "second pool created in the init window");
     mm_init_complete();
 
     /* ---- alloc within capacity ---- */
@@ -139,6 +146,25 @@ int main(void)
         }
         nsf_abend_sethook(prev);
         /* d is deliberately left allocated; mm_shutdown releases the region. */
+    }
+
+    /* ---- enforcement: freeing to the wrong pool is caught ---- */
+    {
+        nsf_abend_fn prev;
+        void *d = mm_alloc(pool);      /* live object: ALLOC eyecatcher, poolid = pool */
+        CHECK(d != NULL, "alloc an object to mis-free");
+        prev = nsf_abend_sethook(catch_abend);
+        g_abend_code = 0;
+        if (setjmp(g_jmp) == 0) {
+            /* Correct eyecatcher (passes the corruption check) but the wrong
+             * pool: the poolid mismatch must raise WRONGPOOL, not BADOBJ. */
+            mm_free(pool2, d);
+            CHECK(0, "free to the wrong pool should not return");
+        } else {
+            CHECK_EQ((long)g_abend_code, 103, "wrong-pool free caught in debug");
+        }
+        nsf_abend_sethook(prev);
+        /* d stays allocated in pool; mm_shutdown releases the region. */
     }
 #endif /* NSF_DEBUG */
 

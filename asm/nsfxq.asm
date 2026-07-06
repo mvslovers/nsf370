@@ -33,6 +33,17 @@
 *  is exercised for real by the host tests through the atomic shim, not yet
 *  on 3.8j.
 *
+*  M0-6 checklist before trusting a live run on 3.8j:
+*   - External-symbol convention: VERIFIED. cc370 mangles a C name by upper-
+*     casing it, mapping '_' -> '@' and truncating to 8, so xq_push compiles
+*     to =V(XQ@PUSH) (confirmed via cc370 -S and a clean ld370 link of TSTXQ);
+*     the CSECT entry names above already match. If a future cc370 changes
+*     this, re-check against a libc370 .s file (or rexx370) and rename.
+*   - Re-confirm the save-area / epilog register handling on the target: the
+*     STM/LM offsets and the R15-preserving xq_drain epilog, none of which the
+*     host shim exercises.
+*   - Run TSTXQ under make test-mvs to validate the CS loop on the real system.
+*
          PRINT NOGEN
 R0       EQU   0
 R1       EQU   1                       parm-list pointer on entry
