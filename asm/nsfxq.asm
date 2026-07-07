@@ -22,6 +22,12 @@
 *  arrive as a fullword list addressed by R1 -- arg0 at 0(R1), arg1 at
 *  4(R1); results return in R15. A pointer argument's value is the pointer.
 *
+*  RS-FORMAT OPERANDS: the LM/STM/CS operands below are written D(B) --
+*  NOT D(,B). as370 silently assembles the empty-index RX form D(,B) on an
+*  RS instruction with base register 0, turning the access into an absolute
+*  low-storage reference (CS on 0(0), LM restore from PSA 0x14) -- see
+*  cc370 issue #12. The RX-format L/ST operands legitimately use D(,B).
+*
 *  RENT/REUS: register-only, no workarea and no storage service, so all
 *  three entries are trivially reentrant and reusable.
 *
@@ -81,7 +87,7 @@ XQ@PUSH  CSECT
          L     R3,4(,R1)               R3 = e (also swap-in value)
 XQPLOOP  L     R4,0(,R2)               R4 = current head
          ST    R4,0(,R3)               e->next = current head
-         CS    R4,R3,0(,R2)            head==R4 ? head=e,CC0 : R4=head,CC1
+         CS    R4,R3,0(R2)             head==R4 ? head=e,CC0 : R4=head,CC1
          BNE   XQPLOOP                 raced: retry with the reloaded head
          LM    R14,R12,12(R13)         restore
          BR    R14
@@ -97,10 +103,10 @@ XQ@DRAIN CSECT
          L     R2,0(,R1)               R2 = xq              (arg0)
          SLR   R3,R3                   R3 = 0 (new empty head)
 XQDLOOP  L     R4,0(,R2)               R4 = current head
-         CS    R4,R3,0(,R2)            head==R4 ? head=0,CC0 : R4=head,CC1
+         CS    R4,R3,0(R2)             head==R4 ? head=0,CC0 : R4=head,CC1
          BNE   XQDLOOP                 raced: retry
          LR    R15,R4                  return the drained chain (old head)
          L     R14,12(,R13)            restore R14 (R15 holds the result)
-         LM    R0,R12,20(,R13)         restore R0-R12 (leave R15 = result)
+         LM    R0,R12,20(R13)          restore R0-R12 (leave R15 = result)
          BR    R14
          END
