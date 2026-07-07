@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.6 — Draft for implementation. Companion document to the frozen
+*Version 1.7 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -121,7 +121,7 @@ Two MVS tasks exist inside the stack's address space in **both** phases:
 | Task | Contents | Created by |
 |---|---|---|
 | **Executive task** | Event loop, all protocol logic, timers, operator commands | Mainline (jobstep task in Phase 1 STC; or ATTACHed subtask when linked into an application) |
-| **I/O exits** | Device I/O completion (IOS exit / attention), timer exit (STIMERM exit) | MVS, asynchronously |
+| **I/O exits** | Device I/O completion (IOS exit / attention), timer exit (STIMER exit) | MVS, asynchronously |
 
 Everything above the driver bottom half runs on the executive task,
 single-threaded, run-to-completion. The asynchronous exits do exactly two
@@ -172,11 +172,11 @@ App task resumes with EZASOKET return values.
 
 **(c) Timer expiry (TCP retransmission):**
 ```
-STIMERM exit (async): POST timer ECB          /* nothing else */
+STIMER exit (async): POST timer ECB           /* nothing else */
 executive task: EVT(TIMER_EXPIRED)
-  → nsftmr_run(): pop all due TMR elements from delta queue
+  → nsftmr_run(ticks): pop all due TMR elements from delta queue
   → each TMR fires its callback, e.g. tcp_rexmit_to(tcb)
-  → nsftmr_run() re-arms STIMERM for the next deadline (or none)
+  → nsftmr_run() re-arms STIMER for the next deadline (or none)
 ```
 
 **(d) Operator command:**
@@ -578,7 +578,7 @@ for (;;) {
     drain exit handoff stacks (xq_drain) → internal event queue
     while ((ev = q_deq(&evq)) != NULL)
         handlers[ev->type](ev);          /* run to completion */
-    nsftmr_run();                        /* fire due timers    */
+    nsftmr_run(elapsed_ticks);           /* fire due timers    */
     nsfdev_kick_output();                /* start pending I/O  */
 }
 ```
@@ -607,9 +607,10 @@ Every step has a timeout; a hung device cannot hang the shutdown (Goal 8).
 
 - One timer service for the whole stack: TCP retransmit/persist/keepalive/
   2MSL, delayed ACK, ARP cache (later), DNS timeouts (later).
-- Driven by a single MVS `STIMERM` (real interval). The STIMERM exit does
-  nothing but POST the timer ECB; all timer processing happens on the
-  executive task.
+- Driven by a single MVS `STIMER` (real interval, SVC 47), re-armed to the
+  head delta. The timer exit does nothing but POST the timer ECB; all timer
+  processing happens on the executive task. (Correction, M0-5: 3.8j provides
+  `STIMER`, not `STIMERM` — see §6.3 and ADR-0011.)
 
 ### 6.2 Design Decision: sorted delta queue, not a timer wheel
 
@@ -634,21 +635,51 @@ typedef struct tmr {
 } TMR;                  /* 24 bytes — EMBEDDED in owner CBs    */
 NSF_SIZE_ASSERT(TMR, 24);
 
-void  tmr_start (TMR *t, UINT ticks, TMRFN fn, void *arg); /* restart ok */
-void  tmr_cancel(TMR *t);                                  /* idempotent */
-void  nsftmr_run(void);            /* called by main loop             */
+void  nsftmr_init(void);                                   /* reset / disarm    */
+void  tmr_start (TMR *t, UINT ticks, TMRFN fn, void *arg); /* restart ok        */
+void  tmr_cancel(TMR *t);                                  /* idempotent        */
+void  nsftmr_run(UINT ticks);      /* advance by elapsed ticks (main loop)      */
+UINT       nsftmr_count(void);     /* inspection seam (operator DISPLAY, tests) */
+const TMR *nsftmr_peek (UINT i);   /* i==0 = head/soonest; NULL past the tail   */
 ```
 
-- **Tick = 100 ms** (resolves Open Question "granularity"). STIMERM
+- **Tick = 100 ms** (resolves Open Question "granularity"). `STIMER`
   resolution on MVS 3.8j is 0.01 s units, so 100 ms is comfortably
-  representable; TCP RTO minimum will be 1 s (RFC-conservative) and
-  delayed ACK 200 ms — both fit. An M0 test job validates actual STIMERM
+  representable (BINTVL = 10); TCP RTO minimum will be 1 s (RFC-conservative)
+  and delayed ACK 200 ms — both fit. An M0 test job validates actual `STIMER`
   behavior under Hercules before this is frozen (ADR-0011).
 - TMR structures are **embedded** in their owner control blocks (a TCB
   carries its four timers inline) — timer arming can therefore never fail
   and never allocates.
-- `nsftmr_run` re-arms STIMERM for the head delta only when the queue is
+- `nsftmr_run` re-arms `STIMER` for the head delta only when the queue is
   non-empty; an idle stack takes zero timer interrupts.
+
+**M0-5 implementation notes** (folded in; the interface above is refined):
+- **`STIMER`, not `STIMERM`.** MVS 3.8j / TK4- provides the single-interval
+  `STIMER` (SVC 47) + `TTIMER CANCEL`; `STIMERM` is an MVS/SP addition absent
+  from the 3.8j macro library. A single `STIMER REAL` re-armed to the head
+  delta reproduces the intended behaviour, and NSFTMR only ever needs one
+  active interval. The published `STIMERM` in this chapter, ADR-0016 and the
+  Brief is corrected here and in ADR-0011.
+- **`nsftmr_run(UINT ticks)`** takes the elapsed tick count. On MVS the
+  executive passes the number of ticks the expired `STIMER` represented (the
+  head delta it was armed for); the host has no `STIMER`, so tests inject
+  elapsed ticks directly. (Refines the published `nsftmr_run(void)`; §5.3's
+  main loop passes the elapsed count.)
+- **Added helpers.** `nsftmr_init` resets the queue and disarms the platform
+  timer (startup / test reset). `nsftmr_count` / `nsftmr_peek` are the
+  always-on inspection seam (the M0-8 operator DISPLAY and the host tests read
+  queue order and each timer's delta through them), mirroring NSFTRC.
+- **Platform seam `nsfstim.h`.** Arming lives behind `nsftmr_plat_arm` /
+  `_disarm` / `_ecb`: `asm/nsfstim.asm` on MVS (STIMER + the POST exit),
+  `src/nsfstim_host.c` on the host (no-op that records arms for the tests),
+  swapped by `[host].replace` — the NSFXQ / NSFTIME pattern. Per this chapter,
+  only `nsftmr_run` re-arms at M0-5; tmr_start/tmr_cancel that shorten the head
+  re-arm once the executive loop owns the pending-timer state (M0-6).
+- **`nsftmr_run` semantics.** Detaches and marks each due timer IDLE before its
+  callback runs (a callback may safely re-arm the timer that fired); a cancel
+  hands its delta to the successor while a fire consumes it; `tmr_start` clamps
+  `ticks` to a minimum of 1.
 
 ### 6.4 Lifetime
 
@@ -1304,7 +1335,7 @@ normative until the files exist.
 | **0008** | Single-owner buffers, no refcounting | Refcounts in C on a memory-starved system create leak/UAF classes; explicit handoff is auditable. Cost: one copy at the app/stack boundary — accepted. |
 | **0009** | Two buffer classes (256/2048) | One class wastes ~87% on ACK-sized traffic; more than two classes complicates sizing for no measured gain. Revisit with M4 stats. |
 | **0010** | Delta-queue timers, no wheel | Tiny active-timer population; zero fixed memory cost; trivially correct. |
-| **0011** | 100 ms tick via STIMERM | Sufficient for RTO ≥ 1 s and 200 ms delayed ACK. Gate: M0 timer-accuracy test job on Hercules before freeze. |
+| **0011** | 100 ms tick via STIMER (single interval, re-armed) | Sufficient for RTO ≥ 1 s and 200 ms delayed ACK. 3.8j has STIMER (SVC 47), **not** STIMERM (corrected M0-5). Gate: M0 timer-accuracy job on Hercules (`test/mvs/tsttmacc.c`) — mean ∈ [90,110] ms, no interval > 200 ms — pending a live run before freeze. Full record: `docs/adr/ADR-0011-...md`. |
 | **0012** | No IP fragmentation/reassembly in v1 | Reassembly is unbounded memory by nature; explicitly dropped + counted. MSS/EMSGSIZE keep NSF-originated traffic unfragmented. M5+ option with its own budget. |
 | **0013** | Toolchain: cc370 + libc370, orchestrated by MBT V2 | cc370 is a complete host cross-compile suite (no c2asm370 assembler round-trip); libc370 is its target C library. MBT V2 is the ecosystem-standard Python build system (project.toml, host cross-compile + on-MVS assemble/link, XMIT packaging) already proven on mvsMF — so NSF inherits a known-good build/dependency/test model instead of a bespoke one. Rejected: GCCMVS/CRENT370 (superseded in the ecosystem), c2asm370 (extra assembler step, not needed with cc370). |
 | **0014** | Build model & repo layout follow MBT V2 conventions | Building the M0-1 skeleton against the real ecosystem repos showed v1.1's §1.6/§16.2 assumptions were wrong. MBT V2 drives **both** builds — the host build is a first-class target (`make test-host` + a `[host]` table with a `replace` map for MVS-only CSECTs), **not** a separate `host.mk`. Layout is **flat** (`src/*.c`, `asm/*.asm`), not grouped by layer. `libc370` is the cc370 sysroot, not a `[dependencies]` entry. Real targets are `deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs` — no `bootstrap`/`build`/`link`. Supersedes §1.6 and §16.1/§16.2/§16.3, corrected inline in this version. Full record: `docs/adr/ADR-0014-build-model-and-repo-layout.md`. |
@@ -1443,6 +1474,32 @@ orchestrator and recorded its impact on repository shape (`project.toml`,
 `.env`) and the test model (host Level 0/1 outside MBT for CI; MBT-driven
 Level 2–4 on a live MVS). Added §1.6 Build Toolchain & Environment,
 ADR-0013, and updated §16.1/§16.2 and work package M0-1 accordingly.
+
+**v1.7:** M0-5 (NSFTMR) implementation notes folded into §6, plus a corrected
+timer-driver decision. NSFTMR: the §6.3 interface gains `nsftmr_init` and the
+`nsftmr_count` / `nsftmr_peek` inspection seam, and `nsftmr_run` takes the
+elapsed tick count (`nsftmr_run(UINT ticks)`) so the host can inject ticks with
+no STIMER; §5.3's main loop passes the elapsed count. The sorted delta queue
+(ADR-0010) is implemented on `QELEM` with cancel-hands-delta-to-successor /
+fire-consumes-delta bookkeeping and callback-safe firing. **Corrected: ADR-0011**
+— split into `docs/adr/ADR-0011-100ms-tick-via-stimer.md` and changed from
+`STIMERM` to a single **`STIMER`** (SVC 47) re-armed to the head delta: 3.8j has
+no `STIMERM` (an MVS/SP macro absent from the 3.8j macro library), so the
+`STIMERM` phrasing in §6/§18, ADR-0016 and the Brief is superseded. New platform
+seam `nsfstim.h` (`nsftmr_plat_arm`/`_disarm`/`_ecb`, STIMER + POST exit on MVS,
+recording no-op on the host), wired through `[host].replace` like NSFXQ/NSFTIME.
+The ADR-0011 accuracy gate (`test/mvs/tsttmacc.c`: mean ∈ [90,110] ms, no
+interval > 200 ms) builds and cross-links but is **blocked from running on MVS by
+issue #8**, an M0-6 prerequisite: a live `make test-mvs` staged isolation showed
+that merely linking `asm/nsftime.asm` (`nsf_now`) breaks the cc370 mainline
+C-runtime call path (ABEND S0C6, `CLIBCRT`) — the STCK itself runs; this is a
+general mainline-runtime blocker (affects NSFTRC and M0-6's NSFEVT), **not** the
+timer logic and **not** a deferrable accuracy gate. The seam run also fixed a real
+`asm/nsfstim.asm` bug (S102, ECB addressed at base 0; two as370 traps documented:
+no USING for data across entry points → explicit displacement/register-form
+addressing, and column-72 continuation). So the 100 ms tick is not yet frozen. No
+control-block-size or milestone-contract change beyond adding the 24-byte `TMR`.
+All new external functions carry `asm()` aliases (§3, NSFTM* / NSFWAIT).
 
 **v1.6:** External-symbol alias convention (build-linkage correctness, no
 behaviour change). cc370/ld370 truncate external names to 8 characters (upcased,

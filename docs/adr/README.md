@@ -16,7 +16,7 @@ out as they are revisited. ADR-0014 onward are authored directly here.
 | 0008 | Single-owner buffers, no refcounting | spec §18 |
 | 0009 | Two buffer classes (256/2048) | spec §18 |
 | 0010 | Delta-queue timers, no wheel | spec §18 |
-| 0011 | 100 ms tick via STIMERM | spec §18 |
+| 0011 | 100 ms tick via a single re-armed STIMER (not STIMERM) | ADR-0011-100ms-tick-via-stimer.md |
 | 0012 | No IP fragmentation/reassembly in v1 | spec §18 |
 | 0013 | Toolchain: cc370 + libc370, MBT V2 | spec §18 |
 | 0014 | Build model & repo layout follow MBT V2 conventions | ADR-0014-build-model-and-repo-layout.md |

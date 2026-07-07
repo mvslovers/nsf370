@@ -18,8 +18,12 @@ cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1"]
 #              (asm/nsfxq.asm), a compiler-atomic on the host (src/nsfxq_host.c).
 #   nsftime -- the platform seam (spec 7.2): STCK + PSATOLD on MVS
 #              (asm/nsftime.asm), gettimeofday + 0 on the host
-#              (src/nsftime_host.c). Shared by NSFTRC now, NSFTMR at M0-5.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c" }
+#              (src/nsftime_host.c). Shared by NSFTRC and NSFTMR.
+#   nsfstim -- the NSFTMR arming seam (spec 6.3): STIMER REAL + POST exit on
+#              MVS (asm/nsfstim.asm), a no-op that records arms/disarms for the
+#              tests on the host (src/nsfstim_host.c). Host drives ticks by
+#              calling nsftmr_run directly.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -81,6 +85,29 @@ sources = ["test/tsttrc.c", "src/nsftrc.c", "asm/nsftime.asm"]
 name = "TSTSTS"
 startup = "crt1"
 sources = ["test/tststs.c", "src/nsfsts.c"]
+
+# -- M0-5 timer manager unit tests (NSFTMR) ----------------------------
+# NSFTMR: sorted delta-queue insertion order + successor bookkeeping, in-order
+# firing as ticks advance, cancel-from-the-middle, restart of a pending timer,
+# idempotent cancel, and nsftmr_run re-arm/disarm via the platform-seam probe.
+# The arming seam asm/nsfstim.asm is swapped for src/nsfstim_host.c on the host
+# ([host].replace above); the host drives ticks by calling nsftmr_run directly.
+[[test]]
+name = "TSTTMR"
+startup = "crt1"
+sources = ["test/tsttmr.c", "src/nsftmr.c", "src/nsfque.c", "asm/nsfstim.asm"]
+
+# NSFTMR timer-accuracy job -- the ADR-0011 gate (spec 6.3). MVS-only: it MEASURES
+# the STIMER timebase with a task-synchronous STIMER WAIT (test/asm/tststmw.asm),
+# timing each 100 ms interval with STCK (asm/nsftime.asm). Standalone: decoupled
+# from nsftmr_run AND from the async STIMER-REAL + POST-exit seam (asm/nsfstim.asm,
+# whose live run is an M0-6 task). host = false -> skipped by test-host; runs under
+# test-mvs and PASSes only if mean in [90,110] ms and no interval > 200 ms.
+[[test]]
+name = "TSTTMACC"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tsttmacc.c", "asm/nsftime.asm", "test/asm/tststmw.asm"]
 
 [release]
 version_files = ["VERSION"]
