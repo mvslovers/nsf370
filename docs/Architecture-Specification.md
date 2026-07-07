@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.4 — Draft for implementation. Companion document to the frozen
+*Version 1.5 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -676,16 +676,41 @@ teardown checklists in Ch. 12/13 enumerate every embedded timer.
 ```c
 #define TRC(comp, fmt, ...) \
     do { if (nsftrc_flags & TRCF_##comp) \
-         nsftrc_write(TRCF_##comp, fmt, __VA_ARGS__); } while (0)
+         nsftrc_write(TRCF_##comp, (fmt), ##__VA_ARGS__); } while (0)
 
+void  nsftrc_init(void);                 /* zero the ring + stamp eyecatcher  */
+void  nsftrc_enable(UINT flags);         /* set flags  (PROFILE/MODIFY later) */
+void  nsftrc_disable(UINT flags);        /* clear flags                       */
 void  nsftrc_write(UINT flag, const char *fmt, ...);
 void  nsftrc_hexdump(UINT flag, const char *tag,
                      const void *p, USHORT len);
+UINT          nsftrc_count(void);        /* live entries (dump / DISPLAY)     */
+const TRCENT *nsftrc_peek(UINT i);       /* i==0 oldest; NULL past the end    */
+const void   *nsftrc_ring_base(void);    /* dump anchor (NSFTRACE eyecatcher) */
 ```
 
 Ring buffer: configurable size (default 64 KB), fixed-size 128-byte
 entries (timestamp, flag, task, truncated text) — deterministic, no
 allocation, oldest-overwritten.
+
+> **M0-4 implementation note.** Delivered in `include/nsftrc.h` /
+> `src/nsftrc.c`. The `TRC` macro uses `, ##__VA_ARGS__` (a gnu99 extension) so
+> a flag-only call — `TRC(TCP, "listening")` — compiles with no trailing
+> arguments. `TRCENT` is fixed at exactly 128 bytes and **pointer-free**:
+> `NSFTIME ts` (8) · `UINT flag` (4) · `UINT task` (4) · `char text[112]`, so
+> `NSF_SIZE_ASSERT(TRCENT, 128)` holds on host and target alike (a host unit
+> test also asserts `sizeof` at run time — the only host-side size guarantee,
+> since the macro's value check is target-only). The ring is one static BSS
+> object (header + 512 entries = 64 KB), zeroed and stamped `NSFTRACE` by
+> `nsftrc_init`; all ring arithmetic uses the compile-time entry count, so a
+> write before init cannot divide by zero. `nsftrc_write` does **not** test the
+> flag (the `TRC` macro is the gate); `nsftrc_hexdump` **self-gates** on its
+> flag, as there is no macro wrapper. **Single writer** at M0-4: no asynchronous
+> exits exist yet, so the ring needs no locking; M1 must add CS-reserved slot
+> indexing (as NSFXQ reserves its stack top) before an exit may trace. The
+> timestamp (`nsf_now`) and numeric task id (`nsf_taskid`) come from the shared
+> platform seam `include/nsftime.h` (**ADR-0016**), reused by NSFTMR at M0-5.
+> No new control-block-size or milestone-contract change beyond adding `TRCENT`.
 
 ---
 
@@ -704,13 +729,32 @@ allocation, oldest-overwritten.
 ```c
 typedef struct stsctr { char name[12]; UINT value; } STSCTR;   /* 16 B */
 
+void    sts_init(void);                                 /* zero + eyecatcher */
 STSCTR *sts_register(const char *component, const char *name);
+void    sts_reset(void);                                /* zero all values   */
+UINT    sts_count(void);
+UINT    sts_render(char *buf, UINT bufsize);            /* DISPLAY STATS      */
 #define STS_INC(c)      ((c)->value++)
-#define STS_ADD(c, n)   ((c)->value += (n))
+#define STS_ADD(c, n)   ((c)->value += (UINT)(n))
 ```
 
 Minimum counter set per component is specified in the owning chapter
 (e.g. IP: in/out/errors/badcksum/badlen/noroute/fragdropped).
+
+> **M0-4 implementation note.** Delivered in `include/nsfsts.h` /
+> `src/nsfsts.c`. `STSCTR` stays exactly 16 bytes and pointer-free; the owning
+> `component` lives in an internal registry record that *wraps* the counter, so
+> grouping in the render costs the 16-byte counter nothing. The registry is one
+> static BSS array of `NSFSTS_MAX` (128) records behind an `NSFSTATS`
+> eyecatcher. `sts_register` is init-window only and returns `NULL` when the
+> table is full — a build-time miscount the caller reports, never an abend,
+> mirroring `mm_pool_create` past its pool max. A returned `STSCTR*` is **stable
+> for the run** (the array never moves and registration only appends), so a
+> component caches it once and `STS_INC`s it on the hot path with no lookup.
+> `sts_render` writes `component name value` lines (registration order) into a
+> caller-supplied buffer, truncating only at whole-line boundaries and returning
+> the byte count; the M0-8 operator `DISPLAY STATS` hookup calls it. No new
+> control-block-size or milestone-contract change.
 
 ---
 
@@ -1265,6 +1309,7 @@ normative until the files exist.
 | **0013** | Toolchain: cc370 + libc370, orchestrated by MBT V2 | cc370 is a complete host cross-compile suite (no c2asm370 assembler round-trip); libc370 is its target C library. MBT V2 is the ecosystem-standard Python build system (project.toml, host cross-compile + on-MVS assemble/link, XMIT packaging) already proven on mvsMF — so NSF inherits a known-good build/dependency/test model instead of a bespoke one. Rejected: GCCMVS/CRENT370 (superseded in the ecosystem), c2asm370 (extra assembler step, not needed with cc370). |
 | **0014** | Build model & repo layout follow MBT V2 conventions | Building the M0-1 skeleton against the real ecosystem repos showed v1.1's §1.6/§16.2 assumptions were wrong. MBT V2 drives **both** builds — the host build is a first-class target (`make test-host` + a `[host]` table with a `replace` map for MVS-only CSECTs), **not** a separate `host.mk`. Layout is **flat** (`src/*.c`, `asm/*.asm`), not grouped by layer. `libc370` is the cc370 sysroot, not a `[dependencies]` entry. Real targets are `deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs` — no `bootstrap`/`build`/`link`. Supersedes §1.6 and §16.1/§16.2/§16.3, corrected inline in this version. Full record: `docs/adr/ADR-0014-build-model-and-repo-layout.md`. |
 | **0015** | NSFMM pool regions via libc370 `malloc`, not a raw GETMAIN SVC | The one region-per-pool acquisition (§2.3) uses libc370 `malloc`/`free` from portable C. On 24-bit MVS 3.8j that resolves to `GETMAIN` below the 16 MB line, released at `mm_shutdown` — realizing §2.3's intent while keeping NSFMM pure C (no assembler region helper). Load-bearing consequence: do not "restore" a raw GETMAIN SVC believing §2.3 mandates one. Full record: `docs/adr/ADR-0015-region-acquisition-via-libc370-malloc.md`. |
+| **0016** | Shared platform seam `nsftime` (`nsf_now` + `nsf_taskid`) | The two platform facts NSF asks the machine for — a monotonic timestamp and the current task id — live behind one C-callable seam (`include/nsftime.h`): MVS `STCK` + `PSATOLD` in `asm/nsftime.asm`, `gettimeofday` + `0` in `src/nsftime_host.c`, swapped by the `[host].replace` map (the NSFXQ pattern). `nsf_now` is **not** trace-private: NSFTMR reuses it at M0-5. The value's epoch/scale is platform-specific (STCK TOD vs host wall clock), so callers order/relative-time with it but never assume a shared tick unit or wall-clock meaning. First consumer: NSFTRC (§7.2). Full record: `docs/adr/ADR-0016-shared-platform-time-and-task-seam.md`. |
 
 ---
 
@@ -1282,7 +1327,7 @@ week-equivalent), L (multi-week-equivalent).
 | M0-1 | Repo layout (16.2): MBT V2 `project.toml` + two-line `Makefile`, `mbt` submodule, `.env.example`; `make test-host` (native, via the `[host]` table) and `make test-mvs` green on a live MVS 3.8j, running the TSTSMOKE build-skeleton test; CI green. **Done** (ADR-0014). | M |
 | M0-2 | NSFQUE + NSFMM + size-assert discipline, host unit tests (also: `nsf_abend` enforcement primitive; region seam per ADR-0015). **Done.** | M |
 | M0-3 | NSFBUF (PBUF, headroom, chains) + tests. **Done.** | S |
-| M0-4 | NSFTRC (ring + macros) and NSFSTS (registry) | S |
+| M0-4 | NSFTRC (ring + macros) and NSFSTS (registry); shared `nsftime` seam (`nsf_now`/`nsf_taskid`, ADR-0016). **Done.** | S |
 | M0-5 | NSFTMR + host tests; **MVS timer-accuracy job (gate for ADR-0011)** | M |
 | M0-6 | NSFEVT main loop + xq exit handoff (host: pthread-simulated exit) | M |
 | M0-7 | NSFCFG parser + profile corpus tests | M |
@@ -1398,6 +1443,20 @@ orchestrator and recorded its impact on repository shape (`project.toml`,
 `.env`) and the test model (host Level 0/1 outside MBT for CI; MBT-driven
 Level 2–4 on a live MVS). Added §1.6 Build Toolchain & Environment,
 ADR-0013, and updated §16.1/§16.2 and work package M0-1 accordingly.
+
+**v1.5:** M0-4 (NSFTRC + NSFSTS) implementation notes folded into §7.2/§8.2,
+plus a new shared platform seam. NSFTRC: the §7.2 interface gains
+`nsftrc_init`/`enable`/`disable` and the `nsftrc_count`/`peek`/`ring_base`
+inspection seam (reused by the M0-8 operator dump); the `TRC` macro adopts the
+`, ##__VA_ARGS__` form so flag-only calls compile; `TRCENT` is fixed at 128
+bytes, pointer-free, single-writer at M0-4. NSFSTS: the §8.2 interface gains
+`sts_init`/`reset`/`count`/`render`; `STSCTR` stays 16 bytes with the component
+carried in a wrapping registry record. **New: ADR-0016** — the `nsftime`
+platform seam (`nsf_now` via `STCK`/`gettimeofday`, `nsf_taskid` via
+`PSATOLD`/`0`), a shared primitive NSFTMR reuses at M0-5, wired through the
+`[host].replace` map like NSFXQ. No control-block-size or milestone-contract
+change beyond adding the `TRCENT`/`STSCTR`/`NSFTIME` blocks; M0-4 marked
+**Done** in the §19 roadmap.
 
 **v1.4:** M0-3 (NSFBUF) code-review rework, §3.2 note only. `buf_trim_tail`
 now trims the packet's **logical tail** (the last chain element), not the

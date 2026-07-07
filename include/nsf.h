@@ -10,6 +10,18 @@
  * Architecture Specification for the full picture.
  */
 
+/*
+ * The universal base header: every NSF translation unit reaches nsf.h (directly
+ * or transitively), so the fundamental freestanding C definitions the codebase
+ * leans on -- NULL, size_t, offsetof -- are guaranteed here rather than left to
+ * the luck of a component header's include chain. Without this, a source that
+ * uses NULL but only includes nsf.h (e.g. src/nsftime_host.c) compiles solely
+ * because some other header transitively drags in <stddef.h> on this particular
+ * libc; on a stricter host it fails with "'NULL' undeclared". <stddef.h> is
+ * freestanding, so cc370/libc370 provides it on the target too.
+ */
+#include <stddef.h>
+
 #define NSF_VERSION "0.1.0-dev"
 
 /*
