@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.2 — Draft for implementation. Companion document to the frozen
+*Version 1.4 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -382,16 +382,55 @@ deliberately (Project Brief §7.2 "max connections").
 
 ```c
 /* nsfbuf.h */
+int     buf_init(void);                    /* create pools; 0 ok, !=0 fail */
 PBUF   *buf_alloc(USHORT hint_len);        /* picks class by hint       */
 void    buf_free(PBUF *b);                 /* frees whole chain         */
 int     buf_prepend(PBUF *b, USHORT n);    /* claim n bytes of headroom */
 int     buf_trim_head(PBUF *b, USHORT n);  /* consume from front        */
-int     buf_trim_tail(PBUF *b, USHORT n);
+int     buf_trim_tail(PBUF *b, USHORT n);  /* drop from the chain's tail */
 USHORT  buf_copyin (PBUF *b, const void *src, USHORT n);  /* app→stack  */
 USHORT  buf_copyout(const PBUF *b, void *dst, USHORT n);  /* stack→app  */
 PBUF   *buf_chain_append(PBUF *head, PBUF *tail);
 USHORT  buf_chain_len(const PBUF *head);
+void    buf_reset_rx(PBUF *b);             /* inbound seam (M1)         */
 ```
+
+Notes (added at M0-3, the same way `mm_init_complete` was recorded in §2.2):
+
+- `buf_init` is init-window only — it calls `mm_pool_create`, legal solely
+  between `mm_init` and `mm_init_complete`. It creates `BUFSMALL`/`BUFLARGE`
+  at the default counts (small 64, large 128; NSFCFG override is M0-7) and
+  remembers the two `MMPOOL*` for class→pool selection on free. It **returns
+  0 on success, non-zero if either pool could not be created**, so the
+  executive startup (M0-8) can refuse to start rather than run with NULL pools;
+  it does no operator reporting itself (that belongs to the startup path).
+- `buf_reset_rx` is the inbound seam consumed by the driver at M1: it moves
+  `data` to `start` (no headroom, since nothing is prepended on the way up)
+  and reopens the whole `B`-byte data area (`size == B`, `len == 0`).
+- **Layout constants (fixed; ADR-0009 for the class sizes):**
+  `NSFBUF_SMALL_DATA = 256`, `NSFBUF_LARGE_DATA = 2048`,
+  `NSFBUF_HEADROOM = 64`. Class selection is by hint plus default headroom:
+  `BUFSMALL` when `HEADROOM + hint_len ≤ 256` (i.e. `hint_len ≤ 192`), else
+  `BUFLARGE`. Outbound allocation opens `data = start + HEADROOM`, `len = 0`,
+  `size = B − HEADROOM`.
+- The pooled-object payload is `sizeof(PBUF) + B` (288 / 2080 on the target,
+  matching §2.5). It is computed from `sizeof(PBUF)` at run time rather than
+  hardcoded, because `sizeof(PBUF)` is 32 only on the S/370 target — a host
+  test build has wider pointers — and using the same `sizeof` for both the
+  pool object size and `start` keeps them self-consistent on either platform.
+- `buf_prepend` grows `size` by `n` (it moves `data` back); `buf_trim_head`
+  shrinks it by `n` (it moves `data` forward); `buf_trim_tail` leaves `size`
+  unchanged (`data` is fixed). All three keep the head's `chainlen` in step.
+  `buf_chain_len` is the authoritative walk-sum; the `chainlen` field is a
+  head-only cache maintained incrementally and re-checked against the walk-sum
+  under `NSF_DEBUG`.
+- `buf_trim_tail` acts on the **logical tail of the packet**: on a chain it
+  trims the last element (`chain == NULL`), not the buffer it is handed —
+  trimming the head element would silently drop bytes from the middle of the
+  packet, and the `chainlen` self-check cannot catch that (head `len` and
+  `chainlen` stay mutually consistent). Single-buffer behaviour is unchanged.
+  `buf_prepend`/`buf_trim_head`, by contrast, act on the head, where headers
+  are added and consumed.
 
 ### 3.3 Buffer Layout and Structure
 
@@ -415,7 +454,7 @@ struct pbuf {
     PBUF   *chain;        /* 4  next PBUF of same packet, or NULL       */
     UCHAR  *data;         /* 4  first valid byte                        */
     USHORT  len;          /* 2  valid bytes at *data (this buffer)      */
-    USHORT  size;         /* 2  capacity of data area                   */
+    USHORT  size;         /* 2  forward capacity from data == (start+B)-data */
     USHORT  chainlen;     /* 2  total valid bytes (head element only)   */
     UCHAR   class;        /* 1  BUFSMALL / BUFLARGE                     */
     UCHAR   flags;        /* 1                                          */
@@ -1242,7 +1281,7 @@ week-equivalent), L (multi-week-equivalent).
 |---|---|---|
 | M0-1 | Repo layout (16.2): MBT V2 `project.toml` + two-line `Makefile`, `mbt` submodule, `.env.example`; `make test-host` (native, via the `[host]` table) and `make test-mvs` green on a live MVS 3.8j, running the TSTSMOKE build-skeleton test; CI green. **Done** (ADR-0014). | M |
 | M0-2 | NSFQUE + NSFMM + size-assert discipline, host unit tests (also: `nsf_abend` enforcement primitive; region seam per ADR-0015). **Done.** | M |
-| M0-3 | NSFBUF (PBUF, headroom, chains) + tests | S |
+| M0-3 | NSFBUF (PBUF, headroom, chains) + tests. **Done.** | S |
 | M0-4 | NSFTRC (ring + macros) and NSFSTS (registry) | S |
 | M0-5 | NSFTMR + host tests; **MVS timer-accuracy job (gate for ADR-0011)** | M |
 | M0-6 | NSFEVT main loop + xq exit handoff (host: pthread-simulated exit) | M |
@@ -1359,6 +1398,26 @@ orchestrator and recorded its impact on repository shape (`project.toml`,
 `.env`) and the test model (host Level 0/1 outside MBT for CI; MBT-driven
 Level 2–4 on a live MVS). Added §1.6 Build Toolchain & Environment,
 ADR-0013, and updated §16.1/§16.2 and work package M0-1 accordingly.
+
+**v1.4:** M0-3 (NSFBUF) code-review rework, §3.2 note only. `buf_trim_tail`
+now trims the packet's **logical tail** (the last chain element), not the
+buffer it is handed — the earlier behaviour silently dropped bytes from the
+middle of a chained packet and the `chainlen` self-check could not detect it.
+`buf_init` gains a **return code** (0 ok / non-zero if a pool could not be
+created) so the M0-8 executive startup can refuse to start rather than run with
+NULL pools. No new ADR (both sit under ADR-0008/0009); no control-block, size,
+or milestone-contract change.
+
+**v1.3:** M0-3 (NSFBUF) implementation notes folded into §3.2/§3.3. Added
+`buf_init` (init-window pool creation) and `buf_reset_rx` (the M1 inbound
+seam) to the §3.2 interface, with a note recording the fixed layout constants
+(`NSFBUF_SMALL_DATA` 256, `NSFBUF_LARGE_DATA` 2048, `NSFBUF_HEADROOM` 64), the
+192/193 class-selection boundary, and the `sizeof(PBUF) + B` pooled-object
+sizing. Clarified the §3.3 `size` field as the forward capacity from `data`
+(`(start+B) − data`), which fixes the prepend/trim bookkeeping. No new ADR:
+these sit under ADR-0008 (single-owner buffers) and ADR-0009 (two classes).
+**No change to any control block size, invariant, or milestone contract.**
+Marked M0-3 **Done** in the §19 roadmap.
 
 **v1.2:** Build-model reconciliation with **ADR-0014**, after the M0-1
 skeleton was built against the real MBT V2 ecosystem repos. Corrected §1.6
