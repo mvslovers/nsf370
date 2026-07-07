@@ -23,12 +23,20 @@
 
 typedef void (*nsf_abend_fn)(UINT code);
 
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"): without
+ * them cc370's 8-char external truncation (upcased, '_' -> '@') folds BOTH
+ * nsf_abend and nsf_abend_sethook to the single symbol NSF@ABEN, so ld370 binds
+ * every nsf_abend call to whichever one it kept -- a silent mis-dispatch host
+ * tests cannot see. Scheme NSFA + verb:
+ *   nsf_abend NSFABEND   nsf_abend_sethook NSFAHOOK
+ */
+
 /* Raise a user completion `code` (NSF message range of the failing component,
  * e.g. 100-199 for memory). Does not return. */
-void nsf_abend(UINT code);
+void nsf_abend(UINT code) asm("NSFABEND");
 
 /* Install (or clear, with NULL) the abend hook; returns the previous hook.
  * Test-facing: production code never sets a hook. */
-nsf_abend_fn nsf_abend_sethook(nsf_abend_fn hook);
+nsf_abend_fn nsf_abend_sethook(nsf_abend_fn hook) asm("NSFAHOOK");
 
 #endif /* NSFABEND_H */

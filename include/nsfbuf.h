@@ -67,6 +67,20 @@ struct pbuf {
 };                        /* 32 bytes */
 NSF_SIZE_ASSERT(PBUF, 32);
 
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols").
+ * cc370/ld370 fold an external name to 8 characters after upcasing and mapping
+ * '_' -> '@', so buf_trim_head/buf_trim_tail, buf_copyin/buf_copyout and
+ * buf_chain_append/buf_chain_len each collapse to ONE symbol (BUF@TRIM /
+ * BUF@COPY / BUF@CHAI) and ld370 silently keeps just one -- a wrong-function
+ * dispatch on MVS that host tests (native cc, no 8-char limit) cannot see.
+ * Every cross-module buf_* below therefore pins a unique 8-char alias
+ * (scheme NSFB + verb):
+ *   buf_init NSFBINIT   buf_alloc NSFBALOC   buf_free NSFBFREE
+ *   buf_prepend NSFBPREP   buf_trim_head NSFBTRMH   buf_trim_tail NSFBTRMT
+ *   buf_copyin NSFBCPIN   buf_copyout NSFBCPOU   buf_chain_append NSFBCHAP
+ *   buf_chain_len NSFBCHLN   buf_reset_rx NSFBRSRX   buf_debug_pool NSFBDBGP
+ */
+
 /* Initialization (init window only -- calls mm_pool_create, so it must run
  * between mm_init and mm_init_complete). Creates the BUFSMALL and BUFLARGE
  * pools at the hardcoded default counts above and remembers them for
@@ -74,60 +88,60 @@ NSF_SIZE_ASSERT(PBUF, 32);
  * not be created, so the executive startup (M0-8) can refuse to start rather
  * than run with NULL pools. Added beyond the published spec 3.2 interface at
  * M0-3 (see the spec 3.2 note). */
-int     buf_init(void);
+int     buf_init(void) asm("NSFBINIT");
 
 /* Allocate an outbound buffer sized by hint_len (the intended payload). Picks
  * BUFSMALL when HEADROOM + hint_len <= NSFBUF_SMALL_DATA (hint_len <= 192),
  * else BUFLARGE. Opens data one headroom in, len 0. Returns NULL when the
  * chosen pool is exhausted -- normal and expected; the caller handles it.
  * The caller becomes the owner. */
-PBUF   *buf_alloc(USHORT hint_len);
+PBUF   *buf_alloc(USHORT hint_len) asm("NSFBALOC");
 
 /* Free a buffer AND its whole chain (single owner, no refcount). Routes every
  * element through NSFMM so a double free / wrong-pool free is caught in debug.
  * Only the executive task calls this (spec 3.4). */
-void    buf_free(PBUF *b);
+void    buf_free(PBUF *b) asm("NSFBFREE");
 
 /* Claim n bytes of headroom at the front: data moves back by n, len grows by
  * n (the caller writes the new header into the reclaimed bytes). Rejects when
  * fewer than n headroom bytes remain. Returns 0 on success, nonzero on
  * reject; the buffer is unchanged on reject. */
-int     buf_prepend(PBUF *b, USHORT n);
+int     buf_prepend(PBUF *b, USHORT n) asm("NSFBPREP");
 
 /* Consume n bytes from the front (data advances, len shrinks). Bounds-checked
  * against len. Returns 0 on success, nonzero (buffer unchanged) if n > len. */
-int     buf_trim_head(PBUF *b, USHORT n);
+int     buf_trim_head(PBUF *b, USHORT n) asm("NSFBTRMH");
 
 /* Drop n bytes from the logical tail of the packet: on a chain this trims the
  * LAST element (the one with chain == NULL), shrinking its len; data and
  * capacity are unchanged and the head's chainlen is decremented by n. Single-
  * buffer behaviour is unchanged. Bounds-checked against the tail element's len.
  * Returns 0 on success, nonzero (unchanged) if n exceeds it. */
-int     buf_trim_tail(PBUF *b, USHORT n);
+int     buf_trim_tail(PBUF *b, USHORT n) asm("NSFBTRMT");
 
 /* Copy up to n bytes from src into the buffer/chain, appended after the
  * current valid data (app->stack). Clamped at n and at the remaining capacity
  * of the chain. Returns the number of bytes actually copied; maintains the
  * head's chainlen. */
-USHORT  buf_copyin (PBUF *b, const void *src, USHORT n);
+USHORT  buf_copyin (PBUF *b, const void *src, USHORT n) asm("NSFBCPIN");
 
 /* Copy up to n bytes of valid data out of the buffer/chain into dst
  * (stack->app), starting at the logical front. Clamped at n and at the total
  * valid length. Returns the number of bytes actually copied; does not mutate
  * the chain. */
-USHORT  buf_copyout(const PBUF *b, void *dst, USHORT n);
+USHORT  buf_copyout(const PBUF *b, void *dst, USHORT n) asm("NSFBCPOU");
 
 /* Append the `tail` chain to the end of the `head` chain and fold tail's valid
  * bytes into head's chainlen. Returns head (or tail if head is NULL). */
-PBUF   *buf_chain_append(PBUF *head, PBUF *tail);
+PBUF   *buf_chain_append(PBUF *head, PBUF *tail) asm("NSFBCHAP");
 
 /* Total valid bytes across the chain (authoritative walk-sum of each len). */
-USHORT  buf_chain_len(const PBUF *head);
+USHORT  buf_chain_len(const PBUF *head) asm("NSFBCHLN");
 
 /* Reset a buffer for inbound receive: data == start (no headroom), len 0,
  * size == B -- the whole data area is available for a received frame. The
  * inbound seam consumed by the driver at M1. */
-void    buf_reset_rx(PBUF *b);
+void    buf_reset_rx(PBUF *b) asm("NSFBRSRX");
 
 #if NSF_DEBUG
 /* Diagnostic for the leak gate under NSF_DEBUG (host tests): the NSFMM pool
@@ -137,7 +151,7 @@ void    buf_reset_rx(PBUF *b);
  * forward declaration keeps pools an NSFBUF implementation detail for normal
  * consumers. */
 struct mmpool;
-struct mmpool *buf_debug_pool(UCHAR class);
+struct mmpool *buf_debug_pool(UCHAR class) asm("NSFBDBGP");
 #endif
 
 #endif /* NSFBUF_H */

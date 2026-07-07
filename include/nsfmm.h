@@ -68,20 +68,28 @@ typedef struct mmcfg {
     USHORT  rsvd;
 } MMCFG;
 
-int      mm_init(const MMCFG *cfg);                          /* init-time only */
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"): every
+ * cross-module mm_* pins a unique 8-char linker name so cc370's 8-char external
+ * truncation (upcased, '_' -> '@') can never silently fold two into one on MVS.
+ * Scheme NSFM + verb:
+ *   mm_init NSFMINIT   mm_pool_create NSFMPCRE   mm_init_complete NSFMICPL
+ *   mm_alloc NSFMALOC   mm_free NSFMFREE   mm_stats NSFMSTAT
+ *   mm_shutdown NSFMSHUT   mm_debug_live_regions NSFMDLRG
+ */
+int      mm_init(const MMCFG *cfg) asm("NSFMINIT");          /* init-time only */
 MMPOOL  *mm_pool_create(const char *name8,                   /* init-time only */
-                        USHORT objsize, USHORT count);
-void     mm_init_complete(void);                             /* seal the pools */
-void    *mm_alloc(MMPOOL *pool);                             /* NULL = exhausted */
-void     mm_free(MMPOOL *pool, void *obj);
-void     mm_stats(const MMPOOL *pool, MMSTATS *out);
-void     mm_shutdown(void);                                  /* release regions */
+                        USHORT objsize, USHORT count) asm("NSFMPCRE");
+void     mm_init_complete(void) asm("NSFMICPL");             /* seal the pools */
+void    *mm_alloc(MMPOOL *pool) asm("NSFMALOC");             /* NULL = exhausted */
+void     mm_free(MMPOOL *pool, void *obj) asm("NSFMFREE");
+void     mm_stats(const MMPOOL *pool, MMSTATS *out) asm("NSFMSTAT");
+void     mm_shutdown(void) asm("NSFMSHUT");                  /* release regions */
 
 #if NSF_DEBUG
 /* Diagnostic for the leak gate under NSF_DEBUG (host tests): the count of
  * regions currently held, which returns to 0 after mm_shutdown. Intentionally
  * outside the production interface. */
-UINT     mm_debug_live_regions(void);
+UINT     mm_debug_live_regions(void) asm("NSFMDLRG");
 #endif
 
 #endif /* NSFMM_H */

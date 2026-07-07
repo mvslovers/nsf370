@@ -39,8 +39,15 @@ typedef struct xq {
     QELEM * volatile head;      /* top of stack; NULL when empty */
 } XQ;
 
-void    xq_init (XQ *xq);
-void    xq_push (XQ *xq, QELEM *e);   /* exit side: prepend e (CS retry loop) */
-QELEM  *xq_drain(XQ *xq);             /* executive side: swap out whole chain  */
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"). These
+ * three are the C<->asm seam: the alias here MUST be character-identical to the
+ * CSECT label in asm/nsfxq.asm (host builds use src/nsfxq_host.c, which inherits
+ * the same alias transparently). Pinning the name makes the boundary independent
+ * of cc370's 8-char '_' -> '@' mangling:
+ *   xq_init NSFXINIT   xq_push NSFXPUSH   xq_drain NSFXDRAN
+ */
+void    xq_init (XQ *xq) asm("NSFXINIT");
+void    xq_push (XQ *xq, QELEM *e) asm("NSFXPUSH");   /* exit side: prepend e   */
+QELEM  *xq_drain(XQ *xq) asm("NSFXDRAN");             /* exec: swap whole chain */
 
 #endif /* NSFXQ_H */

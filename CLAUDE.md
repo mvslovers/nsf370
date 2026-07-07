@@ -108,6 +108,28 @@ Violating one is a review-blocking defect, not a style nit.
   counted; transports respect MTU (TCP MSS, UDP `EMSGSIZE`).
 - **No Xinu code.** Fresh implementation from RFC/IBM docs.
 
+**External symbols**
+- cc370/ld370 fold every external name to **8 characters** after upcasing and
+  mapping `_` → `@`. On a collision ld370 keeps one definition **silently**, so
+  two C functions that agree in the first 8 mangled characters bind to the *same*
+  code — a wrong-function dispatch that only bites on MVS (native host builds
+  have no 8-char limit and never see it; e.g. `buf_trim_head`/`buf_trim_tail` →
+  `BUF@TRIM`, `nsf_abend`/`nsf_abend_sethook` → `NSF@ABEN`).
+- Therefore **every cross-module (non-`static`) NSF C function carries an
+  explicit 8-char uppercase `asm("XXXXXXXX")` alias on its declaration in the
+  header**, unique across the whole load module, on a per-component scheme
+  (`NSFB*` buffers, `NSFM*` memory, `NSFQ*` queue, `NSFTR*` trace, `NSFST*`
+  stats, `NSFA*` abend, `NSFX*` xq, plus `NSFNOW`/`NSFTASK` for the time seam).
+  Each header lists its aliases in a comment block. **Never rely on cc370 name
+  truncation.**
+- At every **C↔asm boundary** the asm `CSECT`/`ENTRY` name must equal the C
+  alias character-for-character (`xq_push` `asm("NSFXPUSH")` ⇄ `NSFXPUSH CSECT`),
+  so resolution never depends on the mangling rule.
+- **Reviewer checklist (assembler/C):** a new non-static header function has a
+  unique `asm()` alias; a new or renamed asm CSECT matches its C alias; a green
+  host build is **not** evidence here — confirm no duplicate `PDPPRLG`/`ENTRY`
+  symbols in the `cc370 -S` output (or a clean on-MVS link).
+
 **Contracts**
 - `NSFRQE` (the app↔stack request block) **freezes at the M3 exit gate**.
   Changing it afterwards requires an ADR.
@@ -121,6 +143,9 @@ Violating one is a review-blocking defect, not a style nit.
   `NSFTCP`, `NSFCTCI`, …
 - **Source files:** lowercase — `nsfmm.c`, `nsftcp.c`, `nsfctci.asm`,
   `nsfxq.asm`. One header per component in `include/`.
+- **External C symbols:** every cross-module C function carries a unique 8-char
+  `asm()` alias in its header, and asm CSECT names match that alias — see §3,
+  "External symbols" (cc370 truncates externals to 8 chars).
 - **Message IDs:** `NSFnnns` = `NSF` + 3-digit number + severity
   (`I`/`W`/`E`/`S`), e.g. `NSF001I NSF INITIALIZATION COMPLETE`.
   Number ranges: 000–099 executive · 100–199 memory/buffers · 200–299 devices
@@ -245,7 +270,8 @@ isolated so M0–M4 already deliver a usable in-process stack.
    (or alongside) the implementation. They must stay runnable without MVS.
 3. **Respect the invariants in §3.** Especially: no allocation on hot paths,
    single-owner buffers, one destroy function per object, `NSF_SIZE_ASSERT` on
-   every CB, ESTAE coverage.
+   every CB, ESTAE coverage, and an 8-char `asm()` alias on every cross-module
+   function (asm CSECT names match).
 4. **On-MVS validation** via `make test-mvs` at milestone boundaries and
    before merging anything touching `asm/*.asm`.
 5. **Definition of Done** (§7) must hold, including the leak gate.

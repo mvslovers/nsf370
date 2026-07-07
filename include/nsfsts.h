@@ -38,28 +38,36 @@ NSF_SIZE_ASSERT(STSCTR, 16);
 #define STS_INC(c)      ((c)->value++)
 #define STS_ADD(c, n)   ((c)->value += (UINT)(n))
 
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"): every
+ * cross-module sts_* pins a unique 8-char linker name so cc370's 8-char external
+ * truncation (upcased, '_' -> '@') can never fold two into one on MVS. Scheme
+ * NSFST + verb:
+ *   sts_init NSFSTINI   sts_register NSFSTREG   sts_reset NSFSTRST
+ *   sts_count NSFSTCNT   sts_render NSFSTRND
+ */
+
 /* Zero the registry, stamp the "NSFSTATS" eyecatcher. Safe at earliest init
  * (static storage, no pools) and safe to re-call. */
-void    sts_init(void);
+void    sts_init(void) asm("NSFSTINI");
 
 /* Register a counter for `component` named `name`, returning a stable STSCTR*
  * (value 0). Init-window only. Returns NULL when the registry is full -- the
  * caller reports it; this is never an abend. Both strings are truncated to
  * their fields (component to 8, name to 12). */
-STSCTR *sts_register(const char *component, const char *name);
+STSCTR *sts_register(const char *component, const char *name) asm("NSFSTREG");
 
 /* Zero every registered counter's value; registrations are kept (spec 8.1:
  * "reset via operator command"). */
-void    sts_reset(void);
+void    sts_reset(void) asm("NSFSTRST");
 
 /* Number of counters currently registered. */
-UINT    sts_count(void);
+UINT    sts_count(void) asm("NSFSTCNT");
 
 /* Render "component name value" lines (one per registered counter, in
  * registration order) into buf, NUL-terminating when bufsize > 0. Stops at the
  * last whole line that fits -- never a partial line. Returns the number of
  * bytes written (excluding the terminating NUL). The M0-8 operator DISPLAY
  * STATS hookup calls this; here a plain buffer keeps it trivially testable. */
-UINT    sts_render(char *buf, UINT bufsize);
+UINT    sts_render(char *buf, UINT bufsize) asm("NSFSTRND");
 
 #endif /* NSFSTS_H */

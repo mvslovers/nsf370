@@ -8,10 +8,12 @@
 *    xq_push(XQ *xq, QELEM *e)           -- exit side: prepend e (CS loop)
 *    xq_drain(XQ *xq)  -> QELEM*         -- executive: swap out the chain
 *
-*  The external entry names are the cc370-mangled C names (name uppercased,
-*  '_' -> '@', truncated to 8): xq_init/xq_push/xq_drain become XQ@INIT /
-*  XQ@PUSH / XQ@DRAIN. They must match exactly, or ld370 leaves the call
-*  adcons unresolved.
+*  The external entry names are the explicit asm() aliases pinned on the
+*  xq_* declarations in include/nsfxq.h: xq_init/xq_push/xq_drain resolve to
+*  NSFXINIT / NSFXPUSH / NSFXDRAN. Each CSECT label below MUST match its alias
+*  character-for-character, or ld370 leaves the call adcons unresolved. Pinning
+*  the names this way makes the boundary independent of cc370's 8-char
+*  '_' -> '@' name mangling (see CLAUDE.md §3, "External symbols").
 *
 *  Storage model (matches include/nsfxq.h / include/nsfque.h):
 *    XQ         +0  head            ; QELEM* top of stack (0 = empty)
@@ -40,11 +42,12 @@
 *  on 3.8j.
 *
 *  M0-6 checklist before trusting a live run on 3.8j:
-*   - External-symbol convention: VERIFIED. cc370 mangles a C name by upper-
-*     casing it, mapping '_' -> '@' and truncating to 8, so xq_push compiles
-*     to =V(XQ@PUSH) (confirmed via cc370 -S and a clean ld370 link of TSTXQ);
-*     the CSECT entry names above already match. If a future cc370 changes
-*     this, re-check against a libc370 .s file (or rexx370) and rename.
+*   - External-symbol convention: the C side pins each entry with an explicit
+*     asm() alias in include/nsfxq.h (xq_push -> =V(NSFXPUSH)); the CSECT names
+*     below match those aliases exactly, so resolution no longer depends on
+*     cc370's '_' -> '@' truncation rule -- the rule that silently collided the
+*     buf_* pairs before this convention (see CLAUDE.md §3). Confirm the TSTXQ
+*     link stays clean under the on-MVS build.
 *   - Re-confirm the save-area / epilog register handling on the target: the
 *     STM/LM offsets and the R15-preserving xq_drain epilog, none of which the
 *     host shim exercises.
@@ -65,7 +68,7 @@ R15      EQU   15                      entry / return value
 *---------------------------------------------------------------------*
 *  xq_init(XQ *xq)  --  R2 = &xq->head ; head = 0                      *
 *---------------------------------------------------------------------*
-XQ@INIT  CSECT
+NSFXINIT CSECT
          STM   R14,R12,12(R13)         save caller regs
          BALR  R12,0
          USING *,R12
@@ -79,7 +82,7 @@ XQ@INIT  CSECT
 *  xq_push(XQ *xq, QELEM *e)                                           *
 *     loop: R4 = head ; e->next = head ; CS(head==R4 -> head=e)        *
 *---------------------------------------------------------------------*
-XQ@PUSH  CSECT
+NSFXPUSH CSECT
          STM   R14,R12,12(R13)         save caller regs
          BALR  R12,0
          USING *,R12
@@ -96,7 +99,7 @@ XQPLOOP  L     R4,0(,R2)               R4 = current head
 *  xq_drain(XQ *xq) -> QELEM*                                          *
 *     loop: R4 = head ; CS(head==R4 -> head=0) ; return old head       *
 *---------------------------------------------------------------------*
-XQ@DRAIN CSECT
+NSFXDRAN CSECT
          STM   R14,R12,12(R13)         save caller regs
          BALR  R12,0
          USING *,R12
