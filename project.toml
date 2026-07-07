@@ -12,10 +12,14 @@ cflags = ["-std=gnu99", "-I", "include"]
 # (`make test-host`). NSF_DEBUG=1 turns on the eyecatcher / double-free /
 # leak-gate checks (compiled out of production; see nsfmm.c).
 cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1"]
-# The exit->mainline handoff (spec 4.2) is a CS loop on MVS (asm/nsfxq.asm)
-# and a compiler-atomic on the host (src/nsfxq_host.c). Swap the MVS CSECT for
-# its host shim so an asm-carrying [[test]] still builds and runs natively.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c" }
+# MVS-only CSECTs swapped for their host shims so an asm-carrying [[test]] still
+# builds and runs natively:
+#   nsfxq   -- the exit->mainline handoff (spec 4.2): a CS loop on MVS
+#              (asm/nsfxq.asm), a compiler-atomic on the host (src/nsfxq_host.c).
+#   nsftime -- the platform seam (spec 7.2): STCK + PSATOLD on MVS
+#              (asm/nsftime.asm), gettimeofday + 0 on the host
+#              (src/nsftime_host.c). Shared by NSFTRC now, NSFTMR at M0-5.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -60,6 +64,23 @@ sources = ["test/tstmm.c", "src/nsfmm.c", "src/nsfabend.c"]
 name = "TSTBUF"
 startup = "crt1"
 sources = ["test/tstbuf.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c"]
+
+# -- M0-4 trace + statistics unit tests (NSFTRC / NSFSTS) --------------
+# NSFTRC: flag gating through the TRC macro (suppress / record), over-long
+# text truncation into the 128 B entry, oldest-first ring wrap with correct
+# cursor/count, hexdump formatting, and the NSFTRACE eyecatcher. Links the
+# platform seam (asm/nsftime.asm -> src/nsftime_host.c on the host).
+[[test]]
+name = "TSTTRC"
+startup = "crt1"
+sources = ["test/tsttrc.c", "src/nsftrc.c", "asm/nsftime.asm"]
+
+# NSFSTS: distinct counter registration, STS_INC/STS_ADD, registry overflow,
+# reset-to-zero, and the component+name+value render into a caller buffer.
+[[test]]
+name = "TSTSTS"
+startup = "crt1"
+sources = ["test/tststs.c", "src/nsfsts.c"]
 
 [release]
 version_files = ["VERSION"]
