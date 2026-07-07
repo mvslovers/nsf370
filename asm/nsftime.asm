@@ -7,11 +7,14 @@
 *    nsf_now(NSFTIME *out)   -- store the 64-bit TOD clock into *out (STCK)
 *    nsf_taskid()  -> UINT   -- current TCB address as a numeric id (PSATOLD)
 *
-*  The external entry names are the cc370-mangled C names (name uppercased,
-*  '_' -> '@', truncated to 8, exactly as documented in asm/nsfxq.asm):
-*    nsf_now    -> NSF@NOW
-*    nsf_taskid -> NSF@TASK   (NSF@TASKID truncated to 8 characters)
-*  They must match exactly or ld370 leaves the call adcons unresolved.
+*  The external entry names are the explicit asm() aliases pinned on the
+*  nsf_now / nsf_taskid declarations in include/nsftime.h:
+*    nsf_now    -> NSFNOW
+*    nsf_taskid -> NSFTASK
+*  Each CSECT label below MUST match its alias character-for-character, or
+*  ld370 leaves the call adcons unresolved. Pinning the names makes the
+*  boundary independent of cc370's 8-char '_' -> '@' mangling (see CLAUDE.md
+*  §3, "External symbols", and asm/nsfxq.asm).
 *
 *  Storage model (matches include/nsftime.h):
 *    NSFTIME    +0  hi              ; STCK bits 0-31 of the TOD clock
@@ -27,7 +30,7 @@
 *
 *  STATUS: like asm/nsfxq.asm, this file ASSEMBLES (as370) and LINKS (ld370)
 *  into the TSTTRC test module in the normal cross build (verified at M0-4:
-*  the NSF@NOW / NSF@TASK externals resolve cleanly against the cc370 call
+*  the NSFNOW / NSFTASK externals resolve cleanly against the cc370 call
 *  sites). The host build never uses it (make test-host swaps in
 *  src/nsftime_host.c via the project.toml [host].replace map). What is NOT yet
 *  verified is the RUNTIME behaviour on 3.8j -- STCK actually storing a usable
@@ -35,9 +38,11 @@
 *  the on-MVS suite validates at M0-6 (IFOX00 assembly + a live run).
 *
 *  M0-6 checklist before trusting a live run on 3.8j:
-*   - External-symbol convention: VERIFIED at M0-4 -- cc370 mangles nsf_now ->
-*     NSF@NOW and nsf_taskid -> NSF@TASK, and ld370 links TSTTRC clean. Re-check
-*     against a libc370 .s file only if a future cc370 changes the rule.
+*   - External-symbol convention: the C side pins each entry with an explicit
+*     asm() alias in include/nsftime.h (nsf_now -> =V(NSFNOW)); the CSECT names
+*     below match those aliases exactly, so resolution no longer depends on
+*     cc370's '_' -> '@' truncation rule (see CLAUDE.md §3). Confirm TSTTRC
+*     links clean under the on-MVS build.
 *   - STCK operand: confirm *out is doubleword-addressable and that ignoring
 *     the STCK condition code (clock set / not-set) is acceptable here.
 *   - PSATOLD fetch: confirm PSA+X'21C' is fetch-accessible in the executive
@@ -57,7 +62,7 @@ PSATOLD  EQU   X'21C'                  PSA -> current (old) TCB address
 *---------------------------------------------------------------------*
 *  nsf_now(NSFTIME *out)  --  STCK the 64-bit TOD into *out           *
 *---------------------------------------------------------------------*
-NSF@NOW  CSECT
+NSFNOW   CSECT
          STM   R14,R12,12(R13)         save caller regs
          BALR  R12,0
          USING *,R12
@@ -70,7 +75,7 @@ NSF@NOW  CSECT
 *  nsf_taskid() -> UINT  --  R15 = current TCB address (PSATOLD)       *
 *     Leaf: touches only R15 (the result), so no save area is needed.  *
 *---------------------------------------------------------------------*
-NSF@TASK CSECT
+NSFTASK  CSECT
          L     R15,PSATOLD             R15 = current TCB address (numeric id)
          BR    R14
          END

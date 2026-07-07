@@ -28,10 +28,16 @@ typedef struct queue {
     USHORT maxcount;            /* 0 = unbounded (avoid); else reject-at      */
 } QUEUE;
 
-void    q_init  (QUEUE *q, USHORT maxcount);
-int     q_enq   (QUEUE *q, QELEM *e);   /* 0 = ok; !=0 = full, e rejected    */
-QELEM  *q_deq   (QUEUE *q);             /* NULL when empty                   */
-void    q_remove(QUEUE *q, QELEM *e);   /* unlink e (must currently be in q) */
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"): every
+ * cross-module q_* pins a unique 8-char linker name so cc370's 8-char external
+ * truncation (upcased, '_' -> '@') can never fold two into one on MVS. Scheme
+ * NSFQ + verb:  q_init NSFQINIT   q_enq NSFQENQ   q_deq NSFQDEQ
+ *   q_remove NSFQREMV
+ */
+void    q_init  (QUEUE *q, USHORT maxcount) asm("NSFQINIT");
+int     q_enq   (QUEUE *q, QELEM *e) asm("NSFQENQ");   /* 0 = ok; !=0 = full   */
+QELEM  *q_deq   (QUEUE *q) asm("NSFQDEQ");             /* NULL when empty      */
+void    q_remove(QUEUE *q, QELEM *e) asm("NSFQREMV");  /* unlink e (in q now)  */
 
 #define Q_EMPTY(q)  ((q)->count == 0)
 

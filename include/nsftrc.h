@@ -75,28 +75,38 @@ extern UINT nsftrc_flags;
     do { if (nsftrc_flags & TRCF_##comp) \
              nsftrc_write(TRCF_##comp, (fmt), ##__VA_ARGS__); } while (0)
 
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"): every
+ * cross-module nsftrc_* pins a unique 8-char linker name so cc370's 8-char
+ * external truncation (upcased, '_' -> '@') can never fold two into one on MVS.
+ * Scheme NSFTR + verb:
+ *   nsftrc_init NSFTRINI   nsftrc_enable NSFTRENA   nsftrc_disable NSFTRDIS
+ *   nsftrc_write NSFTRWRT   nsftrc_hexdump NSFTRHEX   nsftrc_count NSFTRCNT
+ *   nsftrc_peek NSFTRPEK   nsftrc_ring_base NSFTRRNG
+ * The trace flag word nsftrc_flags is data, not a function; its mangled name
+ * NSFTRC@F is already unique, so it is intentionally left un-aliased. */
+
 /* Zero the ring, stamp the "NSFTRACE" eyecatcher, and clear all flags. Safe to
  * call at earliest init (static storage, no pools required) and to re-call. */
-void nsftrc_init(void);
+void nsftrc_init(void) asm("NSFTRINI");
 
 /* Set / clear trace flags (an OR / AND-NOT of the mask into nsftrc_flags). */
-void nsftrc_enable(UINT flags);
-void nsftrc_disable(UINT flags);
+void nsftrc_enable(UINT flags) asm("NSFTRENA");
+void nsftrc_disable(UINT flags) asm("NSFTRDIS");
 
 /* Append one formatted entry to the ring, oldest-overwritten. vsnprintf
  * truncates the text to fit the 112-byte field (always NUL-terminated). Does
  * NOT test nsftrc_flags -- the TRC macro is the gate; a direct caller has
  * already decided to trace. */
-void nsftrc_write(UINT flag, const char *fmt, ...) NSFTRC_PRINTF(2, 3);
+void nsftrc_write(UINT flag, const char *fmt, ...) asm("NSFTRWRT") NSFTRC_PRINTF(2, 3);
 
 /* Format a hex + printable-character dump of len bytes at p into ring entries
  * (16 bytes/line), preceded by a `tag (len bytes)` header line. Self-gated on
  * `flag` (there is no macro wrapper), so a disabled dump costs one flag test. */
-void nsftrc_hexdump(UINT flag, const char *tag, const void *p, USHORT len);
+void nsftrc_hexdump(UINT flag, const char *tag, const void *p, USHORT len) asm("NSFTRHEX");
 
 /* Inspection, reused by the operator DISPLAY dump at M0-8 (and the tests). */
-UINT          nsftrc_count(void);       /* live entries, saturates at ENTRIES */
-const TRCENT *nsftrc_peek(UINT i);      /* i == 0 is oldest; NULL if i>=count */
-const void   *nsftrc_ring_base(void);   /* dump anchor; first 8 B == NSFTRACE  */
+UINT          nsftrc_count(void) asm("NSFTRCNT");      /* live entries, saturates */
+const TRCENT *nsftrc_peek(UINT i) asm("NSFTRPEK");     /* i==0 oldest; NULL if >= */
+const void   *nsftrc_ring_base(void) asm("NSFTRRNG");  /* dump anchor; 8 B eyecat */
 
 #endif /* NSFTRC_H */

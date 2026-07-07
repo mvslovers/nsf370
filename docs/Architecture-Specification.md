@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.5 — Draft for implementation. Companion document to the frozen
+*Version 1.6 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1443,6 +1443,21 @@ orchestrator and recorded its impact on repository shape (`project.toml`,
 `.env`) and the test model (host Level 0/1 outside MBT for CI; MBT-driven
 Level 2–4 on a live MVS). Added §1.6 Build Toolchain & Environment,
 ADR-0013, and updated §16.1/§16.2 and work package M0-1 accordingly.
+
+**v1.6:** External-symbol alias convention (build-linkage correctness, no
+behaviour change). cc370/ld370 truncate external names to 8 characters (upcased,
+`_` → `@`), which had silently collided three `nsfbuf` pairs (`BUF@TRIM`,
+`BUF@COPY`, `BUF@CHAI`) and `nsf_abend`/`nsf_abend_sethook` (`NSF@ABEN`) into one
+symbol each — an MVS-only wrong-function dispatch that host tests (no 8-char
+limit) cannot see. Every cross-module NSF C function now pins a unique 8-char
+`asm()` alias in its header (per-component scheme
+`NSFB*`/`NSFM*`/`NSFQ*`/`NSFTR*`/`NSFST*`/`NSFA*`/`NSFX*`, plus `NSFNOW`/
+`NSFTASK` for the time seam); the C↔asm boundary CSECTs in `asm/nsfxq.asm` and
+`asm/nsftime.asm` are renamed to match their aliases
+(`NSFXINIT`/`NSFXPUSH`/`NSFXDRAN`, `NSFNOW`/`NSFTASK`), replacing reliance on
+cc370's `@`-mangling. Recorded as a §3 invariant ("External symbols") with an
+assembler/C reviewer checklist; no ADR (a build-mechanics convention, not a
+design decision), and no control-block, size, or milestone-contract change.
 
 **v1.5:** M0-4 (NSFTRC + NSFSTS) implementation notes folded into §7.2/§8.2,
 plus a new shared platform seam. NSFTRC: the §7.2 interface gains

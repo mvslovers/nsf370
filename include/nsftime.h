@@ -37,11 +37,19 @@ typedef struct nsftime {
 } NSFTIME;
 NSF_SIZE_ASSERT(NSFTIME, 8);
 
+/* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"). These
+ * two are the C<->asm seam: the alias here MUST be character-identical to the
+ * CSECT label in asm/nsftime.asm (host builds use src/nsftime_host.c, which
+ * inherits the same alias transparently). Pinning the name makes the boundary
+ * independent of cc370's 8-char '_' -> '@' mangling:
+ *   nsf_now NSFNOW   nsf_taskid NSFTASK
+ */
+
 /* Fill *out with the current timestamp. Never fails; cannot allocate or WAIT
  * (it is on trace and, later, timer hot paths). */
-void nsf_now(NSFTIME *out);
+void nsf_now(NSFTIME *out) asm("NSFNOW");
 
 /* Numeric id of the running task (see the file header). */
-UINT nsf_taskid(void);
+UINT nsf_taskid(void) asm("NSFTASK");
 
 #endif /* NSFTIME_H */
