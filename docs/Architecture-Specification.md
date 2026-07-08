@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.7 — Draft for implementation. Companion document to the frozen
+*Version 1.8 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1474,6 +1474,23 @@ orchestrator and recorded its impact on repository shape (`project.toml`,
 `.env`) and the test model (host Level 0/1 outside MBT for CI; MBT-driven
 Level 2–4 on a live MVS). Added §1.6 Build Toolchain & Environment,
 ADR-0013, and updated §16.1/§16.2 and work package M0-1 accordingly.
+
+**v1.8:** Issue #8 fixed and the ADR-0011 gate frozen. The hand-rolled
+C-callable HLASM seams (`asm/nsftime.asm`, `asm/nsfxq.asm`, and the C-callable
+entries of `asm/nsfstim.asm`, plus `test/asm/tststmw.asm`) are rebuilt on the
+**standard cc370 entry convention** — `COPY MVSMACS` + `COPY PDPTOP`, `FUNHEAD`
+prologue / `FUNEXIT` epilogue, modeled on libc370 `@@getclk.asm`. Hand-rolled
+`STM`/`BALR`/`USING` seams omitted the `ENTRY` / name eyecatcher / `LR R12,R15`
+base the cc370 C-runtime path (`@@CRTGET`) relies on and ABENDed the next C call
+on MVS (S0C6) — a general mainline-runtime blocker (issue #8), proven by staged
+isolation and now a documented invariant (§3, "C-callable HLASM"). The async
+`STIMER`-exit `NSFTMEXP` stays hand-rolled (OS-invoked, not a C callee) and
+deferred to M0-6. `nsftime` graduates to **runtime-validated** (stage-2 isolation
+`nsf_now` + `nsf_taskid` = CC 0; PSATOLD fetch proven); `nsfxq`/`nsfstim` keep
+deferred-runtime status (entry convention fixed only). **ADR-0011 is now FROZEN:**
+the on-MVS accuracy job measured mean 100.1/100.2 ms, min/max 100 ms, jitter 0 ms
+over N=100 — both criteria pass. Preserved: PR #7 aliases, the #5 RS-format `D(B)`
+rule, the S102 explicit-displacement addressing, and the column-71 rule.
 
 **v1.7:** M0-5 (NSFTMR) implementation notes folded into §6, plus a corrected
 timer-driver decision. NSFTMR: the §6.3 interface gains `nsftmr_init` and the
