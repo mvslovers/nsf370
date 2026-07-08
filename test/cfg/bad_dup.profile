@@ -1,0 +1,4 @@
+; duplicate-name corpus: two DEVICEs named CTCA.
+HOME 10.0.0.1 LNK0
+DEVICE CTCA CTC 0E20
+DEVICE CTCA CTC 0E21

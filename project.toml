@@ -132,5 +132,18 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
 
+# -- M0-7 configuration parser (NSFCFG) --------------------------------
+# NSFCFG: the PROFILE.TCPIP parser + immutable NSFCFG output struct, driven
+# against the test/cfg/ corpus (valid + one broken profile per error class) via
+# cfg_load (which also exercises the fopen/fread wrapper). Every statement type
+# parses to the expected values; each broken profile asserts rejection with the
+# NSF7xx code AND the exact 1-based line; plus dotted-decimal edge cases and
+# charset-transparent (code-page-independent) case folding. Pure portable C --
+# no asm, no MVS services -- so it runs host + MVS unchanged.
+[[test]]
+name = "TSTCFG"
+startup = "crt1"
+sources = ["test/tstcfg.c", "src/nsfcfg.c"]
+
 [release]
 version_files = ["VERSION"]
