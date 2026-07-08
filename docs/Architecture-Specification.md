@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.9 — Draft for implementation. Companion document to the frozen
+*Version 1.10 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1169,6 +1169,72 @@ A single immutable `NSFCFG` structure consumed by component inits.
 Read-only after init — no locking, no reload in v1 (operator VARY is a
 Phase 2+ feature).
 
+### 14.4 Interface & Structure (M0-7)
+
+Two public functions (`include/nsfcfg.h`), each with an 8-char `asm()` alias
+(scheme `NSFCF*`; every parser helper is `static`):
+
+```c
+INT cfg_parse(const char *buf, UINT len, NSFCFG *out) asm("NSFCFPRS");
+INT cfg_load (const char *name,          NSFCFG *out) asm("NSFCFLDR");
+```
+
+- `cfg_parse` is **pure C** over a caller-supplied text buffer — no I/O, fully
+  host-testable, charset-transparent. Returns `0` on success or the `NSF7xx`
+  code on failure.
+- `cfg_load` is a thin wrapper: `fopen`/`fread` `name` (a host path, or an MVS
+  DDNAME / `'DSN(MEMBER)'` spec understood by libc370's `fopen`) into a
+  file-scope init-window buffer (`NSFCFG_FILE_MAX`, 4 KB — chosen over a large
+  stack frame on the executive task), then `cfg_parse`. The MVS PDS text-mode
+  line handling is a libc370 concern assumed here; it is exercised on-MVS at
+  M0-8, not host-verified.
+
+`NSFCFG` is one fixed-size, pointer-free struct (**1160 B**, host size == target
+size): bounded arrays (`NSFCFG_MAX_DEVICES/LINKS/HOMES/GATEWAYS/PORTS/POOLS/
+TRACES`) of the per-statement records, the `TCPCONFIG`/`UDPCONFIG` scalars, an
+embedded `NSFCFGERR` report, and an `eye` eyecatcher (`"NSFCFG  "`). Every
+record carries a `NSF_SIZE_ASSERT`. IPv4 values are stored MSB-first
+(`10.1.2.3` → `0x0A010203`) for direct use as a 32-bit network address.
+
+### 14.5 Validation Contract (M0-7)
+
+All-or-nothing (goal 8, spec 14.1): the parser validates the whole member and
+rejects on **any** error, rendering an `NSF7xxE` message with the **1-based
+line number** into `out->err` (line `0` for a whole-config error such as a
+missing `HOME`). The eyecatcher is stamped **only** on success, as the last
+act — so "eyecatcher present" ⇔ "fully valid config" and no partial config
+survives a rejection. Error codes: `700` syntax · `701` bad IPv4 · `702` bad
+mask · `703` bad cuu · `704` value out of range · `705` duplicate · `706`
+too-many (array overflow) · `707` missing required · `708` unknown statement ·
+`709` unknown keyword · `710` member too large · `711` open failed. An unknown
+**keyword** inside a known statement is an error (`709`, no silent default
+covering a typo); an unknown **statement** is an error (`708`) **unless** it is
+on the explicit ignorable list (`TRANSLATE`, `DATASETPREFIX`, `ARPAGE`,
+`INFORM` — recognized but not consumed in v1), in which case it is a counted
+warning (`NSFCFG.nwarn`) and parsing continues. `HOME` is the one required
+statement in v1.
+
+**Charset transparency (spec 15.3, load-bearing).** The parser compares
+character and string *literals* only (`'.'`, `';'`, `"DEVICE"`, …) and folds
+case block-wise over the sub-ranges contiguous on **both** EBCDIC and ASCII
+(`0-9`; `A-I`/`a-i`, hence `A-F`/`a-f` for hex; `J-R`/`j-r`; `S-Z`/`s-z`). It
+never hardcodes a byte value and never assumes full-alphabet collation, so the
+identical source parses the ASCII host corpus and a real EBCDIC PDS member.
+
+**Deferred to M0-8 (the first consumer), not the parser.** Cross-statement
+referential integrity — a `LINK` naming a defined `DEVICE`, a `HOME`/`GATEWAY`
+naming a defined `LINK` — is deliberately not validated here: spec 14.2 is
+silent on the ordering/reference rules such a check would require, so it belongs
+to the M0-8 startup (feeding pool sizes to NSFMM/NSFBUF, trace flags to NSFTRC,
+the interface/routing tables to NSFDEV/NSFIP) or a future ADR. `TCPCONFIG` v1
+handles `RECVBUFRSIZE`/`SENDBUFRSIZE`; `KEEPALIVEOPTIONS` (a block form) is
+deferred and until implemented is rejected as an unknown keyword.
+
+Host-tested by `test/tstcfg.c` against `test/cfg/` (4 valid profiles exercising
+every statement type + cosmetics/ignorable handling, 10 broken profiles — one
+error class each, asserting the code and the exact line — plus inline
+dotted-decimal edge cases): TSTCFG 111/111.
+
 ---
 
 ## 15 — EZASOKET API (NSFEZA)
@@ -1361,7 +1427,7 @@ week-equivalent), L (multi-week-equivalent).
 | M0-4 | NSFTRC (ring + macros) and NSFSTS (registry); shared `nsftime` seam (`nsf_now`/`nsf_taskid`, ADR-0016). **Done.** | S |
 | M0-5 | NSFTMR + host tests; **MVS timer-accuracy job (gate for ADR-0011)** | M |
 | M0-6 | NSFEVT main loop + xq exit handoff (host: pthread-simulated exit) | M |
-| M0-7 | NSFCFG parser + profile corpus tests | M |
+| M0-7 | NSFCFG parser + profile corpus tests. **Done** (§14.4/14.5; TSTCFG 111/111). | M |
 | M0-8 | MVS STC skeleton: init → loop → MODIFY DISPLAY/TRACE/STATS/STOP → clean shutdown; ESTAE established; WTO messages NSF001I… | M |
 
 **Exit gate:** STC starts on TK5, answers `F NSF,DISPLAY,STATS`, stops
@@ -1457,6 +1523,24 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.10:** M0-7 (NSFCFG configuration parser) implemented and host-validated.
+§14 gains the concrete interface and contract: the two public functions
+`cfg_parse` (pure C over a buffer) / `cfg_load` (fopen/fread wrapper), the
+immutable fixed-size **1160 B** `NSFCFG` output struct (bounded per-statement
+arrays with `NSF_SIZE_ASSERT`s, MSB-first IPv4 encoding, embedded `NSFCFGERR`),
+and the all-or-nothing validation contract (§14.5): reject on any error with an
+`NSF7xxE` message + 1-based line number, no partial config (eyecatcher stamped
+only on success), the `700–711` code set, unknown-keyword-vs-unknown-statement
+handling, the explicit ignorable list (warn + continue), and `HOME` as the one
+required statement. Records the **charset-transparency** mechanism (literal-only
+comparison + block-wise EBCDIC/ASCII-safe case fold, no hardcoded byte values —
+spec 15.3) that lets the same source parse the ASCII host corpus and an EBCDIC
+PDS member. Cross-statement referential integrity and `TCPCONFIG
+KEEPALIVEOPTIONS` are explicitly **deferred to M0-8** / a future ADR (spec 14.2
+is silent on the rules they need). No new ADR (sits under existing goals 1/6/8);
+no control-block-size or milestone-contract change elsewhere. TSTCFG 111/111
+over a 14-file `test/cfg/` corpus; 354/354 host suite; §19 M0-7 marked **Done**.
 
 **v1.0:** Initial Architecture Specification, created per the v2
 architecture review's recommendation to freeze the Project Brief and
