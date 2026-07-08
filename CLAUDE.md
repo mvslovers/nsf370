@@ -130,6 +130,29 @@ Violating one is a review-blocking defect, not a style nit.
   host build is **not** evidence here — confirm no duplicate `PDPPRLG`/`ENTRY`
   symbols in the `cc370 -S` output (or a clean on-MVS link).
 
+**C-callable HLASM (entry convention)**
+- Every C-callable HLASM routine is built the **standard cc370 way** — `COPY
+  MVSMACS` + `COPY PDPTOP`, `FUNHEAD` prologue, `FUNEXIT` epilogue (`FUNEXIT
+  RC=(Rn)` when it returns a value in R15) — modeled on libc370
+  `asm/@@getclk.asm`. **Never hand-roll `STM`/`BALR`/`USING`:** a hand-rolled
+  seam omits the `ENTRY` / name eyecatcher / `LR R12,R15` base the cc370
+  C-runtime path (`@@CRTGET`) relies on, and ABENDs the *next* C library call on
+  MVS (S0C6) while it links and host-tests perfectly clean — a general
+  mainline-runtime blocker (issue #8, proven by staged isolation).
+- The `FUNHEAD` entry name IS the 8-char `asm()` alias, character for character.
+  Address static data by **explicit displacement** `LABEL-entry(,R12)` (or a
+  register), never a bare-label `USING` (as370 drops those to base 0 — the S102
+  class). Keep `CS`/`LM` (RS-format) operands `D(B)`, never `D(,B)` (#5). Keep
+  every statement inside **column 71** (as370 reads column 72 as a continuation
+  flag and silently merges the next line).
+- **Exception:** a routine the OS invokes as an *exit* (not called from C) is not
+  a C callee and does not get `FUNHEAD` — e.g. `NSFTMEXP`, the STIMER exit.
+- **Reviewer checklist (assembler):** a new C-callable routine uses
+  `FUNHEAD`/`FUNEXIT`, not hand-rolled; its entry name matches its `asm()` alias;
+  data addressed by explicit displacement; `CS`/`LM` stay `D(B)`; nothing past
+  column 71. A green host build and a clean link are **not** evidence — this
+  failure is MVS-runtime only (issue #8).
+
 **Contracts**
 - `NSFRQE` (the app↔stack request block) **freezes at the M3 exit gate**.
   Changing it afterwards requires an ADR.
@@ -248,7 +271,7 @@ quiesce) + spec/ADRs updated.
 
 | MS | Scope | Exit gate | Status |
 |----|-------|-----------|--------|
-| **M0** | Foundation: MM, buffers, queues, timers, event loop, trace, stats, config, STC skeleton + ESTAE | `F NSF,DISPLAY,STATS` answers; clean stop, pools at baseline; CI green | 🔨 **In progress** — M0-1 done (skeleton); M0-2 done (NSFQUE + NSFMM + nsf_abend); M0-3 done (NSFBUF: PBUF, headroom, chains, two-pool leak gate); M0-4 done (NSFTRC ring + NSFSTS registry + shared `nsftime` seam `nsf_now`/`nsf_taskid`, ADR-0016; TSTTRC 23/23, TSTSTS 23/23 host-green); M0-5 code done (NSFTMR sorted delta queue + `nsfstim` STIMER seam; TSTTMR 43/43 host-green, 226/226 suite; ADR-0011 corrected **STIMERM→STIMER** for 3.8j; S102 seam bug fixed) — **but a live `make test-mvs` staged isolation found a GENERAL MAINLINE-RUNTIME BLOCKER, now M0-6 PREREQUISITE [issue #8]:** stage 1 printf-only = CC 0 (baseline OK), stage 2 +`nsf_now` = ABEND S0C6 in the cc370 C-runtime call path (`CLIBCRT`), stage 3 +STIMER = S0C4 (moot). Linking `asm/nsftime.asm` breaks mainline C on MVS (STCK itself runs) — affects NSFTRC too and M0-6's NSFEVT. **This is NOT a deferred accuracy gate**: ADR-0011 stays UNFROZEN, blocked on #8; the NSFTMR async-exit validation is a separate M0-6 item. Fix #8 before M0-6; M0-6 (NSFEVT main loop) next |
+| **M0** | Foundation: MM, buffers, queues, timers, event loop, trace, stats, config, STC skeleton + ESTAE | `F NSF,DISPLAY,STATS` answers; clean stop, pools at baseline; CI green | 🔨 **In progress** — M0-1 done (skeleton); M0-2 done (NSFQUE + NSFMM + nsf_abend); M0-3 done (NSFBUF: PBUF, headroom, chains, two-pool leak gate); M0-4 done (NSFTRC ring + NSFSTS registry + shared `nsftime` seam `nsf_now`/`nsf_taskid`, ADR-0016; TSTTRC 23/23, TSTSTS 23/23 host-green); M0-5 **done** (NSFTMR sorted delta queue + `nsfstim` STIMER seam; TSTTMR 43/43 host-green, 226/226 suite; ADR-0011 corrected **STIMERM→STIMER**; S102 seam bug fixed). **Issue #8 FIXED:** the hand-rolled C-callable HLASM seams (`nsftime`/`nsfxq`/`nsfstim`) are rebuilt on the standard cc370 entry convention (COPY MVSMACS + PDPTOP, FUNHEAD/FUNEXIT, per `@@getclk.asm`) — hand-rolled `STM/BALR/USING` was breaking the cc370 C-runtime (`@@CRTGET`, S0C6). Stage-2 isolation now **CC 0** (nsf_now + nsf_taskid, PSATOLD proven); `nsftime` VALIDATED. **ADR-0011 gate MET and FROZEN:** accuracy job on MVS = mean 100.1/100.2 ms, min/max 100 ms, jitter 0 ms (both criteria pass). `nsfxq`/`nsfstim` keep deferred-runtime status for M0-6 (entry convention fixed; xq handoff + async STIMER exit validated at M0-6). M0-6 (NSFEVT main loop) next |
 | **M1** | CTCI driver (HLASM top / C bottom) + NSFDEV + NSFHOST | ping → hexdump in trace; crafted packet seen in host `tcpdump` | ☐ Planned |
 | **M2** | IPv4 in/out + routing + ICMP echo/errors + checksum | `ping <mvs-ip>` sustained, 0 loss on loopback link | ☐ Planned |
 | **M3** | Sockets + NSFRQE + UDP + EZASOKET (M3 set) | UDP echo via EZASOKET from host; leak-free. **`NSFRQE` freezes here.** | ☐ Planned |

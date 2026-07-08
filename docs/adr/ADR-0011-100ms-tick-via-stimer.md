@@ -1,6 +1,7 @@
 # ADR-0011 — 100 ms timer tick via a single re-armed STIMER
 
-**Status:** Accepted (2026-07-07); split out and corrected at M0-5.
+**Status:** Accepted (2026-07-07); split out and corrected at M0-5; gate
+MEASURED and **FROZEN** at M0-5 (after fixing issue #8).
 **Supersedes:** the `STIMERM` phrasing in Architecture Specification §6 / §18,
 ADR-0016 (consequences), and Project Brief v2 (§ timer services).
 
@@ -43,10 +44,10 @@ by `nsftmr_run`.**
   `src/nsfstim_host.c` (no-op, records arms for tests) on the host, swapped by
   `project.toml` `[host].replace` — the NSFXQ / NSFTIME pattern (ADR-0016).
 
-## Gate (must MEASURE before freeze)
+## Gate — MEASURED, PASSED, FROZEN
 
-`STIMER` accuracy under Hercules is an empirical question, so ADR-0011 is **not
-frozen** until the on-MVS timer-accuracy job measures it:
+`STIMER` accuracy under Hercules is an empirical question, so ADR-0011 was **not
+frozen** until the on-MVS timer-accuracy job measured it:
 
 - `test/mvs/tsttmacc.c` (`host = false`) times the STIMER **timebase** with a
   task-synchronous `STIMER WAIT` (`test/asm/tststmw.asm`): arm 100 ms ≥ 100
@@ -55,31 +56,27 @@ frozen** until the on-MVS timer-accuracy job measures it:
   `STIMER REAL` / `STIMERM`, so it validates the tick's accuracy; the async
   exit-dispatch path is characterized separately at M0-6.
 - **PASS:** mean ∈ [90, 110] ms **and** no single interval > 200 ms (so the
-  200 ms delayed ACK and ≥ 1 s RTO never fire early). On failure it prints the
-  full distribution — never a silent pass — so the tick can be revisited.
+  200 ms delayed ACK and ≥ 1 s RTO never fire early).
 
-**Status of the gate (M0-5): NOT measured — blocked by a runtime prerequisite,
-not a clean deferral.** The job builds and cross-links; live `make test-mvs` runs
-surfaced (and we fixed) a real seam bug — `asm/nsfstim.asm` addressed its ECB at
-base 0 → ABEND S102 — but the run still ABENDed in the cc370 C-runtime call path.
-A **staged isolation on MVS** then localized the cause and it is **not the timer**:
+**Measured result (M0-5, `make test-mvs`, N = 100):**
 
-| Stage | Contents | Result |
-|---|---|---|
-| 1 | `printf` only (~TSTSMOKE) | BATCH + TSO **CC 0** |
-| 2 | + `nsf_now` (links `asm/nsftime.asm`) | **ABEND S0C6** (cc370 C-runtime path, `CLIBCRT`) |
-| 3 | + `STIMER WAIT` | ABEND S0C4 (moot — stage 2 already fails) |
+| Leg | mean | min | max | jitter |
+|---|---|---|---|---|
+| batch | 100.1 ms | 100 ms | 100 ms | 0 ms |
+| TSO | 100.2 ms | 100 ms | 100 ms | 0 ms |
 
-Merely linking `asm/nsftime.asm` (which `nsf_now` — and therefore this job —
-depends on) breaks mainline C on MVS; `nsf_now`'s STCK itself executes fine. That
-is a **general mainline-runtime blocker**, tracked as **issue #8** and a
-**prerequisite for M0-6** (NSFEVT is mainline C on MVS; NSFTRC is affected too).
+Both criteria pass with large margin, so **ADR-0011 is FROZEN**: the 100 ms tick
+via a single re-armed `STIMER` is validated on 3.8j / Hercules.
 
-So the accuracy gate is **not "deferred"** — it is **blocked on issue #8**. Once
-#8 is fixed, run `make test-mvs` on `test/mvs/tsttmacc.c` to obtain the
-distribution; only then may this ADR be frozen. The async `STIMER`-exit dispatch
-validation (`asm/nsfstim.asm`) is a separate M0-6 item that could not be reached
-past #8.
+**Getting here required fixing issue #8 first.** Early runs ABENDed — first a real
+seam bug (`asm/nsfstim.asm` addressed its ECB at base 0 → S102, fixed), then a
+mainline C-runtime ABEND (S0C6). A staged isolation localized #8: the hand-rolled
+C-callable HLASM seams (`STM`/`BALR`/`USING`) omitted the standard cc370 entry
+convention and broke the C-runtime path (`@@CRTGET`). Rebuilding them on
+`FUNHEAD`/`FUNEXIT` (COPY MVSMACS + PDPTOP, per `@@getclk.asm`) fixed it: the
+stage-2 isolation (`nsf_now` + `nsf_taskid`) now returns CC 0, and this job runs.
+The async `STIMER`-exit dispatch (`asm/nsfstim.asm` `NSFTMEXP`) is still validated
+at M0-6.
 
 ## Consequences
 
