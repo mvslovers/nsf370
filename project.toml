@@ -26,7 +26,13 @@ cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1", "-pthread"]
 #   nsfevt_plat -- the NSFEVT WAIT/POST seam (spec 5.3): libc370 ecb_waitlist
 #              (WAIT ECBLIST) on MVS (src/nsfevt_plat.c), a pthread cond-var on
 #              the host (src/nsfevt_plat_host.c) so the loop blocks + wakes.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c" }
+#   nsfmsg_plat -- the WTO emit seam (M0-8): libc370 wto() on MVS
+#              (src/nsfmsg_plat.c), a capture ring + stdout on the host
+#              (src/nsfmsg_host.c) so a test can read back operator output.
+#   nsfopr_plat -- the operator CIB/QEDIT seam (M0-8): EXTRACT COMM + QEDIT on
+#              MVS (src/nsfopr_plat.c), an injectable command queue on the host
+#              (src/nsfopr_plat_host.c) so the loop test drives the whole path.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -144,6 +150,56 @@ sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm
 name = "TSTCFG"
 startup = "crt1"
 sources = ["test/tstcfg.c", "src/nsfcfg.c"]
+
+# -- M0-8 operator dispatcher + startup sequencing (NSFOPR / NSFSTC) -----
+# NSFOPR: the portable MODIFY command dispatcher (DISPLAY/STATS/TRACE/STOP/HELP)
+# and the operator path THROUGH the real loop -- the host CIB seam
+# (src/nsfopr_plat.c -> src/nsfopr_plat_host.c) + WTO seam (src/nsfmsg_plat.c ->
+# src/nsfmsg_host.c) are swapped by [host].replace, so a test injects a command,
+# posts the console ECB, and asserts evt_mainloop drained + dispatched + shut
+# down clean. Pulls the executive + foundation it drives.
+[[test]]
+name = "TSTOPR"
+startup = "crt1"
+sources = ["test/tstopr.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfstc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# NSFSTC: the NSFCFG->component-init wiring -- trace-flag mapping, NSFPOOL count
+# resolution, cross-statement referential integrity (spec 14.5), and
+# nsf_init_from_cfg's success (pools created, leak gate) + refuse-to-start
+# failure path (no partial state). Pure portable C over real cfg_parse output.
+[[test]]
+name = "TSTSTC"
+startup = "crt1"
+sources = ["test/tststc.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsftrc.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c", "asm/nsftime.asm", "asm/nsfstim.asm"]
+
+# NSFSTC on-MVS component validation (host = false): parse an embedded profile,
+# wire it into the component inits on real 3.8j (EBCDIC PDS-independent path,
+# real mm_pool_create), allocate + free a buffer, and prove the leak gate + the
+# ESTAE establish/delete both link and run on MVS. The full S NSF / F NSF,* /
+# P NSF / induced-ABEND-percolate flow is the PROC-driven operator validation
+# (jcl/NSFPROC.jcl), which a batch RC test cannot observe.
+[[test]]
+name = "TSTSTCM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tststcm.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M0-8 the NSF started task (first production load module) ------------
+# The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
+# under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
+# MVS-only (uses the console/ESTAE seams), so it is not in any host [[test]].
+# The MVS-side seams (asm/*, *_plat) link as-is here (no [host].replace on a
+# module build). Deployed via jcl/NSFPROC.jcl (S NSF).
+[[module]]
+name = "NSF"
+startup = "crt1"
+sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# `make deploy` target load library. Matches the ecosystem convention
+# (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB
+# default, so the STC PROC's STEPLIB (jcl/NSFPROC.jcl) references a stable DSN.
+[deploy]
+target = "NSF.LINKLIB"
 
 [release]
 version_files = ["VERSION"]

@@ -589,6 +589,16 @@ Handler rules (binding):
   with a drain budget (default 64 events) after which the loop re-WAITs
   with the ECBs re-checked, so a flood cannot starve timers.
 
+Operator wiring (M0-8). The `cibECB` slot is filled by `evt_set_operator(ecb,
+drain)`: the console ECB (EXTRACT COMM) joins the ECBLIST, and the loop calls the
+operator `drain` **once per pass, unconditionally — not gated on the ECB bit**.
+MVS can queue the startup CIB (CIBSTART) *without* POSTing the ECB; gating the
+drain on the bit would hold the single CIB slot and reject every later MODIFY
+with `IEE342I TASK BUSY`. The drain walks the CIB chain, dispatches each
+(`CIBSTOP`→`EV_SHUTDOWN`; `CIBMODFY` text→`nsfopr_dispatch`), and QEDITs it. The
+CIB/QEDIT and WTO seams reuse libc370 (`__gtcom`/`__cibget`/`__cibdel`, `wto`) —
+ADR-0018.
+
 ### 5.4 Shutdown Sequence
 
 `P NSF` / `MODIFY NSF,STOP` → EV_SHUTDOWN →
@@ -598,6 +608,13 @@ Handler rules (binding):
 4. cancel timers, 5. dump final statistics, 6. `mm_shutdown()`, 7. return.
 
 Every step has a timeout; a hung device cannot hang the shutdown (Goal 8).
+
+M0-8 realizes steps 4/5/6/7 (`nsftmr` disarm → free pending events → `mm_shutdown`
+→ return; steps 1–3 are stubs until NSFRQE/sockets/devices exist). None of the
+realized steps performs an unbounded wait, so there is nothing to time out yet;
+the **per-step timeout framework lands with M1 device quiesce** (step 3, the only
+step that waits on outstanding EXCPs) — that is where "a hung device cannot hang
+shutdown" becomes load-bearing.
 
 ---
 
@@ -1355,9 +1372,17 @@ Two build rules, both enforced in review:
 
 ### 17.1 ESTAE Coverage
 
-- The executive task establishes an ESTAE at init (`nsfestae.asm`).
-  On ABEND: capture ring-buffer trace + pool stats into the dump, attempt
-  orderly device quiesce (halt outstanding EXCPs), free pools, percolate.
+- The executive task establishes an ESTAE at init via **libc370 `__estae`**
+  with a **C recovery function `nsf_recover`** (M0-8, ADR-0018 — not a
+  hand-rolled `asm/nsfestae.asm`: a raw asm→C recovery bridge re-implements
+  `@@estae`'s C-environment setup and is the issue-#8 failure class).
+  On ABEND `nsf_recover`: WTO a marker, capture is implicit (the trace ring
+  "NSFTRACE", the stats registry "NSFSTATS" and every pool header carry
+  eyecatchers and are already in the dump — §17.2), call the **same** teardown
+  the orderly path uses (`nsf_shutdown`: disarm the timer exit, free pool
+  regions; M1+ adds device quiesce), then **percolate** (`SDWARCDE = SDWACWT`).
+  The ESTAE is deleted **first** in shutdown so a teardown fault cannot re-enter
+  recovery.
 - Phase 1 in-process builds establish ESTAE around the stack subtask so an
   application failure and a stack failure cannot take each other down
   undiagnosed.
@@ -1407,6 +1432,8 @@ normative until the files exist.
 | **0014** | Build model & repo layout follow MBT V2 conventions | Building the M0-1 skeleton against the real ecosystem repos showed v1.1's §1.6/§16.2 assumptions were wrong. MBT V2 drives **both** builds — the host build is a first-class target (`make test-host` + a `[host]` table with a `replace` map for MVS-only CSECTs), **not** a separate `host.mk`. Layout is **flat** (`src/*.c`, `asm/*.asm`), not grouped by layer. `libc370` is the cc370 sysroot, not a `[dependencies]` entry. Real targets are `deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs` — no `bootstrap`/`build`/`link`. Supersedes §1.6 and §16.1/§16.2/§16.3, corrected inline in this version. Full record: `docs/adr/ADR-0014-build-model-and-repo-layout.md`. |
 | **0015** | NSFMM pool regions via libc370 `malloc`, not a raw GETMAIN SVC | The one region-per-pool acquisition (§2.3) uses libc370 `malloc`/`free` from portable C. On 24-bit MVS 3.8j that resolves to `GETMAIN` below the 16 MB line, released at `mm_shutdown` — realizing §2.3's intent while keeping NSFMM pure C (no assembler region helper). Load-bearing consequence: do not "restore" a raw GETMAIN SVC believing §2.3 mandates one. Full record: `docs/adr/ADR-0015-region-acquisition-via-libc370-malloc.md`. |
 | **0016** | Shared platform seam `nsftime` (`nsf_now` + `nsf_taskid`) | The two platform facts NSF asks the machine for — a monotonic timestamp and the current task id — live behind one C-callable seam (`include/nsftime.h`): MVS `STCK` + `PSATOLD` in `asm/nsftime.asm`, `gettimeofday` + `0` in `src/nsftime_host.c`, swapped by the `[host].replace` map (the NSFXQ pattern). `nsf_now` is **not** trace-private: NSFTMR reuses it at M0-5. The value's epoch/scale is platform-specific (STCK TOD vs host wall clock), so callers order/relative-time with it but never assume a shared tick unit or wall-clock meaning. First consumer: NSFTRC (§7.2). Full record: `docs/adr/ADR-0016-shared-platform-time-and-task-seam.md`. |
+| **0017** | Timer wakeup via the async STIMER REAL exit (not a subtask) | The 100 ms heartbeat that wakes the loop is a `STIMER REAL` **exit** (`NSFTMEXP`) that POSTs the timer ECB and re-arms — one task, no ATTACH, and the *same* async-exit convention M1 device I/O exits reuse. OS-invoked, so no `FUNHEAD`; built to the documented MVS 3.8 STIMER-exit linkage (a hand-rolled shortcut caused an S0C6). Runtime-validated on 3.8j at M0-6. Full record: `docs/adr/ADR-0017-timer-wakeup-async-stimer-exit.md`. |
+| **0018** | Operator / WTO / ESTAE reuse libc370 seams (no hand-rolled asm) | M0-8's three MVS surfaces — CIB/QEDIT operator commands, WTO, and ESTAE recovery — reuse the proven libc370 seams (`__gtcom`/`__cibset`/`__cibget`/`__cibdel`, `wto`/`wtof`, `__estae` + a C `nsf_recover` percolating via `SDWARCDE = SDWACWT`), exactly as `ufsd`/`httpd` do. Tie-breaker: §17.1 requires recovery to call the same **C** teardown, and reaching C from a *raw asm* OS-exit re-implements `@@estae`'s C-environment bridge — the issue-#8 failure class the from-scratch `asm/nsfestae.asm` would reintroduce. So `asm/nsfestae.asm` / `asm/nsfwto.asm` are not created; M0-8 adds **zero** new assembler. Bakes in the two CIB traps from `ufsd` (drain unconditionally; delete ESTAE first). Ratified with the maintainer. Full record: `docs/adr/ADR-0018-operator-wto-estae-via-libc370-seams.md`. |
 
 ---
 
@@ -1425,13 +1452,19 @@ week-equivalent), L (multi-week-equivalent).
 | M0-2 | NSFQUE + NSFMM + size-assert discipline, host unit tests (also: `nsf_abend` enforcement primitive; region seam per ADR-0015). **Done.** | M |
 | M0-3 | NSFBUF (PBUF, headroom, chains) + tests. **Done.** | S |
 | M0-4 | NSFTRC (ring + macros) and NSFSTS (registry); shared `nsftime` seam (`nsf_now`/`nsf_taskid`, ADR-0016). **Done.** | S |
-| M0-5 | NSFTMR + host tests; **MVS timer-accuracy job (gate for ADR-0011)** | M |
-| M0-6 | NSFEVT main loop + xq exit handoff (host: pthread-simulated exit) | M |
+| M0-5 | NSFTMR + host tests; **MVS timer-accuracy job (gate for ADR-0011)**. **Done** (STIMER, not STIMERM; gate met + frozen). | M |
+| M0-6 | NSFEVT main loop + xq exit handoff (host: pthread-simulated exit). **Done** (async STIMER exit, ADR-0017; TSTEVT + TSTEVTM). | M |
 | M0-7 | NSFCFG parser + profile corpus tests. **Done** (§14.4/14.5; TSTCFG 111/111). | M |
-| M0-8 | MVS STC skeleton: init → loop → MODIFY DISPLAY/TRACE/STATS/STOP → clean shutdown; ESTAE established; WTO messages NSF001I… | M |
+| M0-8 | MVS STC skeleton: init → loop → MODIFY DISPLAY/TRACE/STATS/STOP → clean shutdown; ESTAE established; WTO messages NSF001I…. **Done** (ADR-0018; operator/WTO/ESTAE via libc370 seams; TSTOPR + TSTSTC host, TSTSTCM + `jcl/NSFPROC.jcl` on-MVS). **M0 complete.** | M |
 
 **Exit gate:** STC starts on TK5, answers `F NSF,DISPLAY,STATS`, stops
-cleanly with all pools at baseline; CI green.
+cleanly with all pools at baseline; CI green. **MET** — validated live on TK5
+(mvsdev): `S NSF` → NSF001I; `F NSF,DISPLAY/STATS/TRACE IP ON` all reply, the
+DISPLAY reflecting the deployed config and `TRACE FLAGS 0200→0201` proving the
+toggle took effect on EBCDIC; `P NSF` → NSF011I → `IEF142I ... COND CODE 0000`
+with an empty SYSUDUMP DD (no dump, confirmed from the full job spool). Deployed via `jcl/NSFPROC.jcl` + `cfg/PROFILE`. The induced-ABEND →
+percolate path is covered by `test/mvs/tststcm.c` (ESTAE establish/delete) rather
+than force-run (a percolate leaves a dump + terminates the address space).
 
 ### M1 — CTCI: bits on the wire
 
@@ -1523,6 +1556,27 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.11:** M0-8 (MVS STC skeleton) implemented — **M0 complete**. Assembles the
+foundation into the `S NSF` started task: config-driven init → the §5.3 executive
+loop → `F NSF,*` / `P NSF` → orderly shutdown, under ESTAE. Adds the operator
+interface as a **portable dispatcher** (`nsfopr_dispatch`: DISPLAY / STATS /
+TRACE comp ON|OFF / STOP / HELP, WTOing `NSF8xx`) over a thin CIB/QEDIT seam; the
+loop gains the §5.3 **cibECB slot** via `evt_set_operator`, whose drain runs
+**unconditionally** each pass (not gated on the console ECB bit — the
+`IEE342I TASK BUSY` startup-CIB trap). Adds the **NSFCFG→component-init wiring**
+(`nsf_init_from_cfg`, spec 14.4): NSFTRACE→`nsftrc_flags`, NSFPOOL→buffer-pool
+counts (`buf_init_counts`), and the **cross-statement referential integrity**
+check deferred from M0-7 (§14.5: LINK→DEVICE, HOME/GATEWAY→LINK, `NSF720/721/722E`);
+DEVICE/routing tables are validated + staged, fed downstream at M1/M2. Recovery
+(§17.1) and WTO (`nsfmsg`) reuse the **libc370 seams** (`__estae` + a C
+`nsf_recover`; `wto`), not hand-rolled assembler — **ADR-0018**, ratified with the
+maintainer; `asm/nsfestae.asm` / `asm/nsfwto.asm` are not created (issue-#8
+lesson: a raw asm→C recovery bridge re-implements `@@estae` and breaks the
+C-runtime). M0-8 adds **zero** new assembler. Host suite **354 → 408**
+(TSTOPR + TSTSTC); cross build (NSF module + all tests) links clean, alias scan
+clean; `test/mvs/tststcm.c` + `jcl/NSFPROC.jcl` + `cfg/PROFILE` stage the on-MVS
+run. §5.3/§5.4, §17.1 and the §18 ADR index updated; §19 M0-8 marked **Done**.
 
 **v1.10:** M0-7 (NSFCFG configuration parser) implemented and host-validated.
 §14 gains the concrete interface and contract: the two public functions

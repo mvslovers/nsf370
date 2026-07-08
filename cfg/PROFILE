@@ -1,0 +1,29 @@
+; NSF PROFILE.TCPIP -- sample configuration for the NSF started task.
+;
+; Read at "S NSF" through the PROFILE DD (see jcl/NSFPROC.jcl). The syntax is
+; PROFILE.TCPIP-compatible where IBM defines it; the NSF* statements are NSF
+; extensions. Full grammar + validation: docs/Architecture-Specification.md ch.14.
+;
+; All-or-nothing: any error rejects startup with an NSF7xxE message and the
+; 1-based line number -- there is no partial configuration.
+
+; -- interface: one point-to-point CTC (the M1 CTCI driver target) -----------
+DEVICE  CTCA CTC 0E20             ; CTC device at hardware address (cuu) 0E20
+LINK    LNK1 CTC 0 CTCA          ; IP link riding over device CTCA
+HOME    10.1.1.2 LNK1            ; this stack's home address on LNK1
+GATEWAY DEFAULTNET 10.1.1.1 LNK1 1500 0   ; default route via the CTC peer
+
+; -- port reservations -------------------------------------------------------
+PORT    23  TCP  TELNET          ; telnet reserved for jobname TELNET
+PORT    21  TCP  FTPD            ; ftp control reserved for jobname FTPD
+
+; -- protocol tuning ---------------------------------------------------------
+TCPCONFIG RECVBUFRSIZE 16384 SENDBUFRSIZE 16384
+UDPCONFIG UDPCHKSUM
+
+; -- NSF extensions: buffer-pool sizing + startup trace ----------------------
+; Pool names match the NSFMM/NSFBUF pools so NSFPOOL sizes them (spec 14.4).
+NSFPOOL BUFSMALL 64              ; 64 small (256 B) packet buffers
+NSFPOOL BUFLARGE 32             ; 32 large (2048 B) packet buffers
+NSFTRACE CONFIG ON             ; trace the configuration component at startup
+NSFTRACE IP OFF                ; IP trace off until you need it (F NSF,TRACE IP ON)

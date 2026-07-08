@@ -92,18 +92,27 @@ static void buf_assert_chainlen(const PBUF *head)
 
 /* --- public interface ----------------------------------------------------- */
 
-int buf_init(void)
+int buf_init_counts(UINT small, UINT large)
 {
+    /* 0 means "use the compiled default" -- the M0-8 startup passes the NSFPOOL
+     * count or falls back to this constant via nsf_cfg_pool_count. The pool
+     * count field is a USHORT, so clamp a nonsensical config value rather than
+     * truncating it silently. */
+    if (small == 0u) { small = (UINT)NSFBUF_SMALL_COUNT; }
+    if (large == 0u) { large = (UINT)NSFBUF_LARGE_COUNT; }
+    if (small > 0xFFFFu) { small = 0xFFFFu; }
+    if (large > 0xFFFFu) { large = 0xFFFFu; }
+
     /* Init window only: mm_pool_create is legal solely between mm_init and
      * mm_init_complete (it ABENDs afterwards -- nsfmm.h). The MM object size is
      * sizeof(PBUF) + B (see the file header); on the target that is 288 / 2080,
      * matching the spec 2.5 budget. */
     g_pool_small = mm_pool_create("BUFSMALL",
                                   (USHORT)(sizeof(PBUF) + NSFBUF_SMALL_DATA),
-                                  NSFBUF_SMALL_COUNT);
+                                  (USHORT)small);
     g_pool_large = mm_pool_create("BUFLARGE",
                                   (USHORT)(sizeof(PBUF) + NSFBUF_LARGE_DATA),
-                                  NSFBUF_LARGE_COUNT);
+                                  (USHORT)large);
     g_allocseq = 0;
 
     /* Report a pool-creation failure so the executive startup (M0-8) can refuse
@@ -113,6 +122,13 @@ int buf_init(void)
         return -1;
     }
     return 0;
+}
+
+int buf_init(void)
+{
+    /* Defaults: the compiled-in counts (spec 2.5). The M0-8 startup instead
+     * calls buf_init_counts with the NSFPOOL-resolved counts. */
+    return buf_init_counts((UINT)NSFBUF_SMALL_COUNT, (UINT)NSFBUF_LARGE_COUNT);
 }
 
 PBUF *buf_alloc(USHORT hint_len)

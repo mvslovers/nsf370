@@ -75,10 +75,11 @@ NSF_SIZE_ASSERT(PBUF, 32);
  * dispatch on MVS that host tests (native cc, no 8-char limit) cannot see.
  * Every cross-module buf_* below therefore pins a unique 8-char alias
  * (scheme NSFB + verb):
- *   buf_init NSFBINIT   buf_alloc NSFBALOC   buf_free NSFBFREE
- *   buf_prepend NSFBPREP   buf_trim_head NSFBTRMH   buf_trim_tail NSFBTRMT
- *   buf_copyin NSFBCPIN   buf_copyout NSFBCPOU   buf_chain_append NSFBCHAP
- *   buf_chain_len NSFBCHLN   buf_reset_rx NSFBRSRX   buf_debug_pool NSFBDBGP
+ *   buf_init NSFBINIT   buf_init_counts NSFBINIC   buf_alloc NSFBALOC
+ *   buf_free NSFBFREE   buf_prepend NSFBPREP   buf_trim_head NSFBTRMH
+ *   buf_trim_tail NSFBTRMT   buf_copyin NSFBCPIN   buf_copyout NSFBCPOU
+ *   buf_chain_append NSFBCHAP   buf_chain_len NSFBCHLN   buf_reset_rx NSFBRSRX
+ *   buf_debug_pool NSFBDBGP
  */
 
 /* Initialization (init window only -- calls mm_pool_create, so it must run
@@ -89,6 +90,12 @@ NSF_SIZE_ASSERT(PBUF, 32);
  * than run with NULL pools. Added beyond the published spec 3.2 interface at
  * M0-3 (see the spec 3.2 note). */
 int     buf_init(void) asm("NSFBINIT");
+
+/* Like buf_init but with explicit object counts (0 for either => the compiled
+ * default). The M0-8 startup calls this with the NSFPOOL-resolved counts
+ * (nsf_cfg_pool_count) so a PROFILE can size the buffer pools; buf_init is the
+ * default-count wrapper. Same init-window rule and return contract. */
+int     buf_init_counts(UINT small, UINT large) asm("NSFBINIC");
 
 /* Allocate an outbound buffer sized by hint_len (the intended payload). Picks
  * BUFSMALL when HEADROOM + hint_len <= NSFBUF_SMALL_DATA (hint_len <= 192),
