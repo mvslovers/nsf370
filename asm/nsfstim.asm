@@ -29,12 +29,12 @@
 *  interval. Correct: there is one timer service (one executive task). The
 *  ECB moves into an executive control block at M0-6.
 *
-*  STATUS: DEFERRED seam. The entry convention is fixed now (issue #8), but
-*  the async STIMER-REAL + POST exit (NSFTMEXP) is invoked by the OS, not
-*  called from C, so it does NOT get FUNHEAD and stays hand-rolled. Its
-*  RUNTIME (a live run hit ABEND S0C6 in the exit-dispatch path) is validated
-*  at M0-6, when the executive loop owns the ECB and its WAIT ECBLIST. M0-6
-*  start: suspect the async exit-entry environment (save-area / addressing).
+*  STATUS: VALIDATED on 3.8j at M0-6. The three C-callable entries are FUNHEAD
+*  (issue #8); the async STIMER-REAL + POST exit (NSFTMEXP) is OS-invoked, so it
+*  does NOT get FUNHEAD and is built to the documented MVS 3.8 STIMER-exit
+*  linkage (GC28-0683; see ADR-0017 for the 7-step contract). test/mvs/tstevtm.c
+*  ran the loop over 10 heartbeats at ~100 ms and shut down clean (CC 0) -- the
+*  earlier ABEND S0C6 (a hand-rolled entry-convention shortcut) is gone.
 *
          COPY  MVSMACS
          COPY  PDPTOP
@@ -69,18 +69,39 @@ NSFTMECB FUNHEAD ,                return &ecb
          LA    R15,TIMRECB-NSFTMECB(,R12) R15 = &ecb
          FUNEXIT RC=(R15)
 *---------------------------------------------------------------------*
-*  NSFTMEXP  --  async STIMER exit (DEFERRED, OS-invoked, NOT FUNHEAD)*
-*     Entered with R13 -> save area; self-bases with BALR; ECB by     *
-*     explicit disp. Runtime validated at M0-6 (S0C6 note above).     *
+*  NSFTMEXP  --  async STIMER REAL exit (OS-invoked, NOT FUNHEAD).    *
+*                Built to the documented MVS 3.8 STIMER-exit linkage  *
+*                (GC28-0683); validated on MVS at M0-6 (issue #8 /    *
+*                the timer-wakeup ADR). Entered with R15 = exit entry *
+*                address, R14 = return, R13 = a provided save area.   *
+*                It POSTs the timer ECB and RE-ARMS STIMER (one-shot),*
+*                giving a periodic ~100 ms heartbeat.                 *
 *---------------------------------------------------------------------*
-NSFTMEXP SAVE  (14,12)            save regs in the supplied area
-         BALR  R12,0
-EXPBASE  DS    0H                 R12 -> here (base for disp)
-         LA    R1,TIMRECB-EXPBASE(,R12)   R1 = &ecb
-         POST  (1)                POST the ECB (code 0)
-         RETURN (14,12)           restore, return to MVS
+NSFTMEXP DS    0H
+         STM   R14,R12,12(R13)    save into the provided SA
+         LR    R12,R15            base via R12=R15 (macros used)
+         USING NSFTMEXP,R12
+*  chain our OWN save area (we issue POST + STIMER SVCs)
+         LA    R1,EXPSAVE-NSFTMEXP(,R12)  R1 = our SA
+         ST    R13,4(,R1)         our SA back-ptr = caller SA
+         ST    R1,8(,R13)         caller SA fwd-ptr = our SA
+         LR    R13,R1             R13 = our save area
+*  POST the timer ECB (explicit disp; S102-safe, never base 0)
+         LA    R1,TIMRECB-NSFTMEXP(,R12)  R1 = &ecb
+         SLR   R0,R0              post code 0
+         POST  (1),(0)
+*  re-arm STIMER REAL for the next interval (one-shot)
+         LR    R0,R12             R0 = &NSFTMEXP (exit address)
+         LA    R1,BINTVLW-NSFTMEXP(,R12)  R1 = &interval
+         STIMER REAL,(0),BINTVL=(1)
+*  unchain, restore from the provided SA, return
+         L     R13,4(,R13)        R13 = caller save area
+         LM    R14,R12,12(R13)    restore caller regs
+         BR    R14
 *
-*  Static timer state (one timer service; see STORAGE note).
+*  Static timer state (one timer service; see STORAGE note). Placed right
+*  after the exit code so the exit reaches them R15/R12-relative.
 BINTVLW  DC    F'0'               STIMER interval (0.01s units)
 TIMRECB  DC    F'0'               the timer ECB
+EXPSAVE  DC    18F'0'             the exit's own 72-byte save area
          END
