@@ -19,6 +19,7 @@
 
 #include "nsf.h"
 #include "nsfque.h"             /* QELEM (queue linkage embedded in EVT) */
+#include "nsfevtp.h"            /* NSFECB (the operator console ECB, M0-8) */
 
 /* Event kinds (spec 5.2). EV_TIMER_EXPIRED is dispatched once per timer wake so
  * a handler can observe the tick; the delta-queue callbacks (NSFTMR) fire
@@ -62,7 +63,7 @@ typedef void (*EVHANDLER)(EVT *ev);
  *   nsfevt_init NSFEVINI   evt_register NSFEVREG   evt_post NSFEVPST
  *   evt_mainloop NSFEVMLP  nsfevt_stop NSFEVSTP    nsfevt_handoff_push NSFEVHP
  *   nsfevt_alloc NSFEVAL   nsfevt_ticks NSFEVTK   nsfevt_drops NSFEVDRP
- *   nsfevt_inuse NSFEVIU
+ *   nsfevt_inuse NSFEVIU   evt_set_operator NSFEVOPR
  */
 
 /* Create the EVT pool and reset the loop state (event queue, handoff stack,
@@ -88,6 +89,14 @@ void evt_mainloop(void) asm("NSFEVMLP");
 /* Request an orderly stop from anywhere (operator, a timer callback, a test):
  * set the stop flag and post the stop ECB so a WAITing loop wakes. */
 void nsfevt_stop(void) asm("NSFEVSTP");
+
+/* Register the operator interface (M0-8): `ecb` is the console ECB the loop adds
+ * to its ECBLIST (the §5.3 cibECB slot), and `drain` is called every loop pass
+ * to consume queued operator commands. `drain` runs UNCONDITIONALLY (not gated
+ * on the ECB bit): a startup CIB can be queued without a POST, and gating would
+ * hold the CIB slot and reject later MODIFYs (IEE342I TASK BUSY). Pass
+ * (NULL, NULL) for no operator (the default; the four foundation tests). */
+void evt_set_operator(NSFECB *ecb, void (*drain)(void)) asm("NSFEVOPR");
 
 /* Exit-side handoff (§4.2): interrupt-safely hand a pre-allocated EVT's QELEM to
  * the loop -- xq_push then post the handoff ECB so a WAITing loop wakes. This is

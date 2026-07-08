@@ -1,0 +1,25 @@
+//NSF      PROC M=NSFPRM0,
+//            D='SYS2.PARMLIB'
+//*
+//* NSF - Network Services Facility STC procedure (M0-8 skeleton).
+//*
+//* Installation:
+//*   Copy to SYS2.PROCLIB(NSF)                 (cataloged proc; no // PEND)
+//*   Copy config member to SYS2.PARMLIB(NSFPRM0)
+//*   Deploy the load module:  make deploy       -> NSF.LINKLIB
+//*
+//* Starting:    /S NSF
+//*              /S NSF,M=NSFPRM1              (alternate config member)
+//*              /S NSF,D='MY.PARMLIB'         (alternate parmlib dataset)
+//* Commands:    /F NSF,DISPLAY
+//*              /F NSF,STATS
+//*              /F NSF,TRACE IP ON
+//*              /F NSF,HELP
+//* Stopping:    /P NSF   (or  /F NSF,STOP)
+//*
+//NSF      EXEC PGM=NSF,REGION=4M,TIME=1440
+//STEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+//SYSUDUMP DD  SYSOUT=*
+//SYSPRINT DD  SYSOUT=*
+//*  PROFILE.TCPIP config member, read at init via fopen("DD:PROFILE").
+//PROFILE  DD  DSN=&D(&M),DISP=SHR,FREE=CLOSE

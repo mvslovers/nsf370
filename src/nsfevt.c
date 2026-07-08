@@ -25,6 +25,8 @@ static XQ        g_xq;                  /* exit->mainline handoff (LIFO)      */
 static MMPOOL   *g_evtpool;             /* the EVT pool                       */
 static NSFECB    g_stopecb;             /* stop request                       */
 static NSFECB    g_handoffecb;          /* handoff ready (M0-6 = devECB[0])   */
+static NSFECB   *g_opecb;               /* operator console ECB (M0-8)        */
+static void    (*g_opdrain)(void);      /* operator command drain (M0-8)      */
 static int       g_stop;                /* orderly-stop flag                  */
 static UINT      g_ticks;               /* timer wakes serviced               */
 static UINT      g_drops;               /* evt_post pool-exhaustion drops     */
@@ -40,6 +42,8 @@ int nsfevt_init(void)
     xq_init(&g_xq);
     g_stopecb    = 0u;
     g_handoffecb = 0u;
+    g_opecb      = NULL;                 /* no operator until evt_set_operator */
+    g_opdrain    = NULL;
     g_stop       = 0;
     g_ticks      = 0u;
     g_drops      = 0u;
@@ -94,6 +98,12 @@ void nsfevt_stop(void)
 {
     g_stop = 1;
     nsfevt_plat_post(&g_stopecb);
+}
+
+void evt_set_operator(NSFECB *ecb, void (*drain)(void))
+{
+    g_opecb   = ecb;
+    g_opdrain = drain;
 }
 
 EVT *nsfevt_alloc(void)
@@ -160,19 +170,40 @@ static void evt_shutdown(void)
 void evt_mainloop(void)
 {
     NSFECB *timerecb  = (NSFECB *)nsftmr_plat_ecb();
-    NSFECB *ecblist[3];
+    NSFECB *ecblist[4];
+    int     necb = 0;
 
-    ecblist[0] = timerecb;
-    ecblist[1] = &g_handoffecb;
-    ecblist[2] = &g_stopecb;
+    /* ECBLIST (§5.3): {timerECB, handoffECB[, cibECB], stopECB}. The cibECB slot
+     * is present only when an operator has been registered (evt_set_operator);
+     * devECB[]/requestECB are added at M1+. */
+    ecblist[necb++] = timerecb;
+    ecblist[necb++] = &g_handoffecb;
+    if (g_opecb != NULL) {
+        ecblist[necb++] = g_opecb;
+    }
+    ecblist[necb++] = &g_stopecb;
 
     for (;;) {
         int    budget;
         QELEM *qe;
 
-        /* 1. WAIT for a source, unless there is already pending work. */
-        if (Q_EMPTY(&g_evq) && g_xq.head == NULL) {
-            nsfevt_plat_wait(ecblist, 3);
+        /* 0. Operator: drain queued commands UNCONDITIONALLY -- NOT gated on the
+         *    console ECB bit. A startup CIB may be queued without a POST, and
+         *    gating on the bit would hold the single CIB slot and reject later
+         *    MODIFYs (IEE342I TASK BUSY). The drain seam owns its ECB: on MVS
+         *    QEDIT (__cibget/__cibdel) clears the console ECB as the chain
+         *    empties (so the WAIT re-blocks); the host shim clears its fake ECB
+         *    likewise. The CIB chain -- not the ECB -- is the source of truth, so
+         *    no command is lost. */
+        if (g_opdrain != NULL) {
+            g_opdrain();
+        }
+
+        /* 1. WAIT for a source, unless there is already pending work or a stop
+         *    has been requested (an operator STOP just set g_stop above). */
+        if (Q_EMPTY(&g_evq) && g_xq.head == NULL
+            && g_stop == 0 && (g_stopecb & NSFECB_POSTED) == 0u) {
+            nsfevt_plat_wait(ecblist, necb);
         }
 
         /* 2. Drain the interrupt-safe handoff into the event queue. */
