@@ -22,3 +22,4 @@ out as they are revisited. ADR-0014 onward are authored directly here.
 | 0014 | Build model & repo layout follow MBT V2 conventions | ADR-0014-build-model-and-repo-layout.md |
 | 0015 | NSFMM pool regions via libc370 malloc (not raw GETMAIN) | ADR-0015-region-acquisition-via-libc370-malloc.md |
 | 0016 | Shared nsftime seam (nsf_now + nsf_taskid) | ADR-0016-shared-platform-time-and-task-seam.md |
+| 0017 | Timer wakeup via the async STIMER exit (not a subtask) | ADR-0017-timer-wakeup-async-stimer-exit.md |

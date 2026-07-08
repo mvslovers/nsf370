@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.8 — Draft for implementation. Companion document to the frozen
+*Version 1.9 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1474,6 +1474,27 @@ orchestrator and recorded its impact on repository shape (`project.toml`,
 `.env`) and the test model (host Level 0/1 outside MBT for CI; MBT-driven
 Level 2–4 on a live MVS). Added §1.6 Build Toolchain & Environment,
 ADR-0013, and updated §16.1/§16.2 and work package M0-1 accordingly.
+
+**v1.9:** M0-6 (NSFEVT event dispatcher / executive main loop) implemented and
+validated. The §5.3 loop is realized in `src/nsfevt.c`: WAIT on the ECB list
+unless there is pending work, drain the NSFXQ handoff (LIFO) into the event queue
+(FIFO), dispatch each event to its registered handler under a **64-event drain
+budget** so an `evt_post` flood cannot starve the timer, run `nsftmr_run`, then a
+kick-output stub; plus the §5.4 shutdown skeleton (each step stubbed at M0-6
+except the timer disarm and freeing pending events for the leak gate). `EVT` is
+24 bytes, carved from an NSFMM pool. The WAIT/POST is a platform seam
+(`nsfevt_plat_wait`/`_post`): libc370 `ecb_waitlist` (WAIT ECBLIST) on MVS,
+a pthread mutex + condition variable host shim, swapped by `[host].replace`.
+**New: ADR-0017** — timer wakeup via the **async STIMER REAL exit** (chosen over
+a timer subtask: one task, no cross-task POST, and M1 device I/O exits are the
+same async class). `asm/nsfstim.asm` `NSFTMEXP` is corrected to the documented
+MVS 3.8 STIMER-exit linkage (GC28-0683; the 7-step entry-convention contract is
+recorded in ADR-0017 so it is not re-derived) and is now **runtime-validated**:
+host `test/tstevt.c` 17/17 (FIFO dispatch, the drain budget, a pthread-simulated
+exit driving the xq handoff, the shutdown leak gate); on-MVS `test/mvs/tstevtm.c`
+= CC 0, 10 heartbeats at mean 100.2 ms, clean shutdown -- the M0-5 S0C6 in the
+exit-dispatch path is gone. Out of scope (unchanged): NSFCFG (M0-7); the STC
+skeleton / MODIFY / ESTAE / WTO (M0-8); devices / sockets (M1+).
 
 **v1.8:** Issue #8 fixed and the ADR-0011 gate frozen. The hand-rolled
 C-callable HLASM seams (`asm/nsftime.asm`, `asm/nsfxq.asm`, and the C-callable

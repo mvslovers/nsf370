@@ -11,7 +11,7 @@ cflags = ["-std=gnu99", "-I", "include"]
 # Fast native inner loop for the portable foundation/protocol tests
 # (`make test-host`). NSF_DEBUG=1 turns on the eyecatcher / double-free /
 # leak-gate checks (compiled out of production; see nsfmm.c).
-cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1"]
+cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1", "-pthread"]
 # MVS-only CSECTs swapped for their host shims so an asm-carrying [[test]] still
 # builds and runs natively:
 #   nsfxq   -- the exit->mainline handoff (spec 4.2): a CS loop on MVS
@@ -23,7 +23,10 @@ cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1"]
 #              MVS (asm/nsfstim.asm), a no-op that records arms/disarms for the
 #              tests on the host (src/nsfstim_host.c). Host drives ticks by
 #              calling nsftmr_run directly.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c" }
+#   nsfevt_plat -- the NSFEVT WAIT/POST seam (spec 5.3): libc370 ecb_waitlist
+#              (WAIT ECBLIST) on MVS (src/nsfevt_plat.c), a pthread cond-var on
+#              the host (src/nsfevt_plat_host.c) so the loop blocks + wakes.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -108,6 +111,26 @@ name = "TSTTMACC"
 startup = "crt1"
 host = false
 sources = ["test/mvs/tsttmacc.c", "asm/nsftime.asm", "test/asm/tststmw.asm"]
+
+# -- M0-6 event dispatcher / main loop (NSFEVT) ------------------------
+# NSFEVT: FIFO dispatch order, the drain budget preventing timer starvation, the
+# NSFXQ handoff drained from a pthread-simulated exit, and the shutdown leak
+# gate. Portable loop + the WAIT/POST seam (src/nsfevt_plat.c swapped for the
+# pthread cond-var host shim by [host].replace); timer + xq seams swapped too.
+[[test]]
+name = "TSTEVT"
+startup = "crt1"
+sources = ["test/tstevt.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm"]
+
+# NSFEVT on-MVS validation (host = false): the loop WAITs on {timerECB, stopECB},
+# the async STIMER exit (asm/nsfstim.asm NSFTMEXP) POSTs timerECB and re-arms, the
+# loop observes N timer cycles at ~100 ms, then a simulated stop shuts it down
+# cleanly. This is where the async STIMER exit is proven on 3.8j (CC 0 vs S0C6).
+[[test]]
+name = "TSTEVTM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
 
 [release]
 version_files = ["VERSION"]
