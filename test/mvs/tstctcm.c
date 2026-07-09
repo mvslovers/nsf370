@@ -10,6 +10,13 @@
  *     resolution with a decoded S99ERROR/S99INFO. Nothing is allocated; the
  *     live system is untouched. This is the M1-3 CI-meaningful assertion.
  *
+ *  1b. Open-lifecycle "wall" -- ALSO RUNS TODAY (no device). It drives the
+ *     WHOLE ctci_dev_open path on real 3.8j -- reserve the NSFMM pools, mm_alloc
+ *     CTCIDEV/subchannel blocks/buffers, format the CUU, SVC 99 allocate a
+ *     numeric (undefined) CUU, emit the NSF2xxE refuse-to-start message, and
+ *     clean up -- and asserts it refuses to start (NULL). Everything
+ *     ctci_dev_open does except the channel I/O; NO EXCP is issued.
+ *
  *  2. EXCP channel path -- DEFERRED. It allocates + opens the CUU pair, EXCPs
  *     a hand-built block each way, and decodes completion. It CANNOT run yet:
  *     the Hercules side has no CTCI device and the CUU pair is in no UCB. So
@@ -40,7 +47,16 @@
 #define NSFCTCI_MTU  1500u
 #endif
 
-/* ---- helpers ------------------------------------------------------------ */
+/* CUU for the open-lifecycle "wall" check (part 1b), run when no live device is
+ * configured. It must be an address NOT genned on the test system, so SVC 99
+ * fails and ctci_dev_open refuses to start. 0E20 is verified undefined on TK5
+ * (D U); change it if a target ever gens that address. */
+#ifndef NSFCTCI_WALL_CUU
+#define NSFCTCI_WALL_CUU  0x0E20
+#endif
+
+/* ---- helpers (part 2 EXCP path only; compiled with a live device) ------- */
+#ifdef NSFCTCI_CUU
 
 /* RFC 1071 ones-complement checksum over len bytes. */
 static USHORT ip_cksum(const void *p, UINT len)
@@ -155,6 +171,7 @@ static void hexdump(const char *tag, const UCHAR *p, UINT len)
     }
     printf("\n");
 }
+#endif /* NSFCTCI_CUU (part 2 helpers) */
 
 /* ---- part 1: SVC 99 seam proof (runs today) ----------------------------- */
 
@@ -181,7 +198,6 @@ static int run_svc99_proof(void)
 #ifdef NSFCTCI_CUU
 static int run_device_probe(void)
 {
-    static UCHAR block[64];
     UCHAR        ip[64];
     UINT         iplen, blklen, rlen = 0;
     UCHAR        post = 0;
@@ -189,12 +205,6 @@ static int run_device_probe(void)
     int          segs;
 
     printf("--- EXCP channel path: CUU %04X ---\n", (unsigned)NSFCTCI_CUU);
-
-    if (ctci_reserve(1u, CTCI_BUF_DEFAULT) != 0) {
-        printf("ctci_reserve failed\n");
-        return 1;
-    }
-    mm_init_complete();
 
     d = ctci_dev_open((USHORT)NSFCTCI_CUU, (USHORT)NSFCTCI_MTU);
     CHECK(d != NULL, "CUU pair allocated + opened");
@@ -235,18 +245,57 @@ static int run_device_probe(void)
 }
 #endif /* NSFCTCI_CUU */
 
+/* ---- part 1b: full ctci_dev_open lifecycle vs an undefined CUU ----------- */
+#ifndef NSFCTCI_CUU
+/* Runs on MVS today (no device): it drives the WHOLE open path on real 3.8j --
+ * mm_alloc of CTCIDEV/subchannel blocks/buffers, the %04X unit formatting, the
+ * SVC 99 allocate of a numeric CUU, the NSF2xxE refuse-to-start message, and
+ * the ctci_dev_release cleanup -- and asserts it refuses to start (returns
+ * NULL) because the CUU is undefined. NO EXCP is issued, so nothing can hang on
+ * a wrong device. This is everything ctci_dev_open does except the channel I/O
+ * (which is the deferred part 2). The pools were reserved once in main(). */
+static int run_wall_probe(void)
+{
+    CTCIDEV *d;
+
+    printf("--- open lifecycle vs undefined CUU %04X (no EXCP) ---\n",
+           (unsigned)NSFCTCI_WALL_CUU);
+    d = ctci_dev_open((USHORT)NSFCTCI_WALL_CUU, (USHORT)NSFCTCI_MTU);
+    if (d != NULL) {
+        /* the "undefined" CUU actually exists here -- close it so the failing
+         * assertion below does not also leak, and flag the environment. */
+        printf("CUU %04X unexpectedly opened; pick another NSFCTCI_WALL_CUU\n",
+               (unsigned)NSFCTCI_WALL_CUU);
+        ctci_dev_close(d);
+    } else {
+        printf("ctci_dev_open -> NULL (SVC 99 refused the undefined CUU)\n");
+    }
+    CHECK(d == NULL, "ctci_dev_open runs the full lifecycle and refuses to "
+                     "start on an undefined CUU");
+    return 0;
+}
+#endif /* !NSFCTCI_CUU */
+
 int main(void)
 {
     printf("=== nsf370 NSFCTCI MVS validation (M1-3) ===\n");
 
     mm_init(NULL);
+    /* Reserve the CTCI pools once, in the init window (before mm_init_complete);
+     * both the wall probe and the device probe allocate from them. */
+    if (ctci_reserve(1u, CTCI_BUF_DEFAULT) != 0) {
+        printf("ctci_reserve failed\n");
+        mm_shutdown();
+        return 1;
+    }
+    mm_init_complete();
 
     run_svc99_proof();
 
 #ifdef NSFCTCI_CUU
     run_device_probe();
 #else
-    mm_init_complete();
+    run_wall_probe();
     printf("--- EXCP channel path DEFERRED ---\n");
     printf("no CTCI device configured; rebuild with -DNSFCTCI_CUU=0xNNNN and a\n");
     printf("live 3088 pair to drive the channel path (see PR runbook).\n");
