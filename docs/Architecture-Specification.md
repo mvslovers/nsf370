@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.14 — Draft for implementation. Companion document to the frozen
+*Version 1.15 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -894,6 +894,22 @@ the channel program terminates. No CHE appendage is written or installed. See
   into a PBUF** of the appropriate size class; the I/O buffer is never handed up
   as a PBUF. Outbound, it builds a block from queued PBUFs and starts the WRITE.
 
+**Dynamic allocation (SVC 99 via libc370; M1-3).** The CUUs come from the
+PROFILE `DEVICE` statement (NSFCFG), not from DD cards. NSFCTCI allocates both
+subchannels at device init through the libc370 SVC 99 seam (`__svc99` plus the
+`__txrddn` / `__txunit` / `__txshr` text-unit builders): per subchannel it builds
+`DALUNIT` from the 4-char CUU, asks the system to return a generated DDNAME
+(`DALRTDDN`, so no PROC edits and no name collisions) with `DALSTATS` = SHR, and
+issues the allocate. The generated DDNAME is patched into the copied model DCB at
+`DCBDDNAM` before OPEN; at shutdown each subchannel is CLOSEd and then unallocated
+(`S99VRBUN`). On failure the returned `S99ERROR` / `S99INFO` is reported in an
+`NSF2xxE` message and the device refuses to start — no partial init. The text-unit
+builders `malloc` transiently and free on every path (init-time only, through the
+sanctioned libc370 seam — **not** protocol-path storage, which stays with NSFMM).
+All DEVICE storage — the `CTCIDEV` block, the two per-subchannel control blocks
+(each a copied DCB + IOB + CCW, sized by the HLASM `ctci_scb_size`), and the
+ping-pong I/O buffers — is NSFMM pool storage reserved once in the init window.
+
 **Device I/O buffers (ping-pong).** A CTCI block is up to 20 KB and carries many
 IP frames, so it is *not* a PBUF. Each device owns dedicated I/O buffers, sized
 `min(Hercules buffer, MVS 3.8j maximum I/O length)`, obtained once at device init
@@ -1590,7 +1606,7 @@ than force-run (a percolate leaves a dump + terminates the address space).
 |---|---|---|
 | M1-1 | **Verify CTCI frame format against Hercules `ctc_ctci.c`; write into Ch. 9.3 as normative.** **Done** (byte-exact: 3088 pair, CTCIHDR/CTCISEG, big-endian). | S |
 | M1-2 | NSFDEV device table + DEVOPS contract + NSFHOST loopback/TUN driver. **Done** (§9.2/§9.4; the async `doneq → EV_PACKET_RECEIVED` handoff validated over the host loopback driver's pthread reader thread — the CTCI-exit analog; TSTDEV 80/80 host-green). | M |
-| M1-3 | HLASM top half: EXCP READ/WRITE CCW chains, I/O exit → xq_push + POST | L |
+| M1-3 | HLASM top half (`asm/nsfctcio.asm`) + C lifecycle (`src/nsfctci.c`): SVC 99 allocate + OPEN the 3088 CUU pair, EXCP a raw buffer each way, decode completion (post `X'7F'`, length = requested − residual). Per **ADR-0019** it is plain `EXCP` — IOS posts the IOB ECB, **no** I/O-completion exit, **no** appendage. **In progress** — built; host suite 488/488, cross-links clean, alias scan clean; and — **run live on TK5** (`test-mvs` TSTCTCM CC 0, 6/6) — the **SVC 99 seam end-to-end** (failure: `ZZZZ` → `S99ERROR 021C`; **success**: a device-free DUMMY allocation returns rc 0 with a generated DDNAME, then unallocates rc 0) **and the full `ctci_dev_open` lifecycle** (NSFMM pool reserve, `mm_alloc`, `%04X` format, SVC 99, the `NSF2xxE` WTO, refuse-to-start, cleanup) against the undefined CUU `0E20`. The **EXCP channel path is a deferred seam, UNVALIDATED on MVS** (Hercules has no CTCI device / the CUU pair is in no UCB yet); see the M1-3 PR runbook. | L |
 | M1-4 | C bottom half: frame ↔ PBUF, READ re-drive, sendq kick, MIH idle handling | M |
 | M1-5 | Trace hexdump of received packet on console; hand-crafted packet sent | S |
 
@@ -1674,6 +1690,8 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.15:** M1-3 (CTCI top half + C lifecycle) **built, EXCP path UNVALIDATED on MVS**. §9.3 gains the **dynamic-allocation** paragraph: NSFCTCI allocates the CUU pair from the PROFILE `DEVICE` statement via the libc370 SVC 99 seam (`__svc99` + `__txrddn`/`__txunit`/`__txshr`; `DALUNIT` from the 4-char CUU, a system-returned DDNAME `DALRTDDN`, `DALSTATS` SHR), patches the DDNAME into the copied DCB at `DCBDDNAM` before OPEN, unallocates (`S99VRBUN`) on close, and refuses to start on an `S99ERROR`/`S99INFO` failure (`NSF2xxE`); all DEVICE storage is NSFMM init-window pools. Deliverables: `asm/nsfctcio.asm` (six C-callable FUNHEAD entries — the macro-issuing ones use `FUNHEAD SAVE=` for OPEN/CLOSE/EXCP; **not** the leaf form), `src/nsfctci.c`, `include/nsfctci.h`, `test/mvs/tstctcm.c`. What is proven: host 488/488, cc370/as370/ld370 cross-link clean, alias scan clean, and — **run live on TK5** (`test-mvs` TSTCTCM CC 0, 6/6) — the **SVC 99 seam end-to-end** over our `svc99_call` wrapper (failure: unit `ZZZZ` → `rc=4 S99ERROR 021C`; success: a device-free DUMMY allocation → `rc 0`, a generated DDNAME reaches our buffer, then `S99VRBUN` → `rc 0`, no stray DD) and the **full `ctci_dev_open` lifecycle** (reserve the CTCIDEV/CTCISCB/CTCIBUF pools, `mm_alloc`, `%04X`, SVC 99 of the numeric undefined CUU `0E20`, the `NSF2xxE` WTO on the console, refuse-to-start → NULL, `ctci_dev_release` cleanup) — everything ctci_dev_open does except the channel I/O. What is **owed a live run**: the `EXCP` READ/WRITE channel path (post `X'7F'`, residual arithmetic, `hwType 0x0800` chain), blocked because Hercules has no CTCI device configured — a labelled **deferred seam** in the source, per the M1-3 PR runbook. The §19 M1-3 row is corrected off the pre-ADR-0019 "I/O exit → xq_push" wording and stays open.
 
 **v1.14:** §9.3 CTCI top half corrected to the actual EXCP model, per new **ADR-0019**. EXCP has no user-written I/O-completion exit: IOS posts the IOB ECB (= the device ECB already in the §5.3 ECBLIST) at channel-program termination, so no CHE appendage is written or installed. Adds the EXCP recipe (DCB `MACRF=E` without `CENDA=`, unchained READ `X'02'`+SLI / WRITE `X'01'`, `IOBUNREL`, ECB cleared before every `EXCP`, post code `X'7F'`, length = requested − residual), the ping-pong device I/O buffers with the normative re-drive-before-parse ordering, the copy-out-into-PBUF rule, the inbound flow-control behaviour verified against Hercules `ctc_ctci.c` (it buffers and back-pressures; no attention, no unit check, no loss from the re-drive gap), and the MTU cap. The CHE appendage stays fully documented in ADR-0019 as the rejected-for-v1 optimisation. `doneq` is consequently CTCI-unused and remains a per-driver facility (NSFHOST).
 
