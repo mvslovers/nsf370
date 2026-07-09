@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.10 — Draft for implementation. Companion document to the frozen
+*Version 1.12 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -858,16 +858,43 @@ Split into the standard exit/mainline halves:
   structure, converts to/from PBUFs, re-drives the next READ, starts
   queued WRITEs.
 
-Frame format: Hercules CTCI presents blocks containing a block header and
-one or more segments (segment length + type, type 0x0800 = IPv4 datagram),
-matching the classic MVS TCP/IP CTC convention. **M1 task NSF-M1-01:
-verify the exact header layout against Hercules `ctcadpt.c` and write it
-into this chapter as normative** — the Project Brief's "raw IP, no
-framing" is approximately true but not byte-exact.
+**Frame format (normative — verified against Hercules `ctc_ctci.c` /
+`ctcadpt.h`; in current Hercules the CTCI code is split out of `ctcadpt.c`
+into `ctc_ctci.c`).** The device is an emulated **3088** CTC (SID `0x3088`,
+model `0x08`) presented as a **read/write subchannel pair** on consecutive
+CUUs (e.g. `0E20` read, `0E21` write). NSF drives it with CCW opcodes
+`0x02` READ (inbound, host→guest), `0x01` WRITE (outbound, guest→host),
+`0x07` CONTROL, `0x03` NOP, `0x04` SENSE.
 
-Known Hercules behavior to handle in the driver, not above it: MIH
-(missing interrupt handler) complaints after long idle on CTC — the driver
-keeps a READ outstanding and treats HIO/restart as a normal path.
+The device buffer is a **chain of blocks**; each block starts with a block
+header and carries one or more segments, one per IP datagram:
+
+```
+CTCIHDR  (block header)
+  +0  hwOffset   H'2'   byte offset of the NEXT block in the buffer;
+                        0x0000 marks the last block of the chain
+CTCISEG  (segment header, one per IP frame)
+  +0  hwLength   H'2'   segment length INCLUDING this 6-byte header
+  +2  hwType     H'2'   frame type, always 0x0800 (IPv4)
+  +4  _reserved  H'2'   always 0x0000
+  +6  <data>            the raw IP packet
+```
+
+A block is `[CTCIHDR] ([CTCISEG][IP]) …`; blocks chain through `hwOffset`,
+the final block having `hwOffset = 0x0000`. All halfwords are **big-endian**
+— native S/370 order — so NSF builds and reads them with no byte swapping.
+
+Two Hercules behaviours the driver must honour: (1) it is the guest READ CCW
+(`CTCI_Read`) that appends the terminating `hwOffset = 0x0000` block, so the
+bottom half walks the chain to that zero offset; (2) MIH complaints after
+long idle — the driver keeps a READ outstanding and treats HIO/restart as a
+normal path.
+
+Buffer sizing: default `0x5000` (20 KB), min `0x4000`, max `0xFFFF`;
+`MAX_CTCI_FRAME_SIZE = buffer − sizeof(CTCIHDR) − sizeof(CTCISEG) − 2`. The
+HLASM top half moves this buffer verbatim over the READ/WRITE CCWs and is
+format-blind; the C bottom half builds/parses `CTCIHDR`/`CTCISEG` around the
+PBUF, so the framing is host-testable via the NSFHOST loopback driver.
 
 ### 9.4 HOST Driver (NSFHOST)
 
@@ -1470,7 +1497,7 @@ than force-run (a percolate leaves a dump + terminates the address space).
 
 | WP | Deliverable | Size |
 |---|---|---|
-| M1-1 | **Verify CTCI frame format against Hercules `ctcadpt.c`; write into Ch. 9.3 as normative** | S |
+| M1-1 | **Verify CTCI frame format against Hercules `ctc_ctci.c`; write into Ch. 9.3 as normative.** **Done** (byte-exact: 3088 pair, CTCIHDR/CTCISEG, big-endian). | S |
 | M1-2 | NSFDEV device table + DEVOPS contract + NSFHOST loopback/TUN driver | M |
 | M1-3 | HLASM top half: EXCP READ/WRITE CCW chains, I/O exit → xq_push + POST | L |
 | M1-4 | C bottom half: frame ↔ PBUF, READ re-drive, sendq kick, MIH idle handling | M |
@@ -1556,6 +1583,8 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.12:** M1-1 (CTCI wire format) — verified byte-exact against Hercules `ctc_ctci.c` / `ctcadpt.h` and written into §9.3 as normative, replacing the Project Brief's approximate "raw IP, no framing". The device is a 3088 read/write subchannel pair; each block is a `CTCIHDR` (2-byte next-block offset, 0x0000 = last) carrying `CTCISEG` segments (6-byte header: length incl. header, type 0x0800, reserved) + the IP packet; all halfwords big-endian = native S/370 order. Also bumps the version header (left at 1.10 by the v1.11/M0-8 changelog entry).
 
 **v1.11:** M0-8 (MVS STC skeleton) implemented — **M0 complete**. Assembles the
 foundation into the `S NSF` started task: config-driven init → the §5.3 executive
