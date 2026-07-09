@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.13 — Draft for implementation. Companion document to the frozen
+*Version 1.14 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -835,7 +835,10 @@ struct netdev {
     USHORT   mtu;
     USHORT   flags;
     QUEUE    sendq;          /* bounded outbound queue          */
-    XQ       doneq;          /* exit→mainline completed I/O     */
+    XQ       doneq;          /* concurrent producer→mainline; used by
+                               NSFHOST's reader thread. Drivers that
+                               complete via an ECB (CTCI, ADR-0019)
+                               leave it empty.                       */
     UINT     ecb;            /* device ECB (in main ECB list)   */
     STSCTR  *ctr_in, *ctr_out, *ctr_ierr, *ctr_oerr;
     void    *priv;           /* driver private block            */
@@ -868,15 +871,55 @@ then drains `sendq` + `doneq`, freeing every held PBUF (the leak gate). The
 
 ### 9.3 CTCI Driver (NSFCTCI) — first concrete driver
 
-Split into the standard exit/mainline halves:
+Split into a mainline top half and the executive bottom half. There is **no
+I/O-completion exit**: `EXCP` starts the channel program and returns, and IOS
+posts the IOB ECB — which *is* the device ECB already in the §5.3 ECBLIST — when
+the channel program terminates. No CHE appendage is written or installed. See
+**ADR-0019** for the decision and for the fully documented appendage alternative.
 
-- **Top half (HLASM):** EXCP with CCW chains for READ and WRITE against
-  the emulated 3088 pair; I/O completion exit pushes the IOELEM onto
-  `doneq` (xq_push) and POSTs the device ECB. Runs the absolute minimum
-  in exit state.
-- **Bottom half (C, executive task):** parses/creates the CTCI frame
-  structure, converts to/from PBUFs, re-drives the next READ, starts
-  queued WRITEs.
+- **Top half (HLASM, mainline):** two DCBs (`DSORG=PS,MACRF=E`, `IOBAD=`), one
+  per subchannel, opened `INPUT` / `OUTPUT`; `CENDA=` is deliberately omitted.
+  Single unchained CCWs: READ `X'02'` with the **`SLI` flag** (an inbound block
+  is shorter than the buffer; without SLI it raises incorrect-length), WRITE
+  `X'01'`. Per request: **clear the device ECB** and the IOB, set
+  `IOBFLAG1 = IOBUNREL`, store the ECB, channel-program and DCB addresses
+  (`IOBECBPB` / `IOBSTRTB` / `IOBDCBPB`, mapping `IEZIOB`), then `EXCP`. Clearing
+  the ECB first is mandatory: a stale posted bit would make the loop process a
+  phantom completion. Nothing runs in exit state.
+- **Bottom half (C, executive task):** woken by the device ECB. Post code `X'7F'`
+  means normal completion; **bytes transferred = requested length − IOB residual
+  count** (from the CSW). It then **re-drives the READ first, and only then
+  parses** the block just received — this ordering is normative, not a nicety
+  (see "Inbound flow control" below). Each `CTCISEG`'s IP packet is **copied out
+  into a PBUF** of the appropriate size class; the I/O buffer is never handed up
+  as a PBUF. Outbound, it builds a block from queued PBUFs and starts the WRITE.
+
+**Device I/O buffers (ping-pong).** A CTCI block is up to 20 KB and carries many
+IP frames, so it is *not* a PBUF. Each device owns dedicated I/O buffers, sized
+`min(Hercules buffer, MVS 3.8j maximum I/O length)`, obtained once at device init
+before `mm_init_complete()` seals the region, and never freed. The read side uses
+**two buffers alternately**: on completion the driver immediately re-drives the
+READ into buffer B and then parses buffer A, so the window with no READ
+outstanding shrinks to a few instructions. Ping-pong needs no second IOB or ECB —
+only one READ is ever outstanding; the driver merely alternates the data address
+in the CCW. The write side needs one buffer, since the `sendq` serialises WRITEs;
+batching several queued PBUFs into one block (what the `CTCIHDR`/`CTCISEG` chain
+is for) is a later optimisation, not v1.
+
+**Inbound flow control (verified against Hercules `ctc_ctci.c`).** Hercules
+buffers arriving frames into its device frame buffer *regardless* of whether a
+READ CCW is outstanding, and presents **no attention and no unit check** for this
+condition. When that buffer is full, its reader thread sleeps ~100 µs and retries
+rather than discarding; only frames too large to ever fit are dropped
+(`EMSGSIZE`). Consequently the gap between an I/O completion and the next `EXCP`
+costs **no packets** — back-pressure propagates to the host TUN queue instead.
+Losing data would require a sustained slow mainline, not a microsecond window.
+This is why closing that gap (the only thing a CHE appendage would buy) is an
+optimisation, not a correctness requirement.
+
+**MTU cap.** The configured interface MTU must satisfy both
+`MTU ≤ MAX_CTCI_FRAME_SIZE` (see below) and `MTU ≤ 9000`; Hercules silently
+discards anything larger.
 
 **Frame format (normative — verified against Hercules `ctc_ctci.c` /
 `ctcadpt.h`; in current Hercules the CTCI code is split out of `ctcadpt.c`
@@ -1631,6 +1674,8 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.14:** §9.3 CTCI top half corrected to the actual EXCP model, per new **ADR-0019**. EXCP has no user-written I/O-completion exit: IOS posts the IOB ECB (= the device ECB already in the §5.3 ECBLIST) at channel-program termination, so no CHE appendage is written or installed. Adds the EXCP recipe (DCB `MACRF=E` without `CENDA=`, unchained READ `X'02'`+SLI / WRITE `X'01'`, `IOBUNREL`, ECB cleared before every `EXCP`, post code `X'7F'`, length = requested − residual), the ping-pong device I/O buffers with the normative re-drive-before-parse ordering, the copy-out-into-PBUF rule, the inbound flow-control behaviour verified against Hercules `ctc_ctci.c` (it buffers and back-pressures; no attention, no unit check, no loss from the re-drive gap), and the MTU cap. The CHE appendage stays fully documented in ADR-0019 as the rejected-for-v1 optimisation. `doneq` is consequently CTCI-unused and remains a per-driver facility (NSFHOST).
 
 **v1.13:** M1-2 (device abstraction + host driver) implemented and host-validated.
 §9.2 gains the **device table & loop seam**: `NSFDEV` owns a fixed device table
