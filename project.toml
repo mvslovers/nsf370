@@ -32,7 +32,12 @@ cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1", "-pthread"]
 #   nsfopr_plat -- the operator CIB/QEDIT seam (M0-8): EXTRACT COMM + QEDIT on
 #              MVS (src/nsfopr_plat.c), an injectable command queue on the host
 #              (src/nsfopr_plat_host.c) so the loop test drives the whole path.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c" }
+#   nsfhost_plat -- the HOST device driver (M1-2, spec 9.4): the real loopback/
+#              TUN driver on the host (src/nsfhost.c, pthread reader thread),
+#              a NULL-ops placeholder on MVS (src/nsfhost_plat.c) -- there is no
+#              host driver on MVS (use CTCI/LCS), so a test that names it still
+#              cross-links, and the host build gets the real driver.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -183,6 +188,22 @@ name = "TSTSTCM"
 startup = "crt1"
 host = false
 sources = ["test/mvs/tststcm.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M1-2 device abstraction + host driver (NSFDEV / NSFHOST) ------------
+# NSFDEV: the DEVOPS contract + device table + the async completion handoff
+# (device doneq -> EV_PACKET_RECEIVED), driven end-to-end over the HOST loopback
+# driver. A pthread reader thread inside src/nsfhost.c is the host analog of the
+# CTCI I/O-completion exit (xq_push onto doneq + POST the device ECB), so the
+# doneq -> EV_PACKET_RECEIVED integration is validated across a real thread
+# boundary; M1-3 swaps only the producer. Sources list src/nsfhost_plat.c (the
+# MVS NULL-ops placeholder); [host].replace swaps it for the real src/nsfhost.c
+# on the native build. tstdev.c is portable (the pthread is inside nsfhost.c) and
+# skips trivially where nsfhost_ops() is NULL (MVS) -- CTCI validates the
+# abstraction on MVS (M1-3+).
+[[test]]
+name = "TSTDEV"
+startup = "crt1"
+sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm"]
 
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,

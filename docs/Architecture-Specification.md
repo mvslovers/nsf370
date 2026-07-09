@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.12 — Draft for implementation. Companion document to the frozen
+*Version 1.13 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -846,6 +846,26 @@ Ownership: `send` takes the PBUF unconditionally — on immediate error the
 driver frees it and counts. Inbound PBUFs are allocated by the driver
 (bottom half, executive task) and handed up via `EV_PACKET_RECEIVED`.
 
+**Device table & loop seam (M1-2).** `NSFDEV` owns a fixed device table (no
+runtime allocation): `dev_register(cfg, ops)` claims a slot, initializes the
+common fields (state `DOWN`, bounded `sendq`, empty `doneq`, per-device
+counters) and calls `ops->init`; `dev_find` (by LINK name) / `dev_find_cuu` /
+`dev_by_index` / `dev_foreach` iterate it; `dev_start` / `dev_send` /
+`dev_shutdown` dispatch through `ops` (with the send-ownership rule above).
+The executive loop is **driver-agnostic** — it never names a concrete driver.
+`NSFDEV` registers three hooks with the loop (`evt_set_devices`, mirroring
+`evt_set_operator`): `nsfdev_collect_ecbs` appends the device ECBs to the
+ECBLIST at loop entry; `nsfdev_poll_input` drains every `doneq` up to
+`EV_PACKET_RECEIVED` (`p1` = PBUF*, `u1` = device index) once per pass before
+dispatch, clearing the device ECB first (lost-wakeup safe) and, on EVT-pool
+exhaustion, dropping+counting rather than abending; `nsfdev_kick_output`
+(§5.3 step 5) drains each UP device's `sendq` through `ops->send`. `dev_send`
+issued from outside a loop pass wakes the loop (`nsfevt_wake`) so pending
+output is kicked. `dev_shutdown` calls `ops->shutdown` (stop the producer)
+then drains `sendq` + `doneq`, freeing every held PBUF (the leak gate). The
+`DEVCFG` passed to `ops->init` carries the common interface fields
+(name/cuu/type/ipaddr/mtu) plus a `drvcfg` pointer for driver-private config.
+
 ### 9.3 CTCI Driver (NSFCTCI) — first concrete driver
 
 Split into the standard exit/mainline halves:
@@ -898,11 +918,39 @@ PBUF, so the framing is host-testable via the NSFHOST loopback driver.
 
 ### 9.4 HOST Driver (NSFHOST)
 
-Same `DEVOPS` contract, implemented on Linux/macOS with a TUN device or
-pcap (and a pure in-memory loopback for unit tests). This is what makes
-the full stack runnable in CI. No MVS code compiles into the host build;
-no host code compiles into the MVS build — enforced by directory layout
-(Ch. 16.2).
+Same `DEVOPS` contract, implemented on Linux/macOS. This is what makes the
+full stack runnable in CI: IP/ICMP/UDP/TCP (M2–M4) are developed and tested
+against NSFHOST on the host before Hercules is ever involved. It moves **raw
+IP packets** — there is no CTCI `CTCIHDR`/`CTCISEG` framing here (that is
+CTCI-only; §9.3); a host TUN device already presents raw IP.
+
+**Modes** (`HOSTCFG.mode`, selected at `dev_register`):
+- `LOOPBACK` (default) — a pure in-memory loopback for unit tests: a
+  transmitted PBUF is handed back inbound, so a full send→receive cycle runs
+  with no OS networking. This is the CI path.
+- `TUN` — a real host TUN interface (Linux `/dev/net/tun`, macOS utun) for
+  live traffic. Compiled only with `-DNSFHOST_TUN`; `dev_register` fails for
+  this mode otherwise.
+- `PCAP` — reserved for a pcap capture source (not yet implemented).
+
+**Async producer (host analog of the CTCI I/O-completion exit).** Inbound
+frames are delivered by a reader **thread**, not synchronously: on a received
+frame it hands a PBUF to the device `doneq` (`xq_push` — lock-free) and POSTs
+the device ECB — exactly the push+post the MVS CTCI exit will do (M1-3). The
+executive loop then drains the doneq up to `EV_PACKET_RECEIVED`
+(`nsfdev_poll_input`). So the whole `doneq → EV_PACKET_RECEIVED` integration
+is validated across a real thread boundary before any device exists, and M1-3
+swaps **only** the producer. In loopback mode the reader relays the same PBUFs
+the send side fed to an internal wire (copy-free — the wire carries raw IP);
+in TUN mode it reads the tun fd. NSFMM is touched only on the executive task
+(never on the reader), so the host test does not race the pools — the same
+single-task storage rule the MVS design relies on.
+
+No MVS code compiles into the host build; no host code compiles into the MVS
+build (Ch. 16.2). `src/nsfhost.c` (the pthread driver) is swapped in for the
+host build; the MVS build compiles a placeholder (`src/nsfhost_plat.c`) whose
+`nsfhost_ops()` returns NULL — there is no host driver on MVS (use CTCI/LCS),
+and a portable test that references it still cross-links.
 
 ### 9.5 LCS Driver (NSFLCS) — Milestone 6
 
@@ -1498,7 +1546,7 @@ than force-run (a percolate leaves a dump + terminates the address space).
 | WP | Deliverable | Size |
 |---|---|---|
 | M1-1 | **Verify CTCI frame format against Hercules `ctc_ctci.c`; write into Ch. 9.3 as normative.** **Done** (byte-exact: 3088 pair, CTCIHDR/CTCISEG, big-endian). | S |
-| M1-2 | NSFDEV device table + DEVOPS contract + NSFHOST loopback/TUN driver | M |
+| M1-2 | NSFDEV device table + DEVOPS contract + NSFHOST loopback/TUN driver. **Done** (§9.2/§9.4; the async `doneq → EV_PACKET_RECEIVED` handoff validated over the host loopback driver's pthread reader thread — the CTCI-exit analog; TSTDEV 80/80 host-green). | M |
 | M1-3 | HLASM top half: EXCP READ/WRITE CCW chains, I/O exit → xq_push + POST | L |
 | M1-4 | C bottom half: frame ↔ PBUF, READ re-drive, sendq kick, MIH idle handling | M |
 | M1-5 | Trace hexdump of received packet on console; hand-crafted packet sent | S |
@@ -1583,6 +1631,32 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.13:** M1-2 (device abstraction + host driver) implemented and host-validated.
+§9.2 gains the **device table & loop seam**: `NSFDEV` owns a fixed device table
+(`dev_register`/`dev_find`/`dev_find_cuu`/`dev_by_index`/`dev_foreach`/`dev_start`/
+`dev_send`/`dev_shutdown`) and registers three hooks with the executive loop
+(`evt_set_devices`, mirroring `evt_set_operator`) so the loop stays
+**driver-agnostic**: `nsfdev_collect_ecbs` (device ECBs → ECBLIST),
+`nsfdev_poll_input` (drain each `doneq` → `EV_PACKET_RECEIVED`, before dispatch,
+lost-wakeup-safe ECB clear, drop+count on EVT exhaustion) and `nsfdev_kick_output`
+(§5.3 step 5, drain `sendq` → `ops->send`); `nsfevt_wake` kicks output for a send
+issued outside a loop pass. The **`NETDEV`** CB is 64 B (`NSF_SIZE_ASSERT`), the
+`send`-ownership rule (§9.2) is enforced, and `dev_shutdown` drains `sendq`+`doneq`
+for a clean leak gate. §9.4 expands **NSFHOST**: modes `LOOPBACK` (default, CI),
+`TUN` (`-DNSFHOST_TUN`), `PCAP` (reserved), and the **async producer** — a reader
+**thread** that `xq_push`es a received PBUF onto `doneq` + POSTs the device ECB,
+the host analog of the CTCI I/O-completion exit (M1-3 swaps only the producer).
+Loopback relays copy-free; NSFMM is touched only on the executive task, so the
+threaded host test does not race the pools. Cross-build discipline: `src/nsfhost.c`
+(pthread) is host-only; the MVS build compiles the NULL-ops placeholder
+`src/nsfhost_plat.c` (no host driver on MVS — use CTCI/LCS), so a portable test
+still cross-links. Host suite **408 → 488** (TSTDEV: send→receive cycle, in-order
+delivery, bounded `sendq`, DOWN-device reject, leak gate; 80/80 stress-stable);
+`-Wall -Wextra -Werror` clean (host + cc370); NSF module + all 16 test modules
+cross-link clean, alias scan clean (13 new `NSFD*`/`NSFH*`/`NSFEV*` externals,
+unique, ≤8 chars). §9.2/§9.4 and §19 M1-2 updated (**Done**); the CTCI HLASM top
+half (M1-3) and frame codec (M1-4) remain the concrete-driver work.
 
 **v1.12:** M1-1 (CTCI wire format) — verified byte-exact against Hercules `ctc_ctci.c` / `ctcadpt.h` and written into §9.3 as normative, replacing the Project Brief's approximate "raw IP, no framing". The device is a 3088 read/write subchannel pair; each block is a `CTCIHDR` (2-byte next-block offset, 0x0000 = last) carrying `CTCISEG` segments (6-byte header: length incl. header, type 0x0800, reserved) + the IP packet; all halfwords big-endian = native S/370 order. Also bumps the version header (left at 1.10 by the v1.11/M0-8 changelog entry).
 
