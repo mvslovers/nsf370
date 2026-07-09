@@ -25,11 +25,20 @@ static XQ        g_xq;                  /* exit->mainline handoff (LIFO)      */
 static MMPOOL   *g_evtpool;             /* the EVT pool                       */
 static NSFECB    g_stopecb;             /* stop request                       */
 static NSFECB    g_handoffecb;          /* handoff ready (M0-6 = devECB[0])   */
+static NSFECB    g_wakeecb;             /* generic loop wake (M1-2)           */
 static NSFECB   *g_opecb;               /* operator console ECB (M0-8)        */
 static void    (*g_opdrain)(void);      /* operator command drain (M0-8)      */
+static int     (*g_devcollect)(NSFECB **, int); /* device ECBs -> ECBLIST (M1) */
+static void    (*g_devpoll)(void);      /* drain device doneqs (M1-2)         */
+static void    (*g_devkick)(void);      /* start device output (M1-2)         */
 static int       g_stop;                /* orderly-stop flag                  */
 static UINT      g_ticks;               /* timer wakes serviced               */
 static UINT      g_drops;               /* evt_post pool-exhaustion drops     */
+
+/* ECBLIST capacity: {timer, handoff, wake} + up to NSFDEV_MAX device ECBs +
+ * {cib} + {stop}. Sized independently of NSFDEV (NSFEVT stays decoupled) with
+ * comfortable headroom; g_devcollect is capped to the free slots. */
+#define EVT_ECBLIST_MAX  16
 
 int nsfevt_init(void)
 {
@@ -42,8 +51,12 @@ int nsfevt_init(void)
     xq_init(&g_xq);
     g_stopecb    = 0u;
     g_handoffecb = 0u;
+    g_wakeecb    = 0u;
     g_opecb      = NULL;                 /* no operator until evt_set_operator */
     g_opdrain    = NULL;
+    g_devcollect = NULL;                 /* no devices until evt_set_devices   */
+    g_devpoll    = NULL;
+    g_devkick    = NULL;
     g_stop       = 0;
     g_ticks      = 0u;
     g_drops      = 0u;
@@ -104,6 +117,20 @@ void evt_set_operator(NSFECB *ecb, void (*drain)(void))
 {
     g_opecb   = ecb;
     g_opdrain = drain;
+}
+
+void evt_set_devices(int  (*collect_ecbs)(NSFECB **, int),
+                     void (*poll_input)(void),
+                     void (*kick_output)(void))
+{
+    g_devcollect = collect_ecbs;
+    g_devpoll    = poll_input;
+    g_devkick    = kick_output;
+}
+
+void nsfevt_wake(void)
+{
+    nsfevt_plat_post(&g_wakeecb);
 }
 
 EVT *nsfevt_alloc(void)
@@ -170,14 +197,25 @@ static void evt_shutdown(void)
 void evt_mainloop(void)
 {
     NSFECB *timerecb  = (NSFECB *)nsftmr_plat_ecb();
-    NSFECB *ecblist[4];
+    NSFECB *ecblist[EVT_ECBLIST_MAX];
     int     necb = 0;
 
-    /* ECBLIST (§5.3): {timerECB, handoffECB[, cibECB], stopECB}. The cibECB slot
-     * is present only when an operator has been registered (evt_set_operator);
-     * devECB[]/requestECB are added at M1+. */
+    /* ECBLIST (§5.3): {timerECB, handoffECB, wakeECB, devECB[]…[, cibECB],
+     * stopECB}. The device ECBs are appended by the registered NSFDEV seam
+     * (M1-2); the cibECB slot is present only when an operator was registered
+     * (evt_set_operator); requestECB is added at M3. The list is built once at
+     * loop entry -- devices are registered before evt_mainloop (M1-2). */
     ecblist[necb++] = timerecb;
     ecblist[necb++] = &g_handoffecb;
+    ecblist[necb++] = &g_wakeecb;
+    if (g_devcollect != NULL) {
+        /* Cap the device ECBs to the free slots, reserving room for the cib
+         * (if any) and the stop ECB below. */
+        int room = EVT_ECBLIST_MAX - necb - 2;
+        if (room > 0) {
+            necb += g_devcollect(&ecblist[necb], room);
+        }
+    }
     if (g_opecb != NULL) {
         ecblist[necb++] = g_opecb;
     }
@@ -206,9 +244,17 @@ void evt_mainloop(void)
             nsfevt_plat_wait(ecblist, necb);
         }
 
-        /* 2. Drain the interrupt-safe handoff into the event queue. */
+        /* 2. Drain the interrupt-safe handoff into the event queue, then drain
+         *    each device's completed-input doneq up to EV_PACKET_RECEIVED. Both
+         *    clear their ECB before draining so a push in the race window is not
+         *    lost. g_wakeecb is a bare wake (dev_send / request path); clearing
+         *    it here lets the WAIT re-block once its work is drained. */
         g_handoffecb = 0u;              /* clear before draining (no lost push) */
+        g_wakeecb    = 0u;
         evt_drain_handoff();
+        if (g_devpoll != NULL) {
+            g_devpoll();                /* device doneqs -> EV_PACKET_RECEIVED  */
+        }
 
         /* 3. Dispatch up to the drain budget, then re-loop (so a flood cannot
          *    starve the timer -- step 4 runs every iteration). */
@@ -229,7 +275,12 @@ void evt_mainloop(void)
             evt_dispatch_timer();
         }
 
-        /* 5. Kick queued output -- a no-op stub until M1 (nsfdev_kick_output). */
+        /* 5. Kick queued output: start pending device I/O (drain sendqs through
+         *    the drivers). Wired by the NSFDEV seam (M1-2); NULL when no device
+         *    is registered. */
+        if (g_devkick != NULL) {
+            g_devkick();
+        }
 
         /* 6. Orderly stop? */
         if (g_stop != 0 || (g_stopecb & NSFECB_POSTED) != 0u) {
