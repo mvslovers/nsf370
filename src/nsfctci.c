@@ -59,9 +59,10 @@ static UINT    g_bufsize;         /* bytes per I/O buffer (pool objsize)      */
  * caller owns it). ddn8 (may be NULL) receives the generated DDNAME on a
  * successful allocate. Exported (nsfctci.h, NSFCISVC) so a test can drive both
  * the failure and the success paths over our request-block construction. */
-int svc99_call(TXT99 **txt99, unsigned char request,
+int svc99_call(void *txt99v, unsigned char request,
                char *ddn8, short *s99err, short *s99info)
 {
+    TXT99  **txt99 = (TXT99 **)txt99v;
     RB99     rb99;
     unsigned count;
     int      err;
