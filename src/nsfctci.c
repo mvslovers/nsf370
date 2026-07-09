@@ -55,10 +55,12 @@ static UINT    g_bufsize;         /* bytes per I/O buffer (pool objsize)      */
 /* ---- SVC 99 seam (libc370) ---------------------------------------------- */
 
 /* Mark the last text unit (high-order bit) and drive SVC 99 for `request`.
- * On failure copies S99ERROR/S99INFO out. Frees the txt99 array on every path.
- * ddn8 (may be NULL) receives the generated DDNAME on a successful allocate. */
-static int svc99_call(TXT99 **txt99, unsigned char request,
-                      char *ddn8, short *s99err, short *s99info)
+ * On failure copies S99ERROR/S99INFO out. Does NOT free the txt99 array (the
+ * caller owns it). ddn8 (may be NULL) receives the generated DDNAME on a
+ * successful allocate. Exported (nsfctci.h, NSFCISVC) so a test can drive both
+ * the failure and the success paths over our request-block construction. */
+int svc99_call(TXT99 **txt99, unsigned char request,
+               char *ddn8, short *s99err, short *s99info)
 {
     RB99     rb99;
     unsigned count;

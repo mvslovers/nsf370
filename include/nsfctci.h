@@ -104,7 +104,7 @@ NSF_SIZE_ASSERT(CTCIDEV, 64);
  *         ctci_write NSFCIWR      ctci_status NSFCIST      ctci_close_sub NSFCICL
  *   C:    ctci_reserve NSFCIRSV   ctci_dev_open NSFCIOPD   ctci_dev_read NSFCIDRD
  *         ctci_dev_write NSFCIDWR ctci_dev_status NSFCIDST ctci_dev_close NSFCIDCL
- *         ctci_alloc_unit NSFCIALU  ctci_free_ddn NSFCIFDN
+ *         ctci_alloc_unit NSFCIALU  ctci_free_ddn NSFCIFDN  svc99_call NSFCISVC
  */
 
 /* ============================ HLASM top half ============================== */
@@ -172,5 +172,16 @@ int      ctci_dev_close(CTCIDEV *d) asm("NSFCIDCL");
 int      ctci_alloc_unit(const char *unit4, char *ddn8,
                          short *s99err, short *s99info) asm("NSFCIALU");
 int      ctci_free_ddn(const char *ddn8) asm("NSFCIFDN");
+
+/* The low-level RB99 wrapper behind ctci_alloc_unit / ctci_free_ddn, exported so
+ * a test can drive SVC 99 directly -- both the failure AND the success paths --
+ * over OUR request-block construction (not libc370's). `txt99` is a built
+ * text-unit array (libc370 `struct txt99`, from svc99.h); svc99_call marks its
+ * last entry, issues SVC 99 with `request` (S99VRBAL / S99VRBUN / ...), and on a
+ * successful allocate copies the returned DDNAME into `ddn8` (8 chars + NUL). On
+ * failure it fills *s99err / *s99info from the RB99. Returns the SVC 99 rc. */
+struct txt99;                          /* libc370 svc99.h / txt99.h */
+int      svc99_call(struct txt99 **txt99, unsigned char request, char *ddn8,
+                    short *s99err, short *s99info) asm("NSFCISVC");
 
 #endif /* NSFCTCI_H */

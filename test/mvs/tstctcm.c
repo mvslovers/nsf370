@@ -17,6 +17,12 @@
  *     clean up -- and asserts it refuses to start (NULL). Everything
  *     ctci_dev_open does except the channel I/O; NO EXCP is issued.
  *
+ *  1c. SVC 99 SUCCESS path -- ALSO RUNS TODAY (no device). Parts 1/1b only ever
+ *     drive SVC 99 into a FAILURE; a DUMMY allocation (the one allocation kind
+ *     that touches no UCB/channel/device) proves the success path over OUR
+ *     svc99_call wrapper: S99VRBAL rc 0, the generated DDNAME reaching our
+ *     buffer, and S99VRBUN unallocating cleanly.
+ *
  *  2. EXCP channel path -- DEFERRED. It allocates + opens the CUU pair, EXCPs
  *     a hand-built block each way, and decodes completion. It CANNOT run yet:
  *     the Hercules side has no CTCI device and the CUU pair is in no UCB. So
@@ -34,6 +40,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <clibecb.h>            /* ecb_wait / ECB (the deferred device probe) */
+#include <svc99.h>             /* __txdmy/__txrddn/__txddn, S99* verbs (part 1c) */
 
 /* Guest/host IP addresses for the crafted ICMP echo (part 2, deferred). The
  * runbook sets these to match the live PROFILE HOME + host TUN address. */
@@ -274,6 +281,78 @@ static int run_wall_probe(void)
                      "start on an undefined CUU");
     return 0;
 }
+
+/* ---- part 1c: SVC 99 SUCCESS path via a DUMMY allocation ----------------- */
+
+/* A system-generated DDNAME (DALRTDDN) is 8 uppercase, non-blank characters
+ * (e.g. "SYS00001"). Checked charset-transparently: strchr over an EBCDIC
+ * literal matches EBCDIC lowercase on the target, so no ASCII assumption. */
+static int ddname_ok(const char *d)
+{
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        if (d[i] == ' ' || d[i] == '\0') {
+            return 0;                 /* blank or shorter than 8 chars         */
+        }
+        if (strchr("abcdefghijklmnopqrstuvwxyz", d[i]) != NULL) {
+            return 0;                 /* lowercase                             */
+        }
+    }
+    return 1;
+}
+
+/* Prove the SVC 99 SUCCESS path on real 3.8j, device-free. Parts 1/1b only ever
+ * drive SVC 99 into a FAILURE (S99ERROR 021C); what stays unproven is the
+ * success path: S99VRBAL returning rc 0, __txrddn's generated DDNAME reaching
+ * our buffer, and S99VRBUN unallocating cleanly. A DUMMY allocation is the one
+ * allocation kind that touches no UCB, no channel and no Hercules device, so it
+ * exercises exactly those three -- all over OUR svc99_call wrapper (calling
+ * libc370 directly would only prove libc370). */
+static int run_alloc_success(void)
+{
+    struct txt99 **txt = NULL;
+    char           ddn[9];
+    short          err = 0;
+    short          info = 0;
+    int            rc;
+
+    memset(ddn, 0, sizeof ddn);
+    printf("--- SVC 99 success path: DUMMY allocation (no device) ---\n");
+
+    /* Ask for a generated DDNAME + a DUMMY DD (no DSN, no UCB, no disposition). */
+    if (__txrddn(&txt, NULL) || __txdmy(&txt, NULL)) {
+        if (txt) FreeTXT99Array(&txt);
+        CHECK(0, "built the DUMMY allocation text units");
+        return 1;
+    }
+    rc = svc99_call(txt, S99VRBAL, ddn, &err, &info);
+    FreeTXT99Array(&txt);
+    printf("DUMMY alloc   rc=%d  S99 ERROR=%04X INFO=%04X  ddn=[%s]\n",
+           rc, (unsigned)(err & 0xFFFF), (unsigned)(info & 0xFFFF), ddn);
+    CHECK(rc == 0, "SVC 99 S99VRBAL DUMMY allocation succeeds (rc 0)");
+    if (rc != 0) {
+        return 1;                     /* nothing allocated -- nothing to free  */
+    }
+    CHECK(ddname_ok(ddn), "returned DDNAME is 8 uppercase non-blank chars");
+
+    /* Unallocate what we just allocated -- ALWAYS, even if the ddname check
+     * failed, so the job never leaves a stray DD in its TIOT. */
+    txt = NULL;
+    if (__txddn(&txt, ddn)) {
+        if (txt) FreeTXT99Array(&txt);
+        CHECK(0, "built the unallocate text unit");
+        return 1;
+    }
+    err = 0;
+    info = 0;
+    rc = svc99_call(txt, S99VRBUN, NULL, &err, &info);
+    FreeTXT99Array(&txt);
+    printf("DUMMY unalloc rc=%d  S99 ERROR=%04X INFO=%04X\n",
+           rc, (unsigned)(err & 0xFFFF), (unsigned)(info & 0xFFFF));
+    CHECK(rc == 0, "SVC 99 S99VRBUN unallocation succeeds (rc 0)");
+    return 0;
+}
 #endif /* !NSFCTCI_CUU */
 
 int main(void)
@@ -296,6 +375,7 @@ int main(void)
     run_device_probe();
 #else
     run_wall_probe();
+    run_alloc_success();
     printf("--- EXCP channel path DEFERRED ---\n");
     printf("no CTCI device configured; rebuild with -DNSFCTCI_CUU=0xNNNN and a\n");
     printf("live 3088 pair to drive the channel path (see PR runbook).\n");
