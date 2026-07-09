@@ -205,6 +205,20 @@ name = "TSTDEV"
 startup = "crt1"
 sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm"]
 
+# -- M1-3 CTCI top half (NSFCTCI): allocate + open the CUU pair + EXCP --------
+# MVS-only (host = false): the driver uses the libc370 SVC 99 dynamic-allocation
+# seam and the HLASM EXCP primitives, neither of which exists on the host (there
+# is no [host].replace shim -- the whole driver is MVS-only, like nsfmain.c). The
+# test runs the SVC 99 seam proof today (invalid unit -> decoded S99 error) and
+# carries the DEFERRED EXCP channel path (compiled -> cross-links, executed only
+# with -DNSFCTCI_CUU + a live 3088 pair; see the PR runbook). Cross-links clean;
+# its EXCP runtime on 3.8j is UNVALIDATED (blocked on the Hercules device).
+[[test]]
+name = "TSTCTCM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstctcm.c", "src/nsfctci.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfabend.c", "asm/nsfctcio.asm"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
