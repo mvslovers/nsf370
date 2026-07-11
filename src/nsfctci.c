@@ -11,13 +11,17 @@
  * yet build/parse CTCIHDR/CTCISEG, convert PBUFs, drain a sendq, or implement
  * DEVOPS -- all M1-4. See nsfctci.h for the interface.
  *
- * ============  DEFERRED SEAM (blocked on hardware)  ============
- * The EXCP READ/WRITE path (ctci_dev_open .. ctci_dev_close) is UNVALIDATED on
- * MVS: there is no CTCI device on the Hercules side and the CUU pair is in no
- * UCB yet, so the channel program cannot be driven. This TU cross-links clean;
- * its on-MVS runtime is owed a live run (PR runbook). Proven under test-mvs
- * today: the SVC 99 seam (ctci_alloc_unit) with a deliberately invalid unit,
- * which fails with a decoded S99 error and touches no real device.
+ * ============  EXCP path VALIDATED on MVS (issue #16)  ============
+ * ctci_dev_open .. ctci_dev_close ran live on MVSCE against a real Hercules
+ * 3088 CTCI pair (CUU 500/501 on tun0): SVC 99 allocated both subchannels (two
+ * distinct DDNAMEs), OPEN succeeded, and one raw EXCP each way completed with
+ * post code X'7F' -- WRITE 38/38 bytes (the crafted ICMP echo reached the host
+ * in tcpdump), READ length = requested - IOB residual. NOTE the SVC 99 unit
+ * name is 3 hex digits ("%03X"): 3.8j device numbers are 3 digits, so a 4-digit
+ * name is an undefined unit (S99ERROR 021C). The READ block framing is NOT the
+ * old §9.3 multi-block chain terminated by 0x0000 -- it is ONE block of many
+ * CTCISEGs with the leading hwOffset = end-of-data and NO terminator sent to
+ * the guest (corrected §9.3 / ADR-0020). Parsing that block into PBUFs is M1-4.
  *
  * MEMORY NOTE. The libc370 SVC 99 text-unit builders (NewTXT99 / arrayadd,
  * inside __txrddn / __txunit / __txshr / __txddn) malloc transiently and
@@ -222,8 +226,12 @@ CTCIDEV *ctci_dev_open(USHORT cuu, USHORT mtu)
         return NULL;
     }
 
-    /* SVC 99 allocate both subchannels (read = cuu, write = cuu+1). */
-    snprintf(unit, sizeof(unit), "%04X", (unsigned)d->cuu);
+    /* SVC 99 allocate both subchannels (read = cuu, write = cuu+1). MVS 3.8j
+     * device numbers are 3 hex digits (CUU); a 4-digit unit name is UNDEFINED
+     * to SVC 99 (S99ERROR 021C -- proven on TK5/MVSCE against a defined pair),
+     * so format the address as 3 digits ("500"), the form the system knows.
+     * 4-digit device numbers only arrived with S/370-XA. */
+    snprintf(unit, sizeof(unit), "%03X", (unsigned)d->cuu);
     if (ctci_alloc_unit(unit, d->rddn, &s99err, &s99info)) {
         nsfmsg("NSF202E CTCI %04X ALLOC FAILED S99 ERR %04X INFO %04X",
                (unsigned)d->cuu, (unsigned)(s99err & 0xFFFF),
@@ -231,7 +239,7 @@ CTCIDEV *ctci_dev_open(USHORT cuu, USHORT mtu)
         ctci_dev_release(d);
         return NULL;
     }
-    snprintf(unit, sizeof(unit), "%04X", (unsigned)d->wcuu);
+    snprintf(unit, sizeof(unit), "%03X", (unsigned)d->wcuu);
     if (ctci_alloc_unit(unit, d->wddn, &s99err, &s99info)) {
         nsfmsg("NSF202E CTCI %04X ALLOC FAILED S99 ERR %04X INFO %04X",
                (unsigned)d->wcuu, (unsigned)(s99err & 0xFFFF),
