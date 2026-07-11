@@ -1,7 +1,7 @@
 /*
  * tstctcm.c -- NSFCTCI on-MVS validation (spec 9.3; ADR-0019). host = false.
  *
- * TWO parts, deliberately separated because M1-3 is BLOCKED on hardware:
+ * Parts split by whether they need a live device (1/1b/1c are device-free):
  *
  *  1. SVC 99 seam proof -- RUNS UNDER test-mvs TODAY, no device required.
  *     It drives the shipped driver code (ctci_alloc_unit -> the RB99 build,
@@ -23,16 +23,19 @@
  *     svc99_call wrapper: S99VRBAL rc 0, the generated DDNAME reaching our
  *     buffer, and S99VRBUN unallocating cleanly.
  *
- *  2. EXCP channel path -- DEFERRED. It allocates + opens the CUU pair, EXCPs
- *     a hand-built block each way, and decodes completion. It CANNOT run yet:
- *     the Hercules side has no CTCI device and the CUU pair is in no UCB. So
- *     it is compiled (proving the whole driver cross-links) but only EXECUTED
- *     when built with -DNSFCTCI_CUU=0xNNNN and a live device present. See the
- *     PR runbook: post code X'7F', length = requested - residual, and a
- *     hwType 0x0800 chain terminating at hwOffset 0x0000.
+ *  2. EXCP channel path -- VALIDATED on MVSCE (issue #16), gated behind
+ *     -DNSFCTCI_CUU=0xNNNN (+ NSFCTCI_SRC/DST) so it only runs where a live
+ *     Hercules 3088 CTCI pair exists. It allocates + opens the pair, EXCPs a
+ *     hand-built ICMP-echo block, then EXCPs a READ. It asserts the M1-3 scope:
+ *     the pair allocates + opens, WRITE completes post X'7F', READ completes
+ *     post X'7F' (length = requested - IOB residual). The received block is
+ *     hexdumped for the record; DECODING it (walking CTCISEGs to the leading
+ *     hwOffset) is a M1-4 concern and is only informational here -- the old
+ *     §9.3 "chain to a 0x0000 terminator" model was wrong (one block of
+ *     segments, hwOffset = end-of-data, no terminator sent): see ADR-0020.
  *
- * Do NOT allocate a real device speculatively (the system is live): part 1
- * uses only the invalid unit, part 2 stays off unless NSFCTCI_CUU is defined.
+ * Do NOT allocate a real device unless NSFCTCI_CUU is defined: parts 1/1b/1c
+ * stay device-free (invalid / DUMMY units), part 2 needs the live pair.
  */
 #include "nsfctci.h"
 #include "nsfmm.h"
@@ -137,33 +140,34 @@ static UINT build_ctci_block(UCHAR *blk, const UCHAR *ip, UINT iplen)
     return term + 2u;
 }
 
-/* Walk a received CTCI block: follow hwOffset to the 0x0000 terminator,
- * asserting every segment is hwType 0x0800. Returns the segment count, or -1
- * on a malformed chain. */
+/* Sanity-walk a received CTCI block the way the REAL Hercules sends it
+ * (verified against ctc_ctci.c; corrected §9.3 / ADR-0020): ONE block header
+ * whose hwOffset = end-of-data, then CTCISEGs walked by hwLength -- there is NO
+ * 0x0000 terminator transferred to the guest, and hwType is a constant 0x0800
+ * marker (NOT a v4/v6 discriminator), so the IP version comes from the packet.
+ * Returns the count of well-formed segments (informational; the production
+ * CTCISEG->PBUF codec is M1-4). */
 static int walk_ctci_block(const UCHAR *blk, UINT len)
 {
-    UINT off  = 0;
+    UINT end, off = 2u;               /* first CTCISEG follows the CTCIHDR      */
     int  segs = 0;
 
-    for (;;) {
-        USHORT next, type;
-        if (off + 2u > len) {
-            return -1;
-        }
-        next = (USHORT)((blk[off] << 8) | blk[off + 1u]);
-        if (next == 0x0000) {
-            return segs;              /* terminator reached                     */
-        }
-        if (off + 8u > len || next > len) {
-            return -1;
-        }
-        type = (USHORT)((blk[off + 4u] << 8) | blk[off + 5u]);
-        if (type != CTCI_TYPE_IPV4) {
-            return -1;
+    if (len < 8u) {
+        return -1;
+    }
+    end = (UINT)((blk[0] << 8) | blk[1]);       /* leading hwOffset = data end  */
+    if (end > len) {
+        end = len;                              /* defensive vs a short read    */
+    }
+    while (off + 6u <= end) {                   /* room for one CTCISEG header   */
+        USHORT seglen = (USHORT)((blk[off] << 8) | blk[off + 1u]);
+        if (seglen < 6u || off + seglen > end) {
+            break;                              /* stop at a malformed segment   */
         }
         segs++;
-        off = next;
+        off += seglen;
     }
+    return segs;
 }
 
 static void hexdump(const char *tag, const UCHAR *p, UINT len)
@@ -243,9 +247,9 @@ static int run_device_probe(void)
     CHECK(post == 0x7F, "READ completed with post code X'7F'");
     hexdump("READ block", d->rbuf0, rlen);
     segs = walk_ctci_block(d->rbuf0, rlen);
-    printf("chain walk: %d segment(s), hwType 0x0800, terminates at 0x0000\n",
-           segs);
-    CHECK(segs >= 1, "received block chain walks to hwOffset 0 (all 0x0800)");
+    printf("READ block: leading hwOffset=%u, %d well-formed CTCISEG(s)\n",
+           (unsigned)((d->rbuf0[0] << 8) | d->rbuf0[1]), segs);
+    CHECK(segs >= 1, "READ block holds >= 1 well-formed CTCISEG (hwLength walk)");
 
     ctci_dev_close(d);
     return 0;

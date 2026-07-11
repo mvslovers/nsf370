@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.15 — Draft for implementation. Companion document to the frozen
+*Version 1.16 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -898,9 +898,11 @@ the channel program terminates. No CHE appendage is written or installed. See
 PROFILE `DEVICE` statement (NSFCFG), not from DD cards. NSFCTCI allocates both
 subchannels at device init through the libc370 SVC 99 seam (`__svc99` plus the
 `__txrddn` / `__txunit` / `__txshr` text-unit builders): per subchannel it builds
-`DALUNIT` from the 4-char CUU, asks the system to return a generated DDNAME
-(`DALRTDDN`, so no PROC edits and no name collisions) with `DALSTATS` = SHR, and
-issues the allocate. The generated DDNAME is patched into the copied model DCB at
+`DALUNIT` from the **3-hex-digit** CUU (MVS 3.8j device numbers are 3 digits — a
+4-digit unit name is *undefined*, `S99ERROR 021C`, even for a defined+online
+device; 4-digit numbers arrived with S/370-XA; see ADR-0020), asks the system to
+return a generated DDNAME (`DALRTDDN`, so no PROC edits and no name collisions)
+with `DALSTATS` = SHR, and issues the allocate. The generated DDNAME is patched into the copied model DCB at
 `DCBDDNAM` before OPEN; at shutdown each subchannel is CLOSEd and then unallocated
 (`S99VRBUN`). On failure the returned `S99ERROR` / `S99INFO` is reported in an
 `NSF2xxE` message and the device refuses to start — no partial init. The text-unit
@@ -945,29 +947,45 @@ CUUs (e.g. `0E20` read, `0E21` write). NSF drives it with CCW opcodes
 `0x02` READ (inbound, host→guest), `0x01` WRITE (outbound, guest→host),
 `0x07` CONTROL, `0x03` NOP, `0x04` SENSE.
 
-The device buffer is a **chain of blocks**; each block starts with a block
-header and carries one or more segments, one per IP datagram:
+The device buffer is **one block** carrying one or more **segments**, one per
+IP datagram. (Earlier drafts modelled it as a *chain of blocks* walked to a
+`0x0000` terminator — correct for what the guest *writes*, wrong for what it
+*reads*; see the READ/WRITE asymmetry below and **ADR-0020**.)
 
 ```
-CTCIHDR  (block header)
-  +0  hwOffset   H'2'   byte offset of the NEXT block in the buffer;
-                        0x0000 marks the last block of the chain
-CTCISEG  (segment header, one per IP frame)
+CTCIHDR  (block header -- one, at offset 0)
+  +0  hwOffset   H'2'   offset of the END of the segment area (where a
+                        following / terminator block would begin)
+CTCISEG  (segment header, one per IP frame; walked by hwLength)
   +0  hwLength   H'2'   segment length INCLUDING this 6-byte header
-  +2  hwType     H'2'   frame type, always 0x0800 (IPv4)
+  +2  hwType     H'2'   constant 0x0800 marker -- NOT a v4/v6 discriminator;
+                        Hercules stamps 0x0800 even on IPv6, so the IP version
+                        is read from the packet, never from hwType
   +4  _reserved  H'2'   always 0x0000
   +6  <data>            the raw IP packet
 ```
 
-A block is `[CTCIHDR] ([CTCISEG][IP]) …`; blocks chain through `hwOffset`,
-the final block having `hwOffset = 0x0000`. All halfwords are **big-endian**
-— native S/370 order — so NSF builds and reads them with no byte swapping.
+A block is `[CTCIHDR] ([CTCISEG][IP]) …`; the reader walks `CTCISEG`s by
+`hwLength` from offset `sizeof(CTCIHDR)` up to the header's `hwOffset`. All
+halfwords are **big-endian** — native S/370 order — so NSF builds and reads
+them with no byte swapping.
 
-Two Hercules behaviours the driver must honour: (1) it is the guest READ CCW
-(`CTCI_Read`) that appends the terminating `hwOffset = 0x0000` block, so the
-bottom half walks the chain to that zero offset; (2) MIH complaints after
-long idle — the driver keeps a READ outstanding and treats HIO/restart as a
-normal path.
+**READ and WRITE framing differ (verified live against `CTCI_Read` /
+`CTCI_EnqueueIPFrame`, issue #16):**
+
+- **Inbound (READ):** Hercules presents ONE block of many segments; the leading
+  `hwOffset` is the end-of-data offset. Hercules writes a terminating
+  `hwOffset = 0x0000` block into *its own* buffer but **does not transfer it to
+  the guest** (the day-1 fix `iLength = iFrameOffset + sizeof(CTCIHDR)`), so the
+  guest sees **no `0x0000` terminator** — it must stop at `hwOffset`, not chase a
+  zero halfword. `length = requested − IOB residual`.
+- **Outbound (WRITE):** the guest builds `[CTCIHDR hwOffset=end][CTCISEG][IP]`
+  and appends a terminating `[hwOffset = 0x0000]` block; Hercules reads up to that
+  zero. (Validated: a crafted ICMP echo framed this way wrote post `X'7F'` and
+  reached the host TUN.)
+
+MIH complaints after long idle are normal — the driver keeps a READ outstanding
+and treats HIO/restart as a normal path.
 
 Buffer sizing: default `0x5000` (20 KB), min `0x4000`, max `0xFFFF`;
 `MAX_CTCI_FRAME_SIZE = buffer − sizeof(CTCIHDR) − sizeof(CTCISEG) − 2`. The
@@ -1606,7 +1624,7 @@ than force-run (a percolate leaves a dump + terminates the address space).
 |---|---|---|
 | M1-1 | **Verify CTCI frame format against Hercules `ctc_ctci.c`; write into Ch. 9.3 as normative.** **Done** (byte-exact: 3088 pair, CTCIHDR/CTCISEG, big-endian). | S |
 | M1-2 | NSFDEV device table + DEVOPS contract + NSFHOST loopback/TUN driver. **Done** (§9.2/§9.4; the async `doneq → EV_PACKET_RECEIVED` handoff validated over the host loopback driver's pthread reader thread — the CTCI-exit analog; TSTDEV 80/80 host-green). | M |
-| M1-3 | HLASM top half (`asm/nsfctcio.asm`) + C lifecycle (`src/nsfctci.c`): SVC 99 allocate + OPEN the 3088 CUU pair, EXCP a raw buffer each way, decode completion (post `X'7F'`, length = requested − residual). Per **ADR-0019** it is plain `EXCP` — IOS posts the IOB ECB, **no** I/O-completion exit, **no** appendage. **In progress** — built; host suite 488/488, cross-links clean, alias scan clean; and — **run live on TK5** (`test-mvs` TSTCTCM CC 0, 6/6) — the **SVC 99 seam end-to-end** (failure: `ZZZZ` → `S99ERROR 021C`; **success**: a device-free DUMMY allocation returns rc 0 with a generated DDNAME, then unallocates rc 0) **and the full `ctci_dev_open` lifecycle** (NSFMM pool reserve, `mm_alloc`, `%04X` format, SVC 99, the `NSF2xxE` WTO, refuse-to-start, cleanup) against the undefined CUU `0E20`. The **EXCP channel path is a deferred seam, UNVALIDATED on MVS** (Hercules has no CTCI device / the CUU pair is in no UCB yet); see the M1-3 PR runbook. | L |
+| M1-3 | HLASM top half (`asm/nsfctcio.asm`) + C lifecycle (`src/nsfctci.c`): SVC 99 allocate + OPEN the 3088 CUU pair, EXCP a raw buffer each way, decode completion (post `X'7F'`, length = requested − residual). Per **ADR-0019** it is plain `EXCP` — IOS posts the IOB ECB, **no** I/O-completion exit, **no** appendage. **Done** — host suite 488/488, cross-links clean, alias scan clean; and **validated live on MVSCE** against a real Hercules 3088 CTCI pair (CUU 500/501 on `tun0`), `test-mvs` TSTCTCM **CC 0, 12/12**: SVC 99 allocated both subchannels (two distinct DDNAMEs), OPEN, EXCP **WRITE** post `X'7F'` (crafted ICMP echo seen in host `tcpdump`), EXCP **READ** post `X'7F'` (length = requested − IOB residual; block walked to 227 well-formed `CTCISEG`s). Fixed the SVC 99 unit-name width (3-digit CUU, not 4 — `021C`) and corrected §9.3's READ framing (**ADR-0020**). The `CTCISEG`↔PBUF codec + DEVOPS is **M1-4**. | L |
 | M1-4 | C bottom half: frame ↔ PBUF, READ re-drive, sendq kick, MIH idle handling | M |
 | M1-5 | Trace hexdump of received packet on console; hand-crafted packet sent | S |
 
@@ -1690,6 +1708,8 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.16:** M1-3 **DONE — the EXCP READ/WRITE channel path is validated live on MVS** (issue #16). Run on MVSCE against a real Hercules 3088 CTCI pair (`0500,0501 CTCI` on `tun0`, guest 192.168.200.1 / host .2); `test-mvs` TSTCTCM **CC 0, 12/12** both legs: SVC 99 allocated devices 500/501 (two distinct DDNAMEs `SYS00005`/`SYS00007`), OPEN both subchannels, EXCP **WRITE** post `X'7F'` (the crafted `CTCIHDR`+`CTCISEG`+ICMP-echo block reached the host — `tcpdump`: `192.168.200.1 > .2 ICMP echo request id 0xABCD`), EXCP **READ** post `X'7F'` (length = requested − IOB residual; the received block walked to 227 well-formed `CTCISEG`s). **Two corrections fall out and are applied here:** (1) the SVC 99 `DALUNIT` unit name is **3 hex digits**, not 4 — MVS 3.8j device numbers are 3 digits, so `"0500"` was *undefined* (`S99ERROR 021C`) even for a defined device; `%04X`→`%03X` in `ctci_dev_open`. (2) §9.3's READ framing was wrong: it is **one block of many `CTCISEG`s** with the leading `hwOffset` = end-of-data, and Hercules does **not** transfer the `0x0000` terminator to the guest (`CTCI_Read` day-1 fix), and `hwType` is a constant `0x0800` marker (not a v4/v6 discriminator). The WRITE framing (terminating `0x0000` block) was correct and is validated. Both recorded in **ADR-0020**. Deferred-seam labels removed from `asm/nsfctcio.asm` + `src/nsfctci.c`; the `CTCISAVE`/ESTAE constraint (issue #16 item 3) is now a source comment. The `CTCISEG`↔PBUF codec, PBUF conversion, DEVOPS, READ re-drive/ping-pong and MIH are **M1-4**.
 
 **v1.15:** M1-3 (CTCI top half + C lifecycle) **built, EXCP path UNVALIDATED on MVS**. §9.3 gains the **dynamic-allocation** paragraph: NSFCTCI allocates the CUU pair from the PROFILE `DEVICE` statement via the libc370 SVC 99 seam (`__svc99` + `__txrddn`/`__txunit`/`__txshr`; `DALUNIT` from the 4-char CUU, a system-returned DDNAME `DALRTDDN`, `DALSTATS` SHR), patches the DDNAME into the copied DCB at `DCBDDNAM` before OPEN, unallocates (`S99VRBUN`) on close, and refuses to start on an `S99ERROR`/`S99INFO` failure (`NSF2xxE`); all DEVICE storage is NSFMM init-window pools. Deliverables: `asm/nsfctcio.asm` (six C-callable FUNHEAD entries — the macro-issuing ones use `FUNHEAD SAVE=` for OPEN/CLOSE/EXCP; **not** the leaf form), `src/nsfctci.c`, `include/nsfctci.h`, `test/mvs/tstctcm.c`. What is proven: host 488/488, cc370/as370/ld370 cross-link clean, alias scan clean, and — **run live on TK5** (`test-mvs` TSTCTCM CC 0, 6/6) — the **SVC 99 seam end-to-end** over our `svc99_call` wrapper (failure: unit `ZZZZ` → `rc=4 S99ERROR 021C`; success: a device-free DUMMY allocation → `rc 0`, a generated DDNAME reaches our buffer, then `S99VRBUN` → `rc 0`, no stray DD) and the **full `ctci_dev_open` lifecycle** (reserve the CTCIDEV/CTCISCB/CTCIBUF pools, `mm_alloc`, `%04X`, SVC 99 of the numeric undefined CUU `0E20`, the `NSF2xxE` WTO on the console, refuse-to-start → NULL, `ctci_dev_release` cleanup) — everything ctci_dev_open does except the channel I/O. What is **owed a live run**: the `EXCP` READ/WRITE channel path (post `X'7F'`, residual arithmetic, `hwType 0x0800` chain), blocked because Hercules has no CTCI device configured — a labelled **deferred seam** in the source, per the M1-3 PR runbook. The §19 M1-3 row is corrected off the pre-ADR-0019 "I/O exit → xq_push" wording and stays open.
 

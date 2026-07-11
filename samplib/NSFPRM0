@@ -1,0 +1,37 @@
+; NSF PROFILE.TCPIP -- SYS2.PARMLIB(NSFPRM0) for the M1 CTCI bring-up.
+;
+; Read at "S NSF" through the PROFILE DD (see samplib/NSF). The syntax is
+; PROFILE.TCPIP-compatible where IBM defines it; the NSF* statements are NSF
+; extensions. Full grammar + validation: docs/Architecture-Specification.md ch.14.
+;
+; All-or-nothing: any error rejects startup with an NSF7xxE message and the
+; 1-based line number -- there is no partial configuration.
+;
+; NOTE: the running STC (nsfstc.c) validates this config but does NOT itself
+; open a device -- it checks LINK->DEVICE / HOME->LINK referential integrity by
+; NAME, so "S NSF" proves the CUU parses, not that the channel opens. The CUU
+; pair is driven by test/mvs/tstctcm.c part 2, built -DNSFCTCI_CUU=0x0500
+; (issue #16). Keep the DEVICE CUU below equal to that build flag.
+
+; -- interface: one point-to-point CTC (the M1 CTCI driver target) -----------
+; DEVICE names the READ (lower/even) CUU; the driver takes write = cuu+1.
+; 0500 read / 0501 write == the online Hercules CTCI pair (D U,,,500,4).
+DEVICE  CTCA CTC 0500             ; CTC device at hardware address (cuu) 0500
+LINK    LNK1 CTC 0 CTCA          ; IP link riding over device CTCA
+HOME    192.168.200.1 LNK1       ; guest home addr (== tun0 peer on the host)
+GATEWAY DEFAULTNET 192.168.200.2 LNK1 1500 0  ; default route via host tun0
+
+; -- port reservations -------------------------------------------------------
+PORT    23  TCP  TELNET          ; telnet reserved for jobname TELNET
+PORT    21  TCP  FTPD            ; ftp control reserved for jobname FTPD
+
+; -- protocol tuning ---------------------------------------------------------
+TCPCONFIG RECVBUFRSIZE 16384 SENDBUFRSIZE 16384
+UDPCONFIG UDPCHKSUM
+
+; -- NSF extensions: buffer-pool sizing + startup trace ----------------------
+; Pool names match the NSFMM/NSFBUF pools so NSFPOOL sizes them (spec 14.4).
+NSFPOOL BUFSMALL 64              ; 64 small (256 B) packet buffers
+NSFPOOL BUFLARGE 32             ; 32 large (2048 B) packet buffers
+NSFTRACE CONFIG ON             ; trace the configuration component at startup
+NSFTRACE DRIVER ON             ; trace the device driver (CTCI) for M1 bring-up

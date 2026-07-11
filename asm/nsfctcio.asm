@@ -73,16 +73,15 @@
 *      rounded to 8, MMOBJ = 8 -- see nsfmm.c), and CTCISC places SCIOB
 *      and SCCCW on DS 0D boundaries, so both are aligned.
 *
-*  ==============  DEFERRED SEAM (blocked on hardware)  =============
-*  The EXCP READ/WRITE path has NOT run on MVS: M1-3 built it, but the
-*  Hercules side has no CTCI device and the CUU pair is in no UCB yet,
-*  so the channel program cannot be driven.  This module ASSEMBLES and
-*  CROSS-LINKS clean; its RUNTIME on 3.8j is UNVALIDATED.  Like
-*  nsfxq/nsfstim before their M0-6 validation, it stays a labelled
-*  deferred seam until the PR runbook's on-MVS proof (post code X'7F',
-*  residual arithmetic, hwType 0x0800 chain) passes.  This project has
-*  been bitten three times by unvalidated seams (S102, S0C6, #8); the
-*  label is how we remember which ones are still owed a live run.
+*  ==============  EXCP path VALIDATED on MVS (issue #16)  =========
+*  Run live on MVSCE against a real Hercules 3088 CTCI pair (CUU
+*  500/501 on tun0).  OPEN both subchannels, one raw EXCP each way:
+*  WRITE post X'7F' 38/38 bytes (crafted ICMP seen in host tcpdump),
+*  READ post X'7F', length = requested - IOB residual.  The S102/S0C6/#8
+*  unvalidated-seam risk is retired for this module.  (The READ block
+*  DECODE -- walking CTCISEGs to the leading hwOffset -- is M1-4, and
+*  §9.3's old "chain to a 0x0000 terminator" model was wrong: see the
+*  corrected §9.3 / ADR-0020.)
 *  =================================================================
 *
          COPY  MVSMACS
@@ -224,6 +223,12 @@ MODLIOB  DC    XL64'00'           dummy model IOB for the DCB macro
 *  One shared static save area: only the single executive task calls
 *  these entries, run-to-completion, never nested -- so one 18F area
 *  is safe (the single-task rationale of nsfstim's static state).
+*  CONSTRAINT (issue #16 item 3): this ALSO assumes ESTAE never RETURNS
+*  into an interrupted NSFCI* entry.  Benign today -- nsf_recover
+*  percolates and never retries, so the recovery path (-> ctci_close ->
+*  NSFCICL) reuses CTCISAVE but nothing resumes the interrupted NSFCIRD/
+*  NSFCIWR whose caller regs it held.  If §17 ever adds RETRY, the
+*  recovery entries need their own save area or this corrupts.
          DS    0D
 CTCISAVE DC    18F'0'
 *  Model-DCB length (the MVC copy size), a backward reference here.
