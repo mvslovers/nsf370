@@ -20,12 +20,19 @@
  *     then loops { EXCP READ into the ONE read buffer; wait recb; store len/post;
  *     POST dev->ecb; wait returnecb }. The executive DEVIO `service` decodes the
  *     filled buffer into PBUFs (EV_PACKET_RECEIVED) ON THE EXECUTIVE TASK (§9.2,
- *     §3 single-task storage) and POSTs returnecb so the subtask reads again.
- *     No READ is outstanding only for the microseconds of the decode -- lossless,
- *     because Hercules buffers/back-pressures inbound frames with no READ
- *     outstanding (§9.3, verified vs ctc_ctci.c). Ping-pong + a free-buffer queue
- *     (keeping a READ always outstanding) is the documented throughput follow-on,
- *     deferred exactly as the CHE appendage is (ADR-0019).
+ *     §3 single-task storage). The read re-arm is SEQUENCED BEHIND THE WRITE
+ *     PIPELINE (ADR-0025, issue #21): service only marks the release (rhold);
+ *     kick POSTs returnecb when no WRITE is queued or outstanding. The pair
+ *     shares one channel and a WRITE SIO issued while the blocking READ is
+ *     outstanding queues at the IOS level until the next inbound frame
+ *     completes that READ (live-measured: the reply's RTT tracks the sender's
+ *     interval, 90 s+ for a burst tail) -- so the driver keeps the READ parked
+ *     until outbound work has drained. The window is lossless: Hercules
+ *     buffers/back-pressures inbound frames with no READ outstanding (§9.3,
+ *     verified vs ctc_ctci.c). Ping-pong + a free-buffer queue (keeping a READ
+ *     always outstanding) remains the documented throughput follow-on -- now
+ *     explicitly conditional on solving the same channel serialization (HIO or
+ *     an attention-driven protocol), see ADR-0025.
  *   WRITE (one outstanding): the executive encodes a queued PBUF into the write
  *     buffer (buf_copyout stays on the executive -- the PBUF never crosses to the
  *     subtask), sets txbusy, and POSTs txgoecb; the write subtask EXCPs the WRITE
@@ -141,7 +148,11 @@ typedef struct ctcidev {
 
     char    rddn[9];           /*  88  read  subchannel DDNAME (NUL-term)      */
     char    wddn[9];           /*  97  write subchannel DDNAME (NUL-term)      */
-    char    rsvd2[2];          /* 106                                          */
+    UCHAR   rhold;             /* 106  read re-arm held until writes drain
+                                       (executive-only; pair sequencing,
+                                       ADR-0025 -- a WRITE SIO queues behind an
+                                       outstanding blocking READ)              */
+    char    rsvd2;             /* 107                                          */
     UINT    wpost;             /* 108  write completion post code (wsub-set)    */
 } CTCIDEV;                       /* 112 bytes */
 NSF_SIZE_ASSERT(CTCIDEV, 112);
