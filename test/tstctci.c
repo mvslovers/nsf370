@@ -282,6 +282,57 @@ static void scenario_send_write(void)
 
     CHECK(dev_shutdown(dev) == 0, "send: dev_shutdown");
 }
+
+/* ---- scenario 5: sustained back-to-back WRITEs must drain ----
+ * Regression for the write handshake: the write subtask owns wecb and hands the
+ * completion up via wpost/wready; the executive reap keys off wready (never wecb)
+ * and re-arms for the next WRITE. If the reap ever reads/clears wecb again, it
+ * steals the subtask's completion and the pipeline stalls after ONE WRITE (the
+ * live 999/1000-loss bug). Driving N > sendq depth writes end-to-end and asserting
+ * every one transmits (ctr_out == N, txbusy always clears) guards that handshake.
+ * The host shim completes synchronously so it cannot reproduce the MVS scheduler
+ * race itself -- the live TSTCTCM / ping gate is that proof -- but it locks the
+ * ping-pong so a future "stuck after one" fails here. */
+static void scenario_send_many(void)
+{
+    UCHAR    ip[28];
+    NETDEV  *dev;
+    CTCIDEV *d;
+    UINT     n, i;
+    const UINT N = 40u;                 /* > NSFDEV_SENDQ_MAX so the queue cycles */
+
+    dev = fresh_dev("CTCI5", 0x050A);
+    CHECK(dev_start(dev) == 0, "many: dev_start");
+    d = (CTCIDEV *)dev->priv;
+
+    memset(ip, 0, sizeof(ip));
+    ip[0] = 0x45;
+    ip[3] = 28;
+
+    for (n = 0u; n < N; n++) {
+        PBUF *b = buf_alloc((USHORT)sizeof(ip));
+
+        CHECK(b != NULL, "many: buf_alloc");
+        ip[9] = (UCHAR)n;               /* vary a byte per frame */
+        (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
+        CHECK(dev_send(dev, b) == 0, "many: dev_send queued");
+        nsfdev_kick_output();           /* start this WRITE */
+
+        /* Complete THIS write before the next, so a "stuck after one" regression
+         * leaves txbusy set and fails the CHECK below rather than hanging. */
+        for (i = 0u; i < 200u && d->txbusy; i++) {
+            nsfthr_timed_wait(&dev->ecb, 1u);
+            dev->ecb = 0u;
+            nsfdev_poll_input();        /* reap via wready */
+            nsfdev_kick_output();
+        }
+        CHECK(d->txbusy == 0u, "many: WRITE completed (not stuck)");
+    }
+
+    CHECK_EQ((long)dev->ctr_out->value, (long)N, "many: every WRITE transmitted");
+    CHECK(d->txpbuf == NULL, "many: no in-flight PBUF left");
+    CHECK(dev_shutdown(dev) == 0, "many: dev_shutdown");
+}
 #endif /* !__MVS__ */
 
 int main(void)
@@ -304,6 +355,7 @@ int main(void)
     scenario_receive_two();
     scenario_error_then_good();
     scenario_send_write();
+    scenario_send_many();
 
     /* Leak gate: every per-packet pool AND the CTCI device storage back to
      * baseline after all scenarios have joined their subtasks and shut down. */

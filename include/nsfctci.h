@@ -116,7 +116,13 @@ typedef struct ctcidev {
     UINT    rlen;              /*  44  bytes read (requested - residual)       */
     UINT    rpost;             /*  48  read completion post code               */
 
-    /* write handoff: wecb IOS->wsub; txgoecb+txlen exec->wsub; txpbuf exec-only */
+    /* write handoff (mirrors the read handoff so the executive NEVER touches the
+     * write subtask's IOB ECB, ADR-0023): wecb IOS->wsub, owned by wsub end to
+     * end (wsub waits it AND reads its status); txgoecb+txlen exec->wsub;
+     * wpost/wready wsub->exec (the reap keys off wready, never wecb); txpbuf
+     * exec-only. Reaping on wecb directly would let the executive clear it out
+     * from under wsub's wait -> a stolen completion that hangs wsub after one
+     * WRITE (the live #2-write stall). */
     NSFECB  wecb;              /*  52  write completion (IOS -> write subtask)  */
     NSFECB  txgoecb;           /*  56  work ready       (exec -> write subtask) */
     UINT    txlen;             /*  60  bytes to WRITE from wbuf                 */
@@ -131,13 +137,14 @@ typedef struct ctcidev {
     UCHAR   rready;            /*  84  a read block is filled, awaiting decode  */
     UCHAR   txbusy;            /*  85  a WRITE is outstanding (executive-only)  */
     UCHAR   stop;              /*  86  shutdown requested (subtasks poll it)    */
-    UCHAR   rsvd;              /*  87                                          */
+    UCHAR   wready;            /*  87  a WRITE completed, awaiting reap (wsub->exec) */
 
     char    rddn[9];           /*  88  read  subchannel DDNAME (NUL-term)      */
     char    wddn[9];           /*  97  write subchannel DDNAME (NUL-term)      */
     char    rsvd2[2];          /* 106                                          */
-} CTCIDEV;                       /* 108 bytes */
-NSF_SIZE_ASSERT(CTCIDEV, 108);
+    UINT    wpost;             /* 108  write completion post code (wsub-set)    */
+} CTCIDEV;                       /* 112 bytes */
+NSF_SIZE_ASSERT(CTCIDEV, 112);
 
 /* asm() external-symbol aliases (CLAUDE.md §3), all unique across the load
  * module. The top-half entries (NSFCI + verb) match their FUNHEAD names
