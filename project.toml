@@ -251,6 +251,22 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M1-4b Stage 0: cthread seam de-risk (issue #18 / ADR-0022) --------------
+# MVS-only (host = false): proves the libc370 `cthread` seam in ISOLATION before
+# any CTCI I/O is wired to it -- the exact hinge #18's fix rests on. A cthread
+# subtask SVC-2-POSTs a parent ECB while the async STIMER heartbeat POSTs another,
+# BOTH in one WAIT ECBLIST, over many rounds: if a normal-task SVC-2 POST into the
+# executive's multi-ECB WAIT carried #18's pathology it hangs HERE. Also joins the
+# subtask via CTHDTASK.termecb + cthread_detach and proves a subtask ESTAE fault
+# leaves the parent alive. Needs only the STIMER seam (asm/nsfstim.asm); cthread /
+# IDENTIFY / WAIT ECBLIST come from libc370 (autocalled). cthread is the first use
+# in the ecosystem, so it is validated here, not assumed.
+[[test]]
+name = "TSTCTHR"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstcthr.c", "asm/nsfstim.asm"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
