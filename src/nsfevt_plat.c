@@ -16,9 +16,16 @@
  * (rather than via <clibecb.h>) so the seam has no header dependency. */
 int ecb_waitlist(NSFECB **ecblist) asm("@@ECBWL");
 
+/* Local copy capacity: MUST be >= the loop's EVT_ECBLIST_MAX (nsfevt.c). If it
+ * is smaller, a full list is silently truncated here and the ECBs at the END --
+ * the cib and stop ECBs -- are dropped from the WAIT, so the loop can never wake
+ * for an operator command or a stop (an every-device-active hang). Kept at 16 to
+ * match EVT_ECBLIST_MAX. */
+#define NSFEVT_WAIT_MAX  16
+
 void nsfevt_plat_wait(NSFECB **ecblist, int count)
 {
-    NSFECB *list[8];
+    NSFECB *list[NSFEVT_WAIT_MAX];
     int     i;
 
     if (count > (int)(sizeof(list) / sizeof(list[0]))) {

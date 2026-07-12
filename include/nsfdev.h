@@ -69,6 +69,30 @@ typedef struct devops {
     int (*shutdown)(NETDEV *dev);
 } DEVOPS;
 
+/* Optional ECB-completion I/O seam (spec 9.2, ADR-0021). A driver whose I/O
+ * completes by an OS-posted ECB rather than an async producer thread (CTCI, per
+ * ADR-0019: IOS posts the IOB ECB, doneq stays empty) attaches a DEVIO through
+ * dev_set_io. It is the per-device mirror of the loop's three global device
+ * hooks (§5.3): the NSFDEV hooks consult it and, when present, use it INSTEAD of
+ * the default doneq/ecb model:
+ *   collect -- append this device's own completion ECB(s) to the ECBLIST (CTCI:
+ *              the read + write IOB ECBs), returning the count; called at loop
+ *              entry in place of contributing the single dev->ecb.
+ *   service -- called once per pass before dispatch (where poll_input would
+ *              drain the doneq): demux which ECB posted and run the read/write
+ *              completion -- for CTCI, re-drive the READ then decode+evt_post,
+ *              and free the in-flight WRITE PBUF.
+ *   kick    -- called at §5.3 step 5 in place of the generic sendq drain: start
+ *              at most one outstanding I/O from the sendq (CTCI: one WRITE).
+ * A driver that leaves dev->io NULL (NSFHOST) keeps the default model: dev->ecb
+ * in the ECBLIST, doneq drained to EV_PACKET_RECEIVED, sendq drained via
+ * ops->send. */
+typedef struct devio {
+    int  (*collect)(NETDEV *dev, NSFECB **list, int max);
+    void (*service)(NETDEV *dev);
+    void (*kick)   (NETDEV *dev);
+} DEVIO;
+
 /* NETDEV type codes (NETDEV.type). */
 #define NSFDEV_T_CTCI   1
 #define NSFDEV_T_LCS    2
@@ -92,10 +116,11 @@ typedef struct devops {
 
 /* The per-device control block (spec 9.2). Lives in the NSFDEV static table,
  * NOT an NSFMM pool -- it holds pointers and is never allocated at runtime.
- * 64 bytes on the S/370 target (4-byte pointers); the layout is packed with no
+ * 68 bytes on the S/370 target (4-byte pointers); the layout is packed with no
  * padding (every field is naturally aligned, max alignment 4). The size assert
  * is enforced only under cc370 (__MVS__); a host build has 8-byte pointers so
- * the target-size check is a no-op there (see NSF_SIZE_ASSERT). */
+ * the target-size check is a no-op there (see NSF_SIZE_ASSERT). Grew 64->68 at
+ * M1-4 for the optional `io` seam (ADR-0021). */
 struct netdev {
     char     name[8];           /*  0  LINK name (NUL/blank padded)          */
     DEVOPS  *ops;               /*  8  driver operations                     */
@@ -113,17 +138,19 @@ struct netdev {
     STSCTR  *ctr_ierr;          /* 52  inbound drops (no EVT / no PBUF)      */
     STSCTR  *ctr_oerr;          /* 56  outbound drops (queue full / tx err)  */
     void    *priv;              /* 60  driver private block                  */
-};                              /* 64 bytes */
-NSF_SIZE_ASSERT(NETDEV, 64);
+    DEVIO   *io;                /* 64  optional ECB-completion seam (or NULL) */
+};                              /* 68 bytes */
+NSF_SIZE_ASSERT(NETDEV, 68);
 
 /* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"):
  * cc370/ld370 fold an external name to 8 characters after upcasing and mapping
  * '_' -> '@', so every cross-module NSFDEV function pins a unique 8-char linker
  * name (scheme NSFD + verb) so no two collide on MVS:
  *   dev_init NSFDINIT   dev_register NSFDREG   dev_find NSFDFND
- *   dev_find_cuu NSFDFCU   dev_by_index NSFDBYIX   dev_foreach NSFDFOR
+ *   dev_find_cuu NSFDFCU   dev_by_index NSFDBYIX   dev_index NSFDIDX
+ *   dev_foreach NSFDFOR
  *   dev_count NSFDCNT   dev_start NSFDSTRT   dev_send NSFDSEND
- *   dev_shutdown NSFDSHUT   nsfdev_collect_ecbs NSFDECBS
+ *   dev_shutdown NSFDSHUT   dev_set_io NSFDSTIO   nsfdev_collect_ecbs NSFDECBS
  *   nsfdev_poll_input NSFDPOLL   nsfdev_kick_output NSFDKICK
  */
 
@@ -151,6 +178,11 @@ NETDEV *dev_find_cuu(USHORT cuu) asm("NSFDFCU");
  * index), or NULL if idx is out of range or the slot is unused. */
 NETDEV *dev_by_index(UINT idx) asm("NSFDBYIX");
 
+/* The table index of `dev` (the inverse of dev_by_index), for a driver that must
+ * stamp EV_PACKET_RECEIVED.u1 with its own index. Returns NSFDEV_MAX if `dev` is
+ * not a registered table slot. */
+UINT    dev_index(const NETDEV *dev) asm("NSFDIDX");
+
 /* Call fn(dev, arg) for each registered device, in slot order. */
 void    dev_foreach(void (*fn)(NETDEV *dev, void *arg), void *arg) asm("NSFDFOR");
 
@@ -167,6 +199,13 @@ int     dev_start(NETDEV *dev) asm("NSFDSTRT");
  * ctr_oerr counted. Returns 0 if queued, non-zero if dropped. Wakes the loop so
  * a pending send is kicked even when issued from outside the loop. */
 int     dev_send(NETDEV *dev, PBUF *b) asm("NSFDSEND");
+
+/* Attach (or clear, with NULL) the optional ECB-completion I/O seam for a
+ * device (ADR-0021). A driver whose I/O completes by an OS-posted ECB (CTCI)
+ * calls this from ops->init with its static DEVIO; the three NSFDEV loop hooks
+ * then drive this device through `io` instead of the default doneq/ecb model.
+ * The DEVIO must outlive the device (a static, like DEVOPS). */
+void    dev_set_io(NETDEV *dev, DEVIO *io) asm("NSFDSTIO");
 
 /* Quiesce a device: state -> QUIESCING -> ops->shutdown (stop the producer,
  * release driver storage) -> drain the sendq and doneq (freeing any PBUFs still

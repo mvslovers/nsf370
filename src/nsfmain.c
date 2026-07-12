@@ -22,6 +22,10 @@
 #include "nsftmr.h"
 #include "nsftrc.h"
 #include "nsfsts.h"
+#include "nsfdev.h"            /* dev_register / dev_start / dev_shutdown     */
+#include "nsfctci.h"          /* ctci_reserve / ctci_devops                  */
+#include "nsfbuf.h"           /* PBUF, buf_free (the RX terminus)            */
+#include <string.h>           /* memcpy / memset (device wiring)             */
 #include <clibstae.h>          /* __estae, ESTAE_CREATE/DELETE */
 #include <clibsdwa.h>          /* SDWA, SDWARCDE, SDWACWT */
 
@@ -53,6 +57,125 @@ static void nsf_recover(SDWA *sdwa)
     if (sdwa != NULL) {
         sdwa->SDWARCDE = SDWACWT;       /* continue with termination = percolate */
     }
+}
+
+/*
+ * EV_PACKET_RECEIVED terminus (M1-4). Until IP (M2) claims inbound packets, the
+ * executive still MUST free every PBUF a device hands up: the loop frees the EVT
+ * but never ev->p1, so an unhandled EV_PACKET_RECEIVED leaks the buffer. This
+ * handler counts a driver trace line and frees it -- the receive path's honest
+ * end for now (the DISPLAY,STATS device ctr_in is the real proof of arrival).
+ */
+static void nsf_rx_packet(EVT *ev)
+{
+    PBUF *b = (PBUF *)ev->p1;
+
+    if (b != NULL) {
+        TRC(DRIVER, "RX %u bytes on dev %u", (unsigned)buf_chain_len(b),
+            (unsigned)ev->u1);
+        buf_free(b);
+    }
+}
+
+/* -- device wiring (PROFILE DEVICE/LINK/HOME -> NSFDEV) --------------------- *
+ * Charset-transparent name compare over NUL-padded fixed fields (literals only,
+ * no hardcoded byte values), matching nsfstc.c. */
+static int nsf_name_eq(const char *a, const char *b, UINT len)
+{
+    UINT i;
+
+    for (i = 0u; i < len; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+        if (a[i] == '\0') {
+            return 1;                   /* both padded from here on */
+        }
+    }
+    return 1;
+}
+
+/* Number of DEVICE statements of the CTC type. */
+static UINT nsf_ctc_count(const NSFCFG *cfg)
+{
+    UINT i, n = 0u;
+
+    for (i = 0u; i < cfg->ndev; i++) {
+        if (cfg->dev[i].type == NSFCFG_DEV_CTC) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Build a DEVCFG for DEVICE index `di` by resolving the LINK bound to it (its
+ * name is the interface name) and the HOME address bound to that LINK. Referential
+ * integrity (LINK->DEVICE, HOME->LINK) was validated at init, but a DEVICE need
+ * not have a LINK -- then the interface name falls back to the device name and
+ * the HOME stays 0 (the device still comes up; IP binding is M2). */
+static void nsf_devcfg(const NSFCFG *cfg, UINT di, DEVCFG *out)
+{
+    const NSFCFGDEV *dv = &cfg->dev[di];
+    UINT             i, j;
+
+    memset(out, 0, sizeof(*out));
+    out->cuu  = dv->cuu;
+    out->type = NSFDEV_T_CTCI;
+    out->mtu  = 1500;                   /* v1 default (IP/MTU refinement is M2) */
+    memcpy(out->name, dv->name, sizeof(out->name));   /* fallback: device name */
+
+    for (i = 0u; i < cfg->nlink; i++) {
+        if (!nsf_name_eq(cfg->link[i].devname, dv->name, (UINT)NSFCFG_NAMELEN)) {
+            continue;
+        }
+        memcpy(out->name, cfg->link[i].name, sizeof(out->name)); /* LINK name */
+        for (j = 0u; j < cfg->nhome; j++) {
+            if (nsf_name_eq(cfg->home[j].link, cfg->link[i].name,
+                            (UINT)NSFCFG_NAMELEN)) {
+                out->ipaddr = cfg->home[j].ip;
+                break;
+            }
+        }
+        break;
+    }
+}
+
+/* Register + start every configured CTCI interface (called after the pools are
+ * sealed). A device that fails to register or start is reported and skipped --
+ * one bad interface must not stop the rest (or the whole stack). */
+static void nsf_start_devices(const NSFCFG *cfg)
+{
+    UINT i;
+
+    dev_init();                         /* fresh table; forces the loop re-wire */
+    for (i = 0u; i < cfg->ndev; i++) {
+        DEVCFG  dc;
+        NETDEV *nd;
+
+        if (cfg->dev[i].type != NSFCFG_DEV_CTC) {
+            continue;
+        }
+        nsf_devcfg(cfg, i, &dc);
+        nd = dev_register(&dc, ctci_devops());
+        if (nd == NULL) {
+            nsfmsg("NSF213E CTCI %04X REGISTER FAILED", (unsigned)dc.cuu);
+            continue;
+        }
+        if (dev_start(nd) != 0) {
+            nsfmsg("NSF212E CTCI %04X FAILED TO START", (unsigned)dc.cuu);
+            continue;
+        }
+        nsfmsg("NSF211I INTERFACE %.8s CUU %04X UP", dc.name, (unsigned)dc.cuu);
+    }
+}
+
+/* Quiesce one device (dev_foreach callback): close the channel, free I/O
+ * buffers, return pool storage -- so SVC 99 allocations release cleanly before
+ * mm_shutdown. */
+static void nsf_quiesce_device(NETDEV *dev, void *arg)
+{
+    (void)arg;
+    dev_shutdown(dev);
 }
 
 int main(int argc, char **argv)
@@ -103,6 +226,20 @@ int main(int argc, char **argv)
         mm_shutdown();
         return 8;
     }
+
+    /* 3b. Reserve device region storage (still in the init window). CTCI pools
+     *     must exist before the seal; the CTCIDEV/buffers themselves are
+     *     mm_alloc'd at dev_start, after the seal (only mm_pool_create is
+     *     sealed). Refuse to start if the reserve fails. */
+    {
+        UINT nctc = nsf_ctc_count(&g_cfg);
+        if (nctc > 0u && ctci_reserve(nctc, CTCI_BUF_DEFAULT) != 0) {
+            nsfmsg("NSF009E NSF INITIALIZATION FAILED, RC=%d", 8);
+            mm_shutdown();
+            return 8;
+        }
+    }
+
     mm_init_complete();                          /* seal: mm_pool_create is closed */
 
     /* 4. Operator interface (CIB/QEDIT); add its console ECB to the ECBLIST. */
@@ -113,17 +250,26 @@ int main(int argc, char **argv)
     }
     evt_set_operator(nsfopr_ecb(), nsfopr_drain);
 
-    /* 5. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
+    /* 5. Register + start the configured interfaces (M1-4). The inbound
+     *    terminus handler is mandatory: it frees each received PBUF (the loop
+     *    frees the EVT, never ev->p1) until IP claims the packets (M2). */
+    evt_register(EV_PACKET_RECEIVED, nsf_rx_packet);
+    nsf_start_devices(&g_cfg);
+
+    /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
     __estae(ESTAE_CREATE, (void *)nsf_recover, NULL);
 
     nsfmsg("NSF001I NSF INITIALIZATION COMPLETE");
 
-    /* 6. Run the executive until STOP / P NSF (evt_mainloop runs the §5.4
+    /* 7. Run the executive until STOP / P NSF (evt_mainloop runs the §5.4
      *    shutdown sequence internally before it returns). */
     evt_mainloop();
 
-    /* 7. Final teardown. Delete the ESTAE FIRST so a fault while releasing pools
-     *    cannot re-enter recovery (the ecosystem stumbling block). */
+    /* 8. Final teardown. Quiesce devices first (close channels, release SVC 99
+     *    allocations + I/O buffers) while the pools still exist, then delete the
+     *    ESTAE (so a fault while releasing pools cannot re-enter recovery) and
+     *    release the regions. */
+    dev_foreach(nsf_quiesce_device, NULL);
     __estae(ESTAE_DELETE, NULL, NULL);
     nsf_shutdown();
     nsfmsg("NSF011I NSF SHUTDOWN COMPLETE");

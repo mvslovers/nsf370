@@ -24,3 +24,7 @@ out as they are revisited. ADR-0014 onward are authored directly here.
 | 0016 | Shared nsftime seam (nsf_now + nsf_taskid) | ADR-0016-shared-platform-time-and-task-seam.md |
 | 0017 | Timer wakeup via the async STIMER exit (not a subtask) | ADR-0017-timer-wakeup-async-stimer-exit.md |
 | 0018 | Operator / WTO / ESTAE reuse libc370 seams (no hand-rolled asm) | ADR-0018-operator-wto-estae-via-libc370-seams.md |
+| 0019 | CTCI completion via EXCP + IOB ECB, no CHE appendage | ADR-0019-ctci-completion-via-iob-ecb-no-appendage.md |
+| 0020 | CTCI READ framing (one block, no 0x0000 terminator) + 3-hex-digit CUU | ADR-0020-ctci-read-framing-and-3-digit-cuu.md |
+| 0021 | DEVIO ECB-completion seam (M1-4) — **superseded by 0022** | ADR-0021-devio-ecb-completion-seam.md |
+| 0022 | Executive WAITs only on ECBs it owns (doneq via I/O subtask), not the raw IOB ECB — supersedes ADR-0019's WAIT premise | ADR-0022-executive-doneq-not-raw-iob-ecb.md |

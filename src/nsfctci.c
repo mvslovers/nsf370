@@ -1,40 +1,29 @@
 /*
- * nsfctci.c -- CTCI device driver, C bottom half / lifecycle (spec 9.3;
- *              ADR-0019). MVS-ONLY: it uses the libc370 SVC 99 dynamic-
- *              allocation seam and the HLASM EXCP primitives in
- *              asm/nsfctcio.asm, so it never compiles on the host (there is no
- *              [host].replace shim -- the whole driver is in the host=false
- *              TSTCTCM test only, like nsfmain.c is MVS-only).
+ * nsfctci.c -- CTCI channel + SVC 99 seam (spec 9.3; ADR-0019/0020). MVS-ONLY:
+ * it uses the libc370 SVC 99 dynamic-allocation seam and the HLASM EXCP OPEN
+ * primitives, so it never compiles on the host -- the [host].replace map swaps
+ * it for the success-no-op src/nsfctci_host.c, and the portable bottom half
+ * (src/nsfctcib.c) brings a device up identically on both.
  *
- * M1-3 owns: reserve NSFMM region storage, SVC 99 allocate the CUU pair, open
- * both subchannels, and start/decode/close ONE raw EXCP each way. It does NOT
- * yet build/parse CTCIHDR/CTCISEG, convert PBUFs, drain a sendq, or implement
- * DEVOPS -- all M1-4. See nsfctci.h for the interface.
+ * This file owns exactly the pieces that touch real MVS device services:
+ *   - the SVC 99 wrapper (svc99_call) and its allocate/unallocate helpers
+ *     (ctci_alloc_unit / ctci_free_ddn), validated on TK5/MVSCE (issue #16);
+ *   - ctci_chan_open / ctci_chan_close: SVC 99 allocate the CUU pair, OPEN both
+ *     subchannels (read INPUT, write OUTPUT), and the reverse.
+ * The region storage, CTCIDEV allocation, ping-pong READ, completion demux,
+ * codec and DEVOPS all live in the portable src/nsfctcib.c.
  *
- * ============  EXCP path VALIDATED on MVS (issue #16)  ============
- * ctci_dev_open .. ctci_dev_close ran live on MVSCE against a real Hercules
- * 3088 CTCI pair (CUU 500/501 on tun0): SVC 99 allocated both subchannels (two
- * distinct DDNAMEs), OPEN succeeded, and one raw EXCP each way completed with
- * post code X'7F' -- WRITE 38/38 bytes (the crafted ICMP echo reached the host
- * in tcpdump), READ length = requested - IOB residual. NOTE the SVC 99 unit
- * name is 3 hex digits ("%03X"): 3.8j device numbers are 3 digits, so a 4-digit
- * name is an undefined unit (S99ERROR 021C). The READ block framing is NOT the
- * old §9.3 multi-block chain terminated by 0x0000 -- it is ONE block of many
- * CTCISEGs with the leading hwOffset = end-of-data and NO terminator sent to
- * the guest (corrected §9.3 / ADR-0020). Parsing that block into PBUFs is M1-4.
+ * The SVC 99 unit name is 3 hex digits ("%03X"): 3.8j device numbers are 3
+ * digits, so a 4-digit name is an undefined unit (S99ERROR 021C) even for a
+ * defined+online device (ADR-0020).
  *
- * MEMORY NOTE. The libc370 SVC 99 text-unit builders (NewTXT99 / arrayadd,
- * inside __txrddn / __txunit / __txshr / __txddn) malloc transiently and
- * FreeTXT99Array releases it on every path. This is init-time allocation
- * through the sanctioned libc370 seam (ADR-0015 precedent, ADR-0018 pattern),
- * confined to a single call -- NOT protocol-path storage, which stays with
- * NSFMM (§3). All DEVICE storage (CTCIDEV, the subchannel control blocks, the
- * I/O buffers) is NSFMM pool storage reserved once in the init window.
- * ==============================================================
+ * MEMORY NOTE. The libc370 SVC 99 text-unit builders malloc transiently and
+ * FreeTXT99Array releases on every path -- init-time allocation through the
+ * sanctioned libc370 seam (ADR-0015/0018), confined to one call, NOT protocol-
+ * path storage (which stays with NSFMM, §3).
  */
 
 #include "nsfctci.h"
-#include "nsfmm.h"
 #include "nsfmsg.h"
 
 #include <string.h>
@@ -47,14 +36,6 @@
  * #ifdef MUSIC and svc99.h omits it, so declare it here with the prototype
  * libc370 defines (plain cc370 linkage). */
 extern int __svc99(void *rb);
-
-/* Init-window pools (spec 9.3): one for the CTCIDEV blocks, one for the
- * per-subchannel control blocks (CTCISC, sized by the asm), one for the I/O
- * buffers. All reserved once by ctci_reserve, before mm_init_complete. */
-static MMPOOL *g_devpool;
-static MMPOOL *g_scbpool;
-static MMPOOL *g_bufpool;
-static UINT    g_bufsize;         /* bytes per I/O buffer (pool objsize)      */
 
 /* ---- SVC 99 seam (libc370) ---------------------------------------------- */
 
@@ -96,7 +77,7 @@ int svc99_call(void *txt99v, unsigned char request,
     return err;
 }
 
-int ctci_alloc_unit(const char *unit4, char *ddn8, short *s99err, short *s99info)
+int ctci_alloc_unit(const char *unit, char *ddn8, short *s99err, short *s99info)
 {
     TXT99 **txt99 = NULL;
     int     err;
@@ -105,10 +86,10 @@ int ctci_alloc_unit(const char *unit4, char *ddn8, short *s99err, short *s99info
     if (s99info) *s99info = 0;
 
     /* Ask the system to return a generated DDNAME, allocate the device named
-     * by UNIT=<unit4>, DISP=SHR (DALSTATS). __tx* builders arrayadd into
-     * txt99; each returns non-zero on failure. */
+     * by UNIT=<unit>, DISP=SHR (DALSTATS). __tx* builders arrayadd into txt99;
+     * each returns non-zero on failure. */
     if (__txrddn(&txt99, NULL) ||
-        __txunit(&txt99, unit4) ||
+        __txunit(&txt99, unit) ||
         __txshr(&txt99, NULL)) {
         if (txt99) FreeTXT99Array(&txt99);
         return 1;
@@ -136,108 +117,23 @@ int ctci_free_ddn(const char *ddn8)
     return err;
 }
 
-/* ---- Region reservation (init window) ----------------------------------- */
+/* ---- channel open/close ------------------------------------------------- */
 
-int ctci_reserve(UINT ndev, UINT bufsize)
+int ctci_chan_open(CTCIDEV *d)
 {
-    UINT scbsz;
-
-    if (ndev == 0) {
-        ndev = 1;
-    }
-    if (bufsize == 0) {
-        bufsize = CTCI_BUF_DEFAULT;
-    }
-    if (bufsize > CTCI_BUF_MAX) {
-        bufsize = CTCI_BUF_MAX;   /* CCW count-field width is the hard cap     */
-    }
-    g_bufsize = bufsize;
-    scbsz     = ctci_scb_size();  /* the asm reports its control-block size    */
-
-    g_devpool = mm_pool_create("CTCIDEV ", (USHORT)sizeof(CTCIDEV), (USHORT)ndev);
-    g_scbpool = mm_pool_create("CTCISCB ", (USHORT)scbsz,   (USHORT)(2u * ndev));
-    g_bufpool = mm_pool_create("CTCIBUF ", (USHORT)bufsize, (USHORT)(3u * ndev));
-
-    if (g_devpool == NULL || g_scbpool == NULL || g_bufpool == NULL) {
-        nsfmsg("NSF203E CTCI RESERVE FAILED (%u DEV, %u BYTE BUF)",
-               (unsigned)ndev, (unsigned)bufsize);
-        return 1;
-    }
-    return 0;
-}
-
-/* Release every pool object a partially-built device holds (leak-safe cleanup
- * on a failed open, and the teardown path). Frees only what is non-NULL. */
-static void ctci_dev_release(CTCIDEV *d)
-{
-    if (d == NULL) {
-        return;
-    }
-    if (d->rbuf0) mm_free(g_bufpool, d->rbuf0);
-    if (d->rbuf1) mm_free(g_bufpool, d->rbuf1);
-    if (d->wbuf)  mm_free(g_bufpool, d->wbuf);
-    if (d->rscb)  mm_free(g_scbpool, d->rscb);
-    if (d->wscb)  mm_free(g_scbpool, d->wscb);
-    mm_free(g_devpool, d);
-}
-
-/* ---- Device lifecycle --------------------------------------------------- */
-
-CTCIDEV *ctci_dev_open(USHORT cuu, USHORT mtu)
-{
-    CTCIDEV *d;
-    char     unit[5];
-    short    s99err, s99info;
-
-    if (g_devpool == NULL) {
-        nsfmsg("NSF201E CTCI %04X NOT RESERVED", (unsigned)cuu);
-        return NULL;
-    }
-
-    /* MTU cap (spec 9.3): the frame must fit one block AND Hercules' limit. */
-    if (mtu != 0 &&
-        ((UINT)mtu > CTCI_MAX_FRAME(g_bufsize) || (UINT)mtu > CTCI_MTU_MAX)) {
-        nsfmsg("NSF200E CTCI %04X MTU %u EXCEEDS CAP", (unsigned)cuu,
-               (unsigned)mtu);
-        return NULL;
-    }
-
-    d = (CTCIDEV *)mm_alloc(g_devpool);
-    if (d == NULL) {
-        nsfmsg("NSF201E CTCI %04X NO DEVICE STORAGE", (unsigned)cuu);
-        return NULL;
-    }
-    memset(d, 0, sizeof(*d));
-    d->cuu     = cuu;
-    d->wcuu    = (USHORT)(cuu + 1u);
-    d->mtu     = mtu;
-    d->bufsize = g_bufsize;
-    d->state   = CTCI_S_DOWN;
-
-    d->rscb  = mm_alloc(g_scbpool);
-    d->wscb  = mm_alloc(g_scbpool);
-    d->rbuf0 = (UCHAR *)mm_alloc(g_bufpool);
-    d->rbuf1 = (UCHAR *)mm_alloc(g_bufpool);
-    d->wbuf  = (UCHAR *)mm_alloc(g_bufpool);
-    if (d->rscb == NULL || d->wscb == NULL ||
-        d->rbuf0 == NULL || d->rbuf1 == NULL || d->wbuf == NULL) {
-        nsfmsg("NSF201E CTCI %04X NO BUFFER STORAGE", (unsigned)cuu);
-        ctci_dev_release(d);
-        return NULL;
-    }
+    char  unit[5];
+    short s99err  = 0;
+    short s99info = 0;
 
     /* SVC 99 allocate both subchannels (read = cuu, write = cuu+1). MVS 3.8j
-     * device numbers are 3 hex digits (CUU); a 4-digit unit name is UNDEFINED
-     * to SVC 99 (S99ERROR 021C -- proven on TK5/MVSCE against a defined pair),
-     * so format the address as 3 digits ("500"), the form the system knows.
-     * 4-digit device numbers only arrived with S/370-XA. */
+     * device numbers are 3 hex digits (CUU); a 4-digit unit name is UNDEFINED to
+     * SVC 99 (S99ERROR 021C), so format the address as 3 digits (ADR-0020). */
     snprintf(unit, sizeof(unit), "%03X", (unsigned)d->cuu);
     if (ctci_alloc_unit(unit, d->rddn, &s99err, &s99info)) {
         nsfmsg("NSF202E CTCI %04X ALLOC FAILED S99 ERR %04X INFO %04X",
                (unsigned)d->cuu, (unsigned)(s99err & 0xFFFF),
                (unsigned)(s99info & 0xFFFF));
-        ctci_dev_release(d);
-        return NULL;
+        return 1;
     }
     snprintf(unit, sizeof(unit), "%03X", (unsigned)d->wcuu);
     if (ctci_alloc_unit(unit, d->wddn, &s99err, &s99info)) {
@@ -245,8 +141,8 @@ CTCIDEV *ctci_dev_open(USHORT cuu, USHORT mtu)
                (unsigned)d->wcuu, (unsigned)(s99err & 0xFFFF),
                (unsigned)(s99info & 0xFFFF));
         ctci_free_ddn(d->rddn);
-        ctci_dev_release(d);
-        return NULL;
+        d->rddn[0] = '\0';
+        return 1;
     }
 
     /* OPEN read subchannel INPUT, write subchannel OUTPUT. */
@@ -254,59 +150,27 @@ CTCIDEV *ctci_dev_open(USHORT cuu, USHORT mtu)
         nsfmsg("NSF204E CTCI %04X READ OPEN FAILED", (unsigned)d->cuu);
         ctci_free_ddn(d->rddn);
         ctci_free_ddn(d->wddn);
-        ctci_dev_release(d);
-        return NULL;
+        d->rddn[0] = '\0';
+        d->wddn[0] = '\0';
+        return 1;
     }
     if (ctci_open_sub(d->wscb, 1u, d->wddn)) {
         nsfmsg("NSF204E CTCI %04X WRITE OPEN FAILED", (unsigned)d->wcuu);
         ctci_close_sub(d->rscb);
         ctci_free_ddn(d->rddn);
         ctci_free_ddn(d->wddn);
-        ctci_dev_release(d);
-        return NULL;
+        d->rddn[0] = '\0';
+        d->wddn[0] = '\0';
+        return 1;
     }
 
     d->state = CTCI_S_UP;
     nsfmsg("NSF210I CTCI %04X/%04X UP DD %s/%s MTU %u", (unsigned)d->cuu,
            (unsigned)d->wcuu, d->rddn, d->wddn, (unsigned)d->mtu);
-    return d;
+    return 0;
 }
 
-int ctci_dev_read(CTCIDEV *d)
-{
-    /* Read into ping-pong buffer A (d->rbuf0). The bottom half's
-     * re-drive-before-parse alternation between rbuf0/rbuf1 is M1-4; M1-3
-     * drives a single explicit READ, so it always uses rbuf0 (d->cur == 0). */
-    return ctci_read(d->rscb, d->rbuf0, d->bufsize, &d->recb);
-}
-
-int ctci_dev_write(CTCIDEV *d, const void *buf, UINT len)
-{
-    if (len > d->bufsize) {
-        return 1;                 /* would overrun the write buffer            */
-    }
-    /* ctci_write does not modify the buffer; the const is dropped only to fit
-     * the shared CCW-data-address argument (the WRITE CCW reads from it). */
-    return ctci_write(d->wscb, (void *)buf, len, &d->wecb);
-}
-
-int ctci_dev_status(CTCIDEV *d, int iswrite, UINT reqlen, UINT *len, UCHAR *post)
-{
-    void *scb = iswrite ? d->wscb : d->rscb;
-    UINT  pc  = 0;
-    UINT  res = 0;
-
-    ctci_status(scb, &pc, &res);
-    if (post) {
-        *post = (UCHAR)pc;
-    }
-    if (len) {
-        *len = (res <= reqlen) ? (reqlen - res) : 0u;
-    }
-    return (pc == 0x7Fu) ? 0 : 1;    /* 0x7F = normal completion (spec 9.3)   */
-}
-
-int ctci_dev_close(CTCIDEV *d)
+int ctci_chan_close(CTCIDEV *d)
 {
     if (d == NULL) {
         return 0;
@@ -320,7 +184,5 @@ int ctci_dev_close(CTCIDEV *d)
     ctci_free_ddn(d->wddn);
     d->rddn[0] = '\0';
     d->wddn[0] = '\0';
-    /* Return all region storage to its pools (leak gate: pools to baseline). */
-    ctci_dev_release(d);
     return 0;
 }

@@ -873,9 +873,21 @@ then drains `sendq` + `doneq`, freeing every held PBUF (the leak gate). The
 
 Split into a mainline top half and the executive bottom half. There is **no
 I/O-completion exit**: `EXCP` starts the channel program and returns, and IOS
-posts the IOB ECB — which *is* the device ECB already in the §5.3 ECBLIST — when
-the channel program terminates. No CHE appendage is written or installed. See
-**ADR-0019** for the decision and for the fully documented appendage alternative.
+posts the IOB ECB when the channel program terminates. No CHE appendage is written
+or installed. See **ADR-0019** for the decision and for the fully documented
+appendage alternative.
+
+> **Correction (ADR-0022, M1-4 live).** ADR-0019 further said the §5.3 executive
+> loop "can wait on the IOB ECB directly," in its ECBLIST. **That is wrong on real
+> MVS and is superseded:** an asynchronous IOS POST of the read IOB ECB, out of
+> phase with the executive's multi-ECB `WAIT ECBLIST`, hangs the loop so a later
+> operator/stop POST no longer wakes it (bisected live, issue #18). The executive
+> **WAITs only on ECBs it owns** (`dev->ecb`), and CTCI completion reaches it
+> through the **M1-2 `doneq` model** driven by a CTCI I/O **subtask** (libc370
+> `cthread`) that owns `EXCP` + a single-ECB `ecb_wait` on the IOB ECB (the safe
+> path proven by TSTCTCM) and POSTs `dev->ecb` + pushes the block to `doneq`. The
+> EXCP recipe, framing (ADR-0020) and ping-pong below are unchanged; only *who
+> waits on the IOB ECB* changes. M1-4b (issue #18) implements it.
 
 - **Top half (HLASM, mainline):** two DCBs (`DSORG=PS,MACRF=E`, `IOBAD=`), one
   per subchannel, opened `INPUT` / `OUTPUT`; `CENDA=` is deliberately omitted.
@@ -1708,6 +1720,35 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.17:** M1-4 (CTCI C bottom half) **built and host-green, but NOT done — the
+production STC integration is blocked (issue #18 / ADR-0022).** Delivered: the
+**codec** `nsfctcif` (`CTCISEG`↔raw-IP, byte-wise big-endian, decode walks by
+`hwLength` up to the leading `hwOffset` per ADR-0020, drops non-IPv4 by the
+packet's own version; encode appends the `0x0000` terminator; TSTCTCIF 37/37 on
+literal §9.3 byte vectors, decode AND encode); the **portable bottom half**
+`nsfctcib` (DEVOPS + a per-device `DEVIO` seam — ping-pong re-drive-before-parse,
+completion demux, decode→PBUF `EV_PACKET_RECEIVED` with a `buf_copyin==len`
+truncation guard + pool-exhaustion drop+count, sendq→one-outstanding-WRITE with
+single-free ownership; TSTCTCI 52/52 over the host channel shim `nsfctcio_host.c`);
+the **channel/SVC 99 split** (`ctci_chan_open`/`_close` in `src/nsfctci.c`, host
+stub `src/nsfctci_host.c`); and the **`DEVIO`** seam on `NETDEV` (grew **64→68**;
+`dev_set_io`/`dev_index`; **ADR-0021**). Host **488→577**; cross-build + alias scan
+clean (99 unique exports). **Real-channel receive+send PROVEN in ISOLATION** —
+TSTCTCM on MVSCE (pair 0500/0501), rebuilt for the M1-4 DEVOPS path, **CC 0**:
+`dev_start`→WRITE (`ctr_out=1`, crafted ICMP `0xABCD` in host `tcpdump`)→READ
+(`ctr_in=64` from live pings decoded to PBUFs). **But TSTCTCM is loop-free (a single
+`ecb_wait(recb)`), which is exactly the safe path — NOT a production proof.**
+**BLOCKER:** wiring the driver into the STC hangs the operator the moment IOS posts
+`recb` (bisected live: device-inactive works, device-UP-idle works,
+device-UP-after-one-READ hangs). **ADR-0022** supersedes ADR-0019's premise that
+the executive may WAIT on the raw IOB ECB: the fix (M1-4b, issue #18) restores the
+M1-2 `doneq` model behind a CTCI I/O **subtask** (libc370 `cthread`, same
+address-space → plain POST/problem-state; UFSD's reset-before-WAIT loop shape) and
+retires the DEVIO `recb`/`wecb`-in-WAIT seam. Also fixed a latent WAIT-seam bug
+(`nsfevt_plat_wait` local `list[8]` → `[16]` to match `EVT_ECBLIST_MAX`, else a 9th
+ECB truncates the cib/stop out of the WAIT — the same class of hang). §19 M1 stays
+in progress.
 
 **v1.16:** M1-3 **DONE — the EXCP READ/WRITE channel path is validated live on MVS** (issue #16). Run on MVSCE against a real Hercules 3088 CTCI pair (`0500,0501 CTCI` on `tun0`, guest 192.168.200.1 / host .2); `test-mvs` TSTCTCM **CC 0, 12/12** both legs: SVC 99 allocated devices 500/501 (two distinct DDNAMEs `SYS00005`/`SYS00007`), OPEN both subchannels, EXCP **WRITE** post `X'7F'` (the crafted `CTCIHDR`+`CTCISEG`+ICMP-echo block reached the host — `tcpdump`: `192.168.200.1 > .2 ICMP echo request id 0xABCD`), EXCP **READ** post `X'7F'` (length = requested − IOB residual; the received block walked to 227 well-formed `CTCISEG`s). **Two corrections fall out and are applied here:** (1) the SVC 99 `DALUNIT` unit name is **3 hex digits**, not 4 — MVS 3.8j device numbers are 3 digits, so `"0500"` was *undefined* (`S99ERROR 021C`) even for a defined device; `%04X`→`%03X` in `ctci_dev_open`. (2) §9.3's READ framing was wrong: it is **one block of many `CTCISEG`s** with the leading `hwOffset` = end-of-data, and Hercules does **not** transfer the `0x0000` terminator to the guest (`CTCI_Read` day-1 fix), and `hwType` is a constant `0x0800` marker (not a v4/v6 discriminator). The WRITE framing (terminating `0x0000` block) was correct and is validated. Both recorded in **ADR-0020**. Deferred-seam labels removed from `asm/nsfctcio.asm` + `src/nsfctci.c`; the `CTCISAVE`/ESTAE constraint (issue #16 item 3) is now a source comment. The `CTCISEG`↔PBUF codec, PBUF conversion, DEVOPS, READ re-drive/ping-pong and MIH are **M1-4**.
 

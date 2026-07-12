@@ -37,7 +37,16 @@ cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1", "-pthread"]
 #              a NULL-ops placeholder on MVS (src/nsfhost_plat.c) -- there is no
 #              host driver on MVS (use CTCI/LCS), so a test that names it still
 #              cross-links, and the host build gets the real driver.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c" }
+#   nsfctcio -- the CTCI top half (M1-4, spec 9.3): the C-callable EXCP
+#              primitives on MVS (asm/nsfctcio.asm), a channel MODEL on the host
+#              (src/nsfctcio_host.c: inject inbound blocks, capture outbound,
+#              force I/O errors) so the bottom half is host-testable.
+#   nsfctci  -- the CTCI channel + SVC 99 seam (M1-4, spec 9.3): the real SVC 99
+#              allocate + OPEN on MVS (src/nsfctci.c), a success no-op on the host
+#              (src/nsfctci_host.c) -- the host shim MODELS the subchannel, so
+#              bringing a device up needs no allocation. The portable bottom half
+#              (src/nsfctcib.c) drives ctci_chan_open/close identically on both.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c", "asm/nsfctcio.asm" = "src/nsfctcio_host.c", "src/nsfctci.c" = "src/nsfctci_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -205,6 +214,29 @@ name = "TSTDEV"
 startup = "crt1"
 sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm"]
 
+# -- M1-4 CTCI frame codec (nsfctcif): CTCISEG<->raw IP ----------------------
+# Pure portable byte<->byte transform (spec 9.3 / ADR-0020). Literal wire-byte
+# vectors for decode AND encode -- a round-trip alone would hide a USHORT-vs-
+# byte-wise endianness regression (self-consistent on either box). No device, no
+# NSFMM: runs host + MVS unchanged.
+[[test]]
+name = "TSTCTCIF"
+startup = "crt1"
+sources = ["test/tstctcif.c", "src/nsfctcif.c"]
+
+# -- M1-4 CTCI bottom half (NSFCTCI): DEVOPS + DEVIO over the host shim -------
+# Drives the REAL DEVOPS path (register/start/send/shutdown) and the DEVIO
+# completion seam against the host channel MODEL (src/nsfctcio_host.c swaps
+# asm/nsfctcio.asm; src/nsfctci_host.c swaps the SVC 99 seam src/nsfctci.c).
+# Proves the bottom-half LOGIC -- ping-pong re-drive-before-parse, completion
+# demux, decode->PBUF (EV_PACKET_RECEIVED), stale-ECB guard, error re-drive,
+# sendq->WRITE framing + single-free ownership, leak gate. A wrong CCW flag is
+# caught only by the real device (TSTCTCM on MVSCE).
+[[test]]
+name = "TSTCTCI"
+startup = "crt1"
+sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M1-3 CTCI top half (NSFCTCI): allocate + open the CUU pair + EXCP --------
 # MVS-only (host = false): the driver uses the libc370 SVC 99 dynamic-allocation
 # seam and the HLASM EXCP primitives, neither of which exists on the host (there
@@ -217,7 +249,7 @@ sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c"
 name = "TSTCTCM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstctcm.c", "src/nsfctci.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfabend.c", "asm/nsfctcio.asm"]
+sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
@@ -228,7 +260,7 @@ sources = ["test/mvs/tstctcm.c", "src/nsfctci.c", "src/nsfmsg.c", "src/nsfmsg_pl
 [[module]]
 name = "NSF"
 startup = "crt1"
-sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB

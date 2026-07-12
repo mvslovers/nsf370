@@ -103,6 +103,7 @@ NETDEV *dev_register(const DEVCFG *cfg, DEVOPS *ops)
     xq_init(&dev->doneq);
     dev->ecb    = 0u;
     dev->priv   = NULL;
+    dev->io     = NULL;                  /* default doneq/ecb model until set   */
 
     /* Per-device counters (component = LINK name). A NULL return only means the
      * registry filled (a build-time miscount); ctr() stays NULL-safe. */
@@ -160,6 +161,18 @@ NETDEV *dev_by_index(UINT idx)
         return NULL;
     }
     return &g_devtab[idx];
+}
+
+UINT dev_index(const NETDEV *dev)
+{
+    int i;
+
+    for (i = 0; i < NSFDEV_MAX; i++) {
+        if (&g_devtab[i] == dev) {
+            return (UINT)i;
+        }
+    }
+    return (UINT)NSFDEV_MAX;             /* not a registered slot */
 }
 
 void dev_foreach(void (*fn)(NETDEV *dev, void *arg), void *arg)
@@ -266,15 +279,34 @@ int dev_shutdown(NETDEV *dev)
     return 0;
 }
 
+void dev_set_io(NETDEV *dev, DEVIO *io)
+{
+    if (dev != NULL) {
+        dev->io = io;
+    }
+}
+
 /* --- NSFEVT main-loop integration ----------------------------------------- */
+/* Each of the three hooks below runs the DEFAULT doneq/ecb model for a device
+ * with io == NULL (NSFHOST), and delegates to the device's DEVIO seam when it is
+ * set (CTCI, ADR-0021) -- so NSFDEV stays driver-agnostic (it never names CTCI;
+ * it calls through the pointers the driver installed). */
 
 int nsfdev_collect_ecbs(NSFECB **list, int max)
 {
     int i, n = 0;
 
-    for (i = 0; i < NSFDEV_MAX && n < max; i++) {
-        if (g_used[i]) {
-            list[n++] = (NSFECB *)&g_devtab[i].ecb;
+    for (i = 0; i < NSFDEV_MAX; i++) {
+        if (!g_used[i]) {
+            continue;
+        }
+        if (g_devtab[i].io != NULL && g_devtab[i].io->collect != NULL) {
+            /* Driver contributes its own completion ECB(s) (CTCI: read+write). */
+            if (n < max) {
+                n += g_devtab[i].io->collect(&g_devtab[i], &list[n], max - n);
+            }
+        } else if (n < max) {
+            list[n++] = (NSFECB *)&g_devtab[i].ecb;   /* default single ECB */
         }
     }
     return n;
@@ -295,9 +327,17 @@ void nsfdev_poll_input(void)
         }
         dev = &g_devtab[i];
 
-        /* Clear the device ECB BEFORE draining (lost-wakeup safe: a producer
-         * that pushes+posts in the window between drain and the next clear
-         * leaves the ECB set, so the next WAIT returns and picks the frame up). */
+        /* ECB-completion driver (CTCI): the DEVIO service demuxes its own
+         * completion ECB(s) and runs the read/write bottom half itself (it
+         * clears each ECB before re-driving). doneq is unused (ADR-0019). */
+        if (dev->io != NULL && dev->io->service != NULL) {
+            dev->io->service(dev);
+            continue;
+        }
+
+        /* Default model: clear the device ECB BEFORE draining (lost-wakeup safe:
+         * a producer that pushes+posts in the window between drain and the next
+         * clear leaves the ECB set, so the next WAIT returns and picks it up). */
         dev->ecb = 0u;
 
         chain = xq_drain(&dev->doneq);  /* LIFO */
@@ -340,6 +380,16 @@ void nsfdev_kick_output(void)
         if (dev->state != NSFDEV_S_UP) {
             continue;                   /* only an up device transmits */
         }
+
+        /* ECB-completion driver (CTCI): the DEVIO kick starts at most one
+         * outstanding I/O (one WRITE), counting ctr_out itself when it does.
+         * It must not be drained through the generic ops->send loop below,
+         * which would issue a WRITE per queued PBUF. */
+        if (dev->io != NULL && dev->io->kick != NULL) {
+            dev->io->kick(dev);
+            continue;
+        }
+
         while ((qe = q_deq(&dev->sendq)) != NULL) {
             PBUF *b = Q_ENTRY(qe, PBUF, q);
 
