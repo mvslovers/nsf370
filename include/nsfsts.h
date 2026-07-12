@@ -43,7 +43,7 @@ NSF_SIZE_ASSERT(STSCTR, 16);
  * truncation (upcased, '_' -> '@') can never fold two into one on MVS. Scheme
  * NSFST + verb:
  *   sts_init NSFSTINI   sts_register NSFSTREG   sts_reset NSFSTRST
- *   sts_count NSFSTCNT   sts_render NSFSTRND
+ *   sts_count NSFSTCNT   sts_render NSFSTRND   sts_value NSFSTVAL
  */
 
 /* Zero the registry, stamp the "NSFSTATS" eyecatcher. Safe at earliest init
@@ -62,6 +62,14 @@ void    sts_reset(void) asm("NSFSTRST");
 
 /* Number of counters currently registered. */
 UINT    sts_count(void) asm("NSFSTCNT");
+
+/* The current value of the counter registered under `component`/`name`, or 0 if
+ * none is registered (or its value is 0 -- callers wanting to distinguish check
+ * sts_count / registration separately). A direct registry read: no text render,
+ * no scanf -- so it is robust on the target (libc370's sscanf does not parse a
+ * width-limited "%Ns %Ns %u"). The operator interface and tests read counters by
+ * name through this. Charset-native compare (EBCDIC/ASCII-safe). */
+UINT    sts_value(const char *component, const char *name) asm("NSFSTVAL");
 
 /* Render "component name value" lines (one per registered counter, in
  * registration order) into buf, NUL-terminating when bufsize > 0. Stops at the

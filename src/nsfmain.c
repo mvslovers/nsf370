@@ -26,6 +26,8 @@
 #include "nsfdev.h"            /* dev_register / dev_start / dev_shutdown     */
 #include "nsfctci.h"          /* ctci_reserve / ctci_devops                  */
 #include "nsfbuf.h"           /* PBUF, buf_free (the RX terminus)            */
+#include "nsfip.h"            /* nsfip_input / nsfip_config (the IP layer)   */
+#include "nsficmp.h"          /* nsficmp_init (ICMP counters)                */
 #include <string.h>           /* memcpy / memset (device wiring)             */
 #include <clibstae.h>          /* __estae, ESTAE_CREATE/DELETE */
 #include <clibsdwa.h>          /* SDWA, SDWARCDE, SDWACWT */
@@ -61,31 +63,31 @@ static void nsf_recover(SDWA *sdwa)
 }
 
 /*
- * EV_PACKET_RECEIVED terminus (M1-4). Until IP (M2) claims inbound packets, the
- * executive still MUST free every PBUF a device hands up: the loop frees the EVT
- * but never ev->p1, so an unhandled EV_PACKET_RECEIVED leaks the buffer. This
- * handler counts a driver trace line and frees it -- the receive path's honest
- * end for now (the DISPLAY,STATS device ctr_in is the real proof of arrival).
+ * EV_PACKET_RECEIVED terminus. The device bottom half hands a raw IP packet up
+ * as EV_PACKET_RECEIVED (p1 = PBUF*, u1 = device index); this handler traces it
+ * and passes it to nsfip_input, which TAKES OWNERSHIP (validates, demuxes, and
+ * frees or hands off the PBUF). nsfip_input frees every path, so this handler
+ * must not free after the hand-off (single owner, §3).
  */
 static void nsf_rx_packet(EVT *ev)
 {
-    PBUF *b = (PBUF *)ev->p1;
+    PBUF   *b   = (PBUF *)ev->p1;
+    NETDEV *dev = dev_by_index(ev->u1);
 
-    if (b != NULL) {
-        USHORT n = buf_chain_len(b);
-
-        TRC(DRIVER, "RX %u bytes on dev %u", (unsigned)n, (unsigned)ev->u1);
-        /* Hexdump the packet head into the trace ring (flag-gated inside; F
-         * NSF,TRACE DRIVER ON enables it) -- the M1 exit gate's "ping ->
-         * hexdump in trace". Bounded: the IP header + a little payload tells
-         * the story; full frames would flood the 128 B ring entries. */
-        {
-            UCHAR head[48];
-            USHORT hn = buf_copyout(b, head, (USHORT)sizeof(head));
-            nsftrc_hexdump(TRCF_DRIVER, "RX", head, hn);
-        }
-        buf_free(b);
+    if (b == NULL) {
+        return;
     }
+    TRC(DRIVER, "RX %u bytes on dev %u", (unsigned)buf_chain_len(b),
+        (unsigned)ev->u1);
+    /* Hexdump the packet head into the trace ring (flag-gated inside; F
+     * NSF,TRACE DRIVER ON enables it) -- the M1 exit gate's "ping -> hexdump in
+     * trace". Bounded: the IP header + a little payload tells the story. */
+    {
+        UCHAR  head[48];
+        USHORT hn = buf_copyout(b, head, (USHORT)sizeof(head));
+        nsftrc_hexdump(TRCF_DRIVER, "RX", head, hn);
+    }
+    nsfip_input(dev, b);                 /* takes ownership of b */
 }
 
 /* -- device wiring (PROFILE DEVICE/LINK/HOME -> NSFDEV) --------------------- *
@@ -261,11 +263,14 @@ int main(int argc, char **argv)
     }
     evt_set_operator(nsfopr_ecb(), nsfopr_drain);
 
-    /* 5. Register + start the configured interfaces (M1-4). The inbound
-     *    terminus handler is mandatory: it frees each received PBUF (the loop
-     *    frees the EVT, never ev->p1) until IP claims the packets (M2). */
+    /* 5. Register + start the configured interfaces (M1-4), then build the IP
+     *    layer on top (M2). The inbound terminus handler passes each received
+     *    PBUF to nsfip_input. nsfip_config resolves each route's device by LINK
+     *    name, so it MUST run AFTER the interfaces are registered. */
     evt_register(EV_PACKET_RECEIVED, nsf_rx_packet);
     nsf_start_devices(&g_cfg);
+    nsficmp_init();                              /* register ICMP counters */
+    (void)nsfip_config(&g_cfg);                  /* routing table from HOME/GATEWAY */
 
     /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
     __estae(ESTAE_CREATE, (void *)nsf_recover, NULL);

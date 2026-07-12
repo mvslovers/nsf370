@@ -1192,6 +1192,22 @@ servers.)
 - ICMP: echo responder, error generation (dest unreachable, time
   exceeded), and inbound error delivery to transports (M5).
 
+NSF is a **host** stack, not a router (Goal): a packet whose destination is
+not one of our HOME addresses is dropped and counted (`inaddrerr`), never
+forwarded. Consequently **TTL is parsed but is not a delivery gate** — RFC
+1122 §3.2.1.7 forbids a destination host from discarding a datagram addressed
+to it on low TTL (TTL expiry is a forwarding concern). `ttlexp` therefore
+stays 0 in v1, reserved for a future forward path (M6+).
+
+**Address convention (M2, endian-safe).** Every IPv4 address is carried inside
+NSF as a `UINT` with octet-1 in the most-significant byte (10.1.1.2 ==
+0x0A010102) — the form NSFCFG parses and `NETDEV.ipaddr` holds. All routing /
+is-local logic is `UINT` arithmetic (identical on host and target); byte order
+matters only at the packet boundary, where the four address bytes are read/
+written **byte by byte** (never a `UINT` cast), so the wire bytes are network
+order on both the big-endian target and the little-endian test host — the same
+discipline the CTCI codec uses for halfwords (§9.3).
+
 ### 11.2 Interfaces
 
 ```c
@@ -1226,6 +1242,23 @@ host routes, network routes (classful + mask), default route. Longest
 match wins; lookup is a linear scan of ≤16 entries — measurable cost zero
 at NSF scale. Read-only after init (VARY-time changes are M5+).
 
+**M2 realization (`nsfip_config`).** Built after the interfaces register, so
+each route resolves its device by LINK name (`dev_find`):
+- each `HOME ip link` records `ip` in the local-address list **and** adds an
+  on-link route for `ip`'s classful network out that link's device, next hop 0
+  (direct);
+- each `GATEWAY` adds a network route (`net`/`mask`, `mask` defaulting to
+  classful) or, for `DEFAULTNET`, the default route (`net`/`mask` 0), next hop
+  = the statement's firsthop.
+
+Lookup returns `(device, next-hop)`; next hop 0 means on-link (== the
+destination itself). On a **point-to-point** link (CTCI) the driver ignores the
+next hop and writes to the peer unconditionally (§11.6) — so the sample
+PROFILE's `GATEWAY DEFAULTNET <peer> <link>` is what makes an echo reply flow.
+A route whose device did not resolve (interface absent) is skipped, never
+fatal. `nsfip_route_add` / `nsfip_local_add` are the primitives (also the test
+seam); `nsfip_is_local` answers the input for-us check.
+
 ### 11.5 Checksum
 
 One shared routine `in_cksum(PBUF *chain, USHORT offset, USHORT len)` in
@@ -1241,8 +1274,15 @@ hook resolves to "the peer" unconditionally.
 
 ### 11.7 Statistics (minimum set)
 
-`in, out, hdrerr, badcksum, badlen, noproto, noroute, fragdrop, ttlexp,
-icmp_inecho, icmp_outecho, icmp_errsent`.
+IP (component `NSFIP`): `in, out, hdrerr, badcksum, badlen, noproto, noroute,
+fragdrop, ttlexp, inaddrerr`. This is a **minimum** set, aligned with the RFC
+1213 IP MIB; `inaddrerr` (ipInAddrErrors) was added at M2 for a packet whose
+destination is not one of ours (there is no forward path, §11.1), and `ttlexp`
+stays 0 in v1 (§11.1).
+
+ICMP (component `NSFICM`): `in, inecho, outecho, errsent, badcksum, indrop`
+(`errsent` reserved for the M2-4 error generator; `indrop` counts a verified
+non-echo message dropped in M2-3).
 
 ---
 
@@ -1755,6 +1795,34 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.19:** **M2-1..M2-3 DONE — the IPv4 + ICMP echo path; ADR-0024.** M2-1: the
+Internet checksum `in_cksum(chain, off, len)` (RFC 1071, portable, allocation-
+free) over a **PBUF chain** — the word parity is tracked relative to `off`, not
+per segment, so a 16-bit word straddling an odd segment boundary is summed
+correctly (`src/nsfcksum.c`, alias `NSFCKSUM`; TSTCKSUM 10/10 pinned against
+literal RFC/IP-header vectors incl. the boundary-carry case, before any packet
+code). M2-2: **NSFIP** (`src/nsfip.c`) — `nsfip_input` (validate version 4 /
+IHL / length / header checksum; drop+count fragment→`fragdrop`, not-for-us→
+`inaddrerr`, bad checksum→`badcksum`, bad version/IHL→`hdrerr`, bad length→
+`badlen`; demux ICMP, `noproto` for TCP/UDP stubs; **TTL parsed but not a
+delivery gate**, RFC 1122 §3.2.1.7), `nsfip_output` (build header into the PBUF
+headroom, monotonic id, computed checksum, route, `dev_send`), and a fixed
+16-entry **routing table** built from HOME (classful on-link) + GATEWAY
+(default) via `nsfip_config`, longest-match, next-hop 0 = the point-to-point
+peer (§11.4). Every field is read/written **byte by byte** (big-endian), never a
+cast; addresses are `UINT`s (octet-1 in the MSB). M2-3: **NSFICM**
+(`src/nsficmp.c`) — the echo responder answers in **the same PBUF** (verify the
+ICMP checksum, flip type 8→0, recompute, strip the IP header, `nsfip_output`
+with source/destination swapped — one PBUF, no allocation, single owner). The
+inbound seam is wired: the STC's `EV_PACKET_RECEIVED` handler calls
+`nsfip_input`, and startup calls `nsficmp_init` + `nsfip_config` after the
+interfaces register (`src/nsfmain.c`). §11.1 (host-not-router / TTL / address
+convention), §11.4 (routing realization), §11.7 (`inaddrerr`, ICMP subset)
+updated. Host **569→641** (TSTCKSUM 10, TSTIP 39 — capture-DEVOPS + literal
+vectors + leak gate, TSTICMP 23 — NSFHOST-loopback echo round-trip with a
+verified reply + bad-checksum drop + leak gate); `-Wall -Wextra -Werror`
+clean; cross-build links clean, alias scan clean (11 new unique exports).
 
 **v1.18:** Docs-only. **ADR-0022** gains a "Scope of this decision" section: the
 same-address-space simplification (plain POST, problem state, key 8, no CSA, no

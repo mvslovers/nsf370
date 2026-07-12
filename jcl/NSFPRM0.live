@@ -1,0 +1,14 @@
+; NSF PROFILE.TCPIP -- M2 live ping gate (MVSCE, Hercules CTCI pair 0500/0501).
+;
+; Read at "S NSF" via the PROFILE DD (jcl/NSFPROC.jcl). Matches the live setup:
+; guest (MVS) 192.168.200.1, host 192.168.200.2, on tun0. The driver derives the
+; write subchannel as cuu+1, so DEVICE 0500 drives the 0500/0501 pair.
+
+DEVICE  CTCA CTC 0500              ; CTC read subchannel 0500 (write 0501)
+LINK    LNK1 CTC 0 CTCA           ; IP link over device CTCA
+HOME    192.168.200.1 LNK1        ; this stack's home address (the ping target)
+GATEWAY DEFAULTNET 192.168.200.2 LNK1 1500 0   ; default route via the CTC peer
+
+NSFPOOL BUFSMALL 64               ; 64 small (256 B) packet buffers
+NSFPOOL BUFLARGE 32              ; 32 large (2048 B) packet buffers
+NSFTRACE IP OFF                 ; IP trace off (F NSF,TRACE IP ON to enable)

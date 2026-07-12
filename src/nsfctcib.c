@@ -288,6 +288,19 @@ static int write_sub(void *arg)
         if (!wait_or_stop(d, &d->wecb)) {
             break;                          /* stop while a WRITE is outstanding */
         }
+        /* This subtask OWNS wscb/wecb (ADR-0023): read the completion status HERE
+         * and hand only wpost/wready up -- exactly as read_sub does for the read.
+         * The executive must never touch wecb, or it would clear the POSTED bit
+         * out from under this wait and steal the completion (the live #2-write
+         * stall). */
+        {
+            UINT wpost = 0u;
+            UINT wres  = 0u;
+
+            ctci_status(d->wscb, &wpost, &wres);
+            d->wpost  = wpost;
+            d->wready = 1u;                 /* hand the completion to the executive */
+        }
         nsfthr_post(&dev->ecb, 0u);         /* wake the executive to reap */
     }
     ctci_close_sub(d->wscb);
@@ -331,26 +344,25 @@ static void ctci_io_service(NETDEV *dev)
         nsfthr_post(&d->returnecb, 0u);     /* let the read subtask read again */
     }
 
-    /* write completion: the write subtask finished and posted dev->ecb. wecb's
-     * posted bit + txbusy is the "one WRITE done" signal (the executive only
-     * READS wecb here -- it never WAITs on it). */
-    if ((d->wecb & NSFECB_POSTED) && d->txbusy) {
-        UINT post = 0u;
-        UINT res  = 0u;
-
-        ctci_status(d->wscb, &post, &res);
-        d->wecb = 0u;                       /* clear for the next WRITE */
-        if (post == CTCI_POST_NORMAL) {
+    /* write completion: the write subtask read its own status, set wpost, then
+     * set wready and posted dev->ecb. The reap keys off wready (a subtask-set
+     * flag) and NEVER reads or clears wecb -- wecb belongs to the write subtask's
+     * wait (ADR-0023). Reaping on wecb directly would clear the POSTED bit before
+     * the subtask observed it, stealing the completion and hanging the subtask
+     * after one WRITE. This mirrors the read reap keying off rready, not recb. */
+    if (d->wready && d->txbusy) {
+        if (d->wpost == CTCI_POST_NORMAL) {
             ctr(dev->ctr_out);
         } else {
             ctr(dev->ctr_oerr);
             TRC(DRIVER, "CTCI %04X WRITE post=%02X (not X'7F')", (unsigned)d->cuu,
-                (unsigned)(post & 0xFFu));
+                (unsigned)(d->wpost & 0xFFu));
         }
         if (d->txpbuf != NULL) {            /* §3: only the executive frees */
             buf_free(d->txpbuf);
             d->txpbuf = NULL;
         }
+        d->wready = 0u;                     /* consumed; ping-ponged like rready */
         d->txbusy = 0u;
     }
 }

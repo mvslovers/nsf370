@@ -80,6 +80,44 @@ UINT sts_count(void)
     return g_sts.count;
 }
 
+/* Charset-native compare of a NUL-padded fixed field against a C string: equal
+ * iff the field's logical content (up to a NUL or the field width) matches `s`
+ * exactly. Compares char literals only (no hardcoded byte values), so it is
+ * correct on EBCDIC and ASCII alike -- the same discipline as nsfcfg's name
+ * folding. */
+static int sts_fieldeq(const char *field, unsigned fieldsize, const char *s)
+{
+    unsigned i;
+
+    if (s == NULL) {
+        return 0;
+    }
+    for (i = 0; i < fieldsize; i++) {
+        if (s[i] == '\0') {
+            return field[i] == '\0';        /* s ended: field must be padded here */
+        }
+        if (field[i] != s[i]) {
+            return 0;
+        }
+    }
+    return s[fieldsize] == '\0';             /* field filled exactly: s ends here */
+}
+
+UINT sts_value(const char *component, const char *name)
+{
+    UINT i;
+
+    for (i = 0; i < g_sts.count; i++) {
+        const STSREC *r = &g_sts.rec[i];
+
+        if (sts_fieldeq(r->component, sizeof(r->component), component) &&
+            sts_fieldeq(r->ctr.name, sizeof(r->ctr.name), name)) {
+            return r->ctr.value;
+        }
+    }
+    return 0u;                              /* not registered */
+}
+
 UINT sts_render(char *buf, UINT bufsize)
 {
     UINT written = 0;
