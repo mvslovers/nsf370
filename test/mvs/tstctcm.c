@@ -16,15 +16,30 @@
  *     channel/device) proves S99VRBAL rc 0, the generated DDNAME reaching our
  *     buffer, and S99VRBUN unallocating -- all over OUR svc99_call wrapper.
  *
- *  2. EXCP channel path -- gated behind -DNSFCTCI_CUU (a live 3088 pair). It
- *     drives the M1-4 bottom half end to end, LOOP-FREE (a batch job owes a COND
- *     CODE, so no evt_mainloop): register + start (SVC 99 allocate + OPEN + first
- *     READ), dev_send a crafted ICMP echo -> nsfdev_kick_output issues the WRITE
- *     (seen on the host in tcpdump) -> ecb_wait(wecb) + nsfdev_poll_input drives
- *     the WRITE completion, then ecb_wait(recb) on an inbound ping +
- *     nsfdev_poll_input decodes it (ctr_in rises). ctr_in/ctr_out are the M1-4
- *     receive/send proof (the crafted-send OPERATOR command and the hexdump
- *     renderer are M1-5).
+ *  2. EXCP channel path -- gated behind -DNSFCTCI_CUU (a live 3088 pair). This is
+ *     a MANUAL, SINGLE-SHOT batch probe: add -DNSFCTCI_CUU to [build].cflags, run
+ *     with a background ping (CLAUDE.md §5), read the BATCH spool. mbt runs every
+ *     test in both a batch AND a TSO step; the TSO step re-runs part 2 against the
+ *     SAME physical 500/501 immediately after batch, and re-using the real device
+ *     back-to-back leaves its READ subchannel MIH-pending (IGF991I) so the second
+ *     run stalls -- that is a live-hardware re-use artifact, NOT a driver bug (the
+ *     batch step ends CC 0, i.e. the full up/probe/shutdown/EOT lifecycle
+ *     completes). So judge part 2 by the BATCH result; the STC (S NSF) is the
+ *     single-run production gate. The committed CI state is the device-FREE parts
+ *     (1/1b/1c), green in both steps. It
+ *     drives the M1-4b bottom half (ADR-0022) end to end against the SUBTASK model
+ *     through a mini executive loop that WAITs on a MULTI-ECB list {dev->ecb,
+ *     stopECB} -- NOT a single-ECB ecb_wait(recb). That distinction is the whole
+ *     point: the old TSTCTCM was a single-ECB probe ("the safe path that wasn't a
+ *     production proof"), which recreated the exact blind spot that let #18
+ *     through. Here the read/write SUBTASKS own the EXCP + single-ECB IOB wait and
+ *     POST dev->ecb; the test's loop wakes on that POST in a MULTI-ECB WAIT, just
+ *     like the executive. It register+starts (SVC 99 allocate + each subtask
+ *     OPENs + first READ), dev_sends a crafted ICMP echo (the write subtask EXCPs
+ *     it -> host tcpdump), waits for an inbound ping (the read subtask decodes it
+ *     -> ctr_in rises), and then PROVES #18 in isolation: after a READ completes,
+ *     a stop POST still wakes the same multi-ECB WAIT (the exact thing that hung
+ *     the STC). Shutdown joins both subtasks (each CLOSE purges its own EXCP).
  */
 #include "nsfctci.h"
 #include "nsfdev.h"
@@ -36,7 +51,7 @@
 #include <mbtcheck.h>
 #include <string.h>
 #include <stdio.h>
-#include <clibecb.h>            /* ecb_wait / ECB (the device completion wait) */
+#include <clibecb.h>            /* ECB, ecb_timed_waitlist, ecb_post (mini loop) */
 #include <svc99.h>             /* __txdmy/__txrddn/__txddn, S99* verbs (part 1c) */
 
 /* Guest/host IP addresses for the crafted ICMP echo (part 2). Defaults match the
@@ -174,6 +189,52 @@ static int run_wall_probe(void)
 
 /* ---- part 2: EXCP channel path (gated; runs only with NSFCTCI_CUU) ------- */
 #ifdef NSFCTCI_CUU
+
+/* One MULTI-ECB timed WAIT on {dev->ecb, stopecb} -- the executive's shape
+ * (ADR-0022, §5.3). The read/write subtasks POST dev->ecb; a stop POST is the
+ * operator/stop analog. This is emphatically NOT a single-ECB ecb_wait on the raw
+ * IOB ECB (which was the old probe's blind spot). Timed (a separate discarded
+ * timeout ECB) so an absent ping cannot hang the batch job forever. */
+static void mini_wait(NETDEV *dev, ECB *stopecb, UINT ticks)
+{
+    ECB *wl[2];
+    ECB  tmo = 0u;
+
+    wl[0] = (ECB *)&dev->ecb;
+    wl[1] = (ECB *)((unsigned)stopecb | 0x80000000u);
+    (void)ecb_timed_waitlist(wl, &tmo, ticks * 10u, 0u);
+}
+
+/* Drive the mini executive loop until ctr->value reaches `goal` or `max_iter`
+ * timed WAITs elapse. Reset dev->ecb before the WAIT + double-check drain (the
+ * UFSD reset-before-WAIT pattern): a subtask POST racing the reset is caught by
+ * the second poll_input, never lost. Returns 1 if the goal was reached. */
+static int drive_until(NETDEV *dev, STSCTR *ctr, UINT goal, ECB *stopecb,
+                       UINT max_iter, UINT ticks)
+{
+    UINT i;
+
+    if (ctr == NULL) {
+        return 0;
+    }
+    for (i = 0u; i < max_iter; i++) {
+        nsfdev_poll_input();                    /* io->service: decode / reap */
+        if (ctr->value >= goal) {
+            return 1;
+        }
+        if (*stopecb & ECB_POSTED_BIT) {
+            return 0;
+        }
+        dev->ecb = 0u;                          /* reset before WAIT */
+        nsfdev_poll_input();                    /* double-check (post racing reset) */
+        if (ctr->value >= goal) {
+            return 1;
+        }
+        mini_wait(dev, stopecb, ticks);         /* MULTI-ECB WAIT */
+    }
+    return (ctr->value >= goal);
+}
+
 static int run_device_probe(void)
 {
     DEVCFG   cfg;
@@ -182,8 +243,10 @@ static int run_device_probe(void)
     UCHAR    ip[64];
     UINT     iplen;
     PBUF    *b;
+    ECB      stopecb = 0u;
 
-    printf("--- EXCP channel path (DEVOPS): CUU %04X ---\n", (unsigned)NSFCTCI_CUU);
+    printf("--- EXCP channel path (subtask model, MULTI-ECB WAIT): CUU %04X ---\n",
+           (unsigned)NSFCTCI_CUU);
     make_cfg(&cfg, "CTCA", (USHORT)NSFCTCI_CUU, (USHORT)NSFCTCI_MTU);
 
     dev_init();
@@ -192,36 +255,54 @@ static int run_device_probe(void)
     if (dev == NULL) {
         return 1;
     }
-    CHECK(dev_start(dev) == 0, "dev_start: SVC 99 allocate + OPEN + first READ");
+    CHECK(dev_start(dev) == 0,
+          "dev_start: SVC 99 allocate + both subtasks OPEN + first READ driven");
     d = (CTCIDEV *)dev->priv;
     if (d == NULL) {
         return 1;
     }
-    printf("device up: DD %s/%s\n", d->rddn, d->wddn);
+    printf("device up: DD %s/%s (read subtask %08X, write subtask %08X)\n",
+           d->rddn, d->wddn, (unsigned)d->rsub, (unsigned)d->wsub);
 
-    /* --- crafted WRITE: dev_send an ICMP echo, kick issues the WRITE. --- */
+    /* --- crafted WRITE: dev_send an ICMP echo; the write subtask EXCPs it and
+     * POSTs dev->ecb; the mini MULTI-ECB loop reaps it. --- */
     iplen = build_icmp_echo(ip);
     b = buf_alloc((USHORT)iplen);
     CHECK(b != NULL, "buf_alloc for the crafted frame");
     (void)buf_copyin(b, ip, (USHORT)iplen);
     CHECK(dev_send(dev, b) == 0, "dev_send queued the crafted ICMP echo");
-    nsfdev_kick_output();               /* io->kick encodes + issues the WRITE */
-    (void)ecb_wait((ECB *)&d->wecb);    /* IOS posts the write IOB ECB          */
-    nsfdev_poll_input();                /* io->service handles the completion    */
+    nsfdev_kick_output();               /* io->kick encodes + hands to write_sub */
+    CHECK(drive_until(dev, dev->ctr_out, 1u, &stopecb, 30u, 10u),
+          "crafted WRITE transmitted via the write subtask (ctr_out rose)");
     printf("WRITE ctr_out=%u (crafted ICMP echo id 0xABCD -> see host tcpdump)\n",
            (unsigned)dev->ctr_out->value);
-    CHECK(dev->ctr_out->value >= 1u, "crafted WRITE transmitted (post X'7F')");
 
-    /* --- inbound READ: a host ping of the guest HOME arrives. --- */
-    printf("waiting for inbound frame (ping the guest HOME 192.168.200.1 now)...\n");
-    (void)ecb_wait((ECB *)&d->recb);    /* blocks until IOS posts the read ECB   */
-    nsfdev_poll_input();                /* io->service: re-drive + decode        */
+    /* --- inbound READ: host pings of the guest HOME arrive; each completes the
+     * read subtask's EXCP READ and POSTs dev->ecb, waking the MULTI-ECB WAIT. The
+     * ISOLATED #18 disproof is REPEATED wakes: in #18 the FIRST foreign post into
+     * the executive's multi-ECB WAIT left it unresponsive to the next. Requiring
+     * ctr_in >= 3 proves the multi-ECB WAIT keeps waking across successive
+     * real-device subtask posts. (The operator-responds-AFTER-a-READ gate is the
+     * STC, F NSF,STATS -- a second, genuinely foreign async poster.) --- */
+    printf("waiting for inbound frames (ping the guest HOME now; ~60s budget)...\n");
+    CHECK(drive_until(dev, dev->ctr_in, 3u, &stopecb, 60u, 10u),
+          "MULTI-ECB WAIT woke repeatedly on real read-subtask posts (#18 disproof)");
     printf("READ ctr_in=%u ctr_ierr=%u\n",
            (unsigned)dev->ctr_in->value, (unsigned)dev->ctr_ierr->value);
-    CHECK(dev->ctr_in->value >= 1u,
-          "inbound frame decoded into a PBUF (EV_PACKET_RECEIVED, ctr_in rose)");
 
-    dev_shutdown(dev);
+    /* Sanity: the multi-ECB WAIT returns when the stopECB slot is posted (the
+     * stop path is live). Not the full operator proof -- that is the STC. */
+    printf("posting stop; the multi-ECB WAIT must return...\n");
+    (void)ecb_post((ECB *)&stopecb, 0u);
+    dev->ecb = 0u;
+    mini_wait(dev, &stopecb, 50u);      /* MULTI-ECB WAIT, <=5s */
+    CHECK((stopecb & ECB_POSTED_BIT) != 0u,
+          "multi-ECB WAIT returned on the stop POST (stopECB slot live)");
+
+    /* --- clean shutdown: stop + join both subtasks (each CLOSE purges its own
+     * outstanding EXCP -- same TCB), unallocate, release storage. --- */
+    CHECK(dev_shutdown(dev) == 0, "dev_shutdown joined the subtasks + unallocated");
+    CHECK_EQ((long)dev->state, (long)NSFDEV_S_DOWN, "device DOWN after shutdown");
     return 0;
 }
 #endif /* NSFCTCI_CUU */

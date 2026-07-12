@@ -64,12 +64,22 @@ void nsfthr_timed_wait(NSFECB *ecb, UINT ticks)
 int nsfthr_join(NSFTHR *t, UINT ticks)
 {
     CTHDTASK *task = (CTHDTASK *)t;
+    ECB      *wl[1];
+    ECB       tmo = 0u;
 
     if (task == NULL) {
         return 0;
     }
-    /* Bounded wait for the subtask to end (termecb, posted by MVS at task end). */
-    (void)ecb_timed_wait(&task->termecb, ticks * 10u, 0u);
+    /* Bounded wait for the subtask to end (termecb, posted by MVS at task end).
+     * Use ecb_timed_waitlist with a SEPARATE timeout ECB, NOT ecb_timed_wait:
+     * ecb_timed_wait POSTS termecb itself on timeout, which would falsely read as
+     * "the task ended" and DETACH a still-live subtask -> the detached task hangs
+     * EOT (an unbounded address-space hang). With a separate `tmo`, termecb is
+     * posted ONLY by the real task-end, so a timeout is distinguishable and we
+     * RETAIN the task rather than detach it (§5.4: a hung subtask cannot hang
+     * shutdown unboundedly, but must not be torn down under a live TCB). */
+    wl[0] = (ECB *)((unsigned)&task->termecb | 0x80000000u);
+    (void)ecb_timed_waitlist(wl, &tmo, ticks * 10u, 0u);
     if ((task->termecb & ECB_POSTED_BIT) == 0u) {
         return 1;                   /* still live -- do NOT detach a running task */
     }
