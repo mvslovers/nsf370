@@ -271,6 +271,29 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstcthr.c", "asm/nsfstim.asm"]
 
+# -- M2 IPv4 + ICMP ("Ping!") --------------------------------------------
+# NSFCKSUM: the Internet checksum (RFC 1071) over a PBUF chain. Pinned FIRST,
+# against literal vectors, before any packet code (spec 11.5). Needs only the
+# PBUF type from nsfbuf.h (fabricated on the stack) -- no NSFMM/NSFBUF pools.
+[[test]]
+name = "TSTCKSUM"
+startup = "crt1"
+sources = ["test/tstcksum.c", "src/nsfcksum.c"]
+
+# NSFIP: header validate/demux/build + routing table. Drives the IP layer over a
+# capture DEVOPS (deterministic, loop not running) + one NSFHOST loopback flow.
+[[test]]
+name = "TSTIP"
+startup = "crt1"
+sources = ["test/tstip.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# NSFICM: ICMP echo responder (in-place, single-owner). Injects an echo request
+# over the NSFHOST loopback and asserts a well-formed reply emerges.
+[[test]]
+name = "TSTICMP"
+startup = "crt1"
+sources = ["test/tsticmp.c", "src/nsficmp.c", "src/nsfip.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
@@ -280,7 +303,7 @@ sources = ["test/mvs/tstcthr.c", "asm/nsfstim.asm"]
 [[module]]
 name = "NSF"
 startup = "crt1"
-sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB
