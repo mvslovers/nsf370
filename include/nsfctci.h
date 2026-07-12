@@ -1,38 +1,54 @@
 #ifndef NSFCTCI_H
 #define NSFCTCI_H
 /*
- * nsfctci.h -- the CTCI device driver (spec ch. 09.3; ADR-0019).
+ * nsfctci.h -- the CTCI device driver (spec ch. 09.3; ADR-0019/0020/0021).
  *
  * NSFCTCI drives an emulated 3088 CTC read/write subchannel pair with plain
- * EXCP. It is split into two halves:
- *   - a HLASM top half (asm/nsfctcio.asm): the C-callable EXCP primitives that
- *     open a subchannel and start a READ/WRITE against it. There is NO
- *     I/O-completion exit and NO CHE appendage -- IOS POSTs the IOB ECB (the
- *     device ECB in the loop's ECBLIST) at channel-program termination
- *     (ADR-0019). The primitives operate on an opaque per-subchannel control
- *     block (CTCISC) the C layer supplies; ctci_scb_size() reports its size so
- *     the C layer allocates exactly enough from the NSF region.
- *   - a C bottom half (src/nsfctci.c): the lifecycle -- reserve region storage,
- *     SVC 99 allocate the CUU pair (via the libc370 seam), open both
- *     subchannels, then start/decode/close raw I/O. It knows nothing of the
- *     DEVOPS contract yet (that, plus the CTCIHDR/CTCISEG codec + PBUF
- *     conversion + sendq draining + MIH, is M1-4).
+ * EXCP. There is NO I/O-completion exit and NO CHE appendage: EXCP starts the
+ * channel program and IOS POSTs the IOB ECB (which is the device's own
+ * completion ECB in the §5.3 ECBLIST) at channel-program termination (ADR-0019).
+ * The driver is built in four cooperating pieces:
  *
- * M1-3 SCOPE: allocate + open the pair, EXCP a raw buffer each way, decode
- * completion. The CTCIHDR/CTCISEG codec and DEVOPS impl are M1-4; this header
- * only declares the WIRE FORMAT structs so a test can HAND-BUILD one block to
- * prove the channel path before the codec exists.
+ *   1. TOP HALF  (asm/nsfctcio.asm) -- C-callable EXCP primitives that open a
+ *      subchannel and start/decode one raw READ/WRITE. Format-blind: it moves a
+ *      block of bytes and reports completion (post code + residual). Swapped for
+ *      src/nsfctcio_host.c on the host build so the bottom half is host-testable.
  *
- * ============  DEFERRED SEAM (blocked on hardware)  ============
- * The EXCP READ/WRITE path is UNVALIDATED on MVS: there is no CTCI device on
- * the Hercules side and the CUU pair is in no UCB yet. src/nsfctci.c + its asm
- * cross-link clean; their on-MVS runtime is owed a live run (see the PR
- * runbook). The one part proven under test-mvs today is the SVC 99 seam via a
- * deliberately-invalid unit (ctci_alloc_unit failing with a decoded S99 error).
+ *   2. CHANNEL + SVC 99 seam (src/nsfctci.c, MVS-only) -- ctci_chan_open/close
+ *      allocate the CUU pair via the libc370 SVC 99 seam and OPEN/CLOSE both
+ *      subchannels. Swapped for src/nsfctci_host.c (a success no-op) on the host,
+ *      so the portable bottom half brings a device up the same way on both.
+ *
+ *   3. CODEC (src/nsfctcif.c) -- the CTCIHDR/CTCISEG <-> raw-IP transform
+ *      (nsfctcif.h). Driver-independent, portable, host-tested with byte vectors.
+ *
+ *   4. BOTTOM HALF (src/nsfctcib.c, portable) -- the DEVOPS + DEVIO
+ *      implementation: reserve region storage, allocate a CTCIDEV, drive the
+ *      ping-pong READ (re-drive-before-parse), demux read/write completion,
+ *      decode inbound segments into PBUFs (EV_PACKET_RECEIVED), and drain the
+ *      sendq into WRITEs (one outstanding). It calls 1/2/3 above.
+ *
+ * ==============  EXCP path VALIDATED on MVS (issue #16)  ============
+ * ctci_chan_open .. ctci_chan_close (then M1-3's raw EXCP) ran live on MVSCE
+ * against a real Hercules 3088 CTCI pair (CUU 500/501 on tun0): SVC 99 allocated
+ * both subchannels (two distinct DDNAMEs), OPEN succeeded, WRITE completed post
+ * X'7F' (the crafted ICMP echo reached the host in tcpdump), READ completed post
+ * X'7F' (length = requested - IOB residual). The SVC 99 unit name is 3 hex
+ * digits ("%03X"): 3.8j device numbers are 3 digits, so a 4-digit name is an
+ * undefined unit (S99ERROR 021C). The READ block is ONE block of many CTCISEGs
+ * with the leading hwOffset = end-of-data and NO terminator sent to the guest
+ * (ADR-0020) -- the M1-4 codec (nsfctcif) decodes it.
  * ==============================================================
  */
 
 #include "nsf.h"
+#include "nsfbuf.h"             /* PBUF (the in-flight WRITE buffer)          */
+#include "nsfctcif.h"           /* CTCIHDR / CTCISEG / CTCI_TYPE_IPV4 (codec) */
+
+/* Forward: the device abstraction types (DEVOPS/NETDEV), pulled by the bottom
+ * half; declared opaquely here so a consumer that only wants the lifecycle need
+ * not include nsfdev.h. */
+struct devops;
 
 /* --- Buffer / MTU bounds (spec 9.3) ---------------------------------------
  * A CTCI device I/O buffer is min(configured, 0xFFFF); 0xFFFF is only the CCW
@@ -44,35 +60,15 @@
 #define CTCI_BUF_MAX       0xFFFFu    /* CCW count-field width (hard cap)     */
 #define CTCI_MTU_MAX       9000u      /* Hercules discards frames above this  */
 
-/* --- Wire format (spec 9.3; normative, verified vs Hercules ctc_ctci.c at
- * M1-1). All halfwords are big-endian = native S/370 order, so NSF reads and
- * builds them with no byte swapping. A block is [CTCIHDR] ([CTCISEG][IP]) ...;
- * blocks chain through hwOffset, the final block having hwOffset == 0. The
- * codec that walks/builds these is M1-4; the structs live here so the M1-3
- * test can craft one block by hand. */
-typedef struct ctcihdr {
-    USHORT hwOffset;             /* byte offset of NEXT block; 0x0000 = last  */
-} CTCIHDR;                       /* 2 bytes */
-NSF_SIZE_ASSERT(CTCIHDR, 2);
+/* Read subchannel post code for a normal channel-end/device-end completion
+ * (spec 9.3; the IOB ECB completion code IOS stores at IOBECBCC). */
+#define CTCI_POST_NORMAL   0x7Fu
 
-typedef struct ctciseg {
-    USHORT hwLength;             /* segment length INCLUDING this 6-B header  */
-    USHORT hwType;               /* frame type (CTCI_TYPE_IPV4)               */
-    USHORT hwRsvd;               /* always 0x0000                             */
-} CTCISEG;                       /* 6 bytes */
-NSF_SIZE_ASSERT(CTCISEG, 6);
-
-#define CTCI_TYPE_IPV4     0x0800u    /* CTCISEG.hwType for an IPv4 frame     */
-
-/* Largest IP frame that fits one block of `buf` bytes (spec 9.3). */
-#define CTCI_MAX_FRAME(buf) \
-    ((UINT)(buf) - (UINT)sizeof(CTCIHDR) - (UINT)sizeof(CTCISEG) - 2u)
-
-/* --- CTCI device state (NETDEV.priv points here in M1-4) -------------------
+/* --- CTCI device state (NETDEV.priv points here) --------------------------
  * Allocated once at device init from the CTCIDEV pool (never freed). The two
  * subchannel control blocks (rscb/wscb) and the three I/O buffers come from
  * their own init-window pools; the two ECBs are IOS post targets, so they sit
- * here on natural (word) boundaries. 64 bytes on the S/370 target. */
+ * here on natural (word) boundaries. 68 bytes on the S/370 target. */
 #define CTCI_S_DOWN   0              /* allocated, not opened                  */
 #define CTCI_S_UP     1              /* both subchannels opened                */
 
@@ -87,27 +83,30 @@ typedef struct ctcidev {
     UCHAR  *rbuf0;              /* 20  ping-pong read buffer A                 */
     UCHAR  *rbuf1;              /* 24  ping-pong read buffer B                 */
     UCHAR  *wbuf;               /* 28  write buffer                            */
-    UINT    cur;                /* 32  current read buffer (0/1); M1-4 uses it */
+    UINT    cur;                /* 32  buffer the outstanding READ targets (0/1) */
     UINT    recb;               /* 36  read  completion ECB (IOS post target) */
     UINT    wecb;               /* 40  write completion ECB (IOS post target) */
-    char    rddn[9];            /* 44  read  subchannel DDNAME (NUL-term)      */
-    char    wddn[9];            /* 53  write subchannel DDNAME (NUL-term)      */
-    char    rsvd[2];            /* 62                                          */
-} CTCIDEV;                       /* 64 bytes */
-NSF_SIZE_ASSERT(CTCIDEV, 64);
+    PBUF   *txflight;           /* 44  PBUF held during an in-flight WRITE     */
+    char    rddn[9];            /* 48  read  subchannel DDNAME (NUL-term)      */
+    char    wddn[9];            /* 57  write subchannel DDNAME (NUL-term)      */
+    char    rsvd[2];            /* 66                                          */
+} CTCIDEV;                       /* 68 bytes */
+NSF_SIZE_ASSERT(CTCIDEV, 68);
 
-/* asm() external-symbol aliases (CLAUDE.md §3). Two schemes, both unique
- * across the load module: the six HLASM top-half entries are NSFCI + verb
- * (their FUNHEAD entry names match character-for-character); the C bottom-half
- * functions are NSFCI + a distinct verb.
- *   asm:  ctci_scb_size NSFCISZ   ctci_open_sub NSFCIOPN   ctci_read NSFCIRD
- *         ctci_write NSFCIWR      ctci_status NSFCIST      ctci_close_sub NSFCICL
- *   C:    ctci_reserve NSFCIRSV   ctci_dev_open NSFCIOPD   ctci_dev_read NSFCIDRD
- *         ctci_dev_write NSFCIDWR ctci_dev_status NSFCIDST ctci_dev_close NSFCIDCL
- *         ctci_alloc_unit NSFCIALU  ctci_free_ddn NSFCIFDN  svc99_call NSFCISVC
+/* asm() external-symbol aliases (CLAUDE.md §3), all unique across the load
+ * module. The top-half entries (NSFCI + verb) match their FUNHEAD names
+ * character-for-character; the codec uses NSFCK* (nsfctcif.h).
+ *   top half (nsfctcio.asm / nsfctcio_host.c):
+ *     ctci_scb_size NSFCISZ   ctci_open_sub NSFCIOPN   ctci_read NSFCIRD
+ *     ctci_write NSFCIWR      ctci_status NSFCIST      ctci_close_sub NSFCICL
+ *   channel + SVC 99 seam (nsfctci.c / nsfctci_host.c):
+ *     ctci_chan_open NSFCICHO   ctci_chan_close NSFCICHC
+ *     ctci_alloc_unit NSFCIALU  ctci_free_ddn NSFCIFDN  svc99_call NSFCISVC
+ *   bottom half (nsfctcib.c):
+ *     ctci_reserve NSFCIRSV     ctci_devops NSFCIOPS
  */
 
-/* ============================ HLASM top half ============================== */
+/* ============================ TOP HALF =================================== */
 
 /* Bytes the C layer must allocate per subchannel control block (CTCISC). */
 UINT ctci_scb_size(void) asm("NSFCISZ");
@@ -117,7 +116,8 @@ UINT ctci_scb_size(void) asm("NSFCISZ");
 int  ctci_open_sub(void *scb, UINT forwrite, const char *ddname8) asm("NSFCIOPN");
 
 /* Start an inbound READ (CCW X'02'+SLI) / outbound WRITE (CCW X'01') of `len`
- * bytes to/from `buf`; IOS POSTs *ecb at completion. Returns 0 (started). */
+ * bytes to/from `buf`; the ECB is CLEARED then IOS POSTs *ecb at completion.
+ * Returns 0 (started). */
 int  ctci_read (void *scb, void *buf, UINT len, UINT *ecb) asm("NSFCIRD");
 int  ctci_write(void *scb, void *buf, UINT len, UINT *ecb) asm("NSFCIWR");
 
@@ -128,60 +128,62 @@ void ctci_status(void *scb, UINT *postcode, UINT *residual) asm("NSFCIST");
 /* CLOSE a subchannel (direction-agnostic). Returns 0. */
 int  ctci_close_sub(void *scb) asm("NSFCICL");
 
-/* ============================ C bottom half =============================== */
+/* ==================== CHANNEL + SVC 99 seam (MVS) ======================== */
+
+/* Bring the CUU pair up: SVC 99 allocate both subchannels (3-hex-digit unit
+ * names from d->cuu / d->wcuu, generated DDNAMEs into d->rddn / d->wddn), then
+ * OPEN read INPUT and write OUTPUT. Returns 0 on success (subchannels open), or
+ * non-zero on any failure (an NSF2xxE message is emitted and nothing is left
+ * allocated). On the host this is a success no-op (src/nsfctci_host.c). */
+int  ctci_chan_open(CTCIDEV *d) asm("NSFCICHO");
+
+/* CLOSE both subchannels and unallocate both CUUs (SVC 99 S99VRBUN). Idempotent
+ * on a device that never opened. On the host, a no-op. */
+int  ctci_chan_close(CTCIDEV *d) asm("NSFCICHC");
+
+/* --- Low-level SVC 99 seam (libc370), also TSTCTCM's direct proof path.
+ * ctci_alloc_unit dynamically allocates the device named by UNIT `unit` (a
+ * 3-hex-digit CUU string, e.g. "500"), asking the system to return a generated
+ * DDNAME into `ddn8` (8 chars + NUL). Returns 0 on success; on failure returns
+ * non-zero and fills *s99err / *s99info from the RB99 (S99ERROR / S99INFO).
+ * ctci_free_ddn unallocates a DDNAME. Either s99err/s99info may be NULL. */
+int  ctci_alloc_unit(const char *unit, char *ddn8,
+                     short *s99err, short *s99info) asm("NSFCIALU");
+int  ctci_free_ddn(const char *ddn8) asm("NSFCIFDN");
+
+/* The RB99 wrapper behind ctci_alloc_unit / ctci_free_ddn, exported so a test
+ * can drive SVC 99 directly (both failure and success) over OUR request-block
+ * construction. `txt99` is a built text-unit array (a libc370 `TXT99 **`, passed
+ * opaquely as void *); svc99_call marks its last entry, issues SVC 99 with
+ * `request` (S99VRBAL / S99VRBUN / ...), and on a successful allocate copies the
+ * returned DDNAME into `ddn8`. On failure it fills *s99err / *s99info. Returns
+ * the SVC 99 rc. */
+int  svc99_call(void *txt99, unsigned char request, char *ddn8,
+                short *s99err, short *s99info) asm("NSFCISVC");
+
+/* ========================= BOTTOM HALF (DEVOPS) ========================== */
 
 /* Reserve NSFMM region storage for up to `ndev` CTCI devices with `bufsize`
  * I/O buffers. INIT-WINDOW ONLY (creates pools; call between mm_init and
  * mm_init_complete). Returns 0 on success, non-zero if a pool could not be
  * created. */
-int      ctci_reserve(UINT ndev, UINT bufsize) asm("NSFCIRSV");
+int  ctci_reserve(UINT ndev, UINT bufsize) asm("NSFCIRSV");
 
-/* Bring up one CTCI device on the CUU pair (cuu = read, cuu+1 = write):
- * validate the MTU cap (mtu <= CTCI_MAX_FRAME(bufsize) and mtu <= CTCI_MTU_MAX),
- * SVC 99 allocate both subchannels, obtain the ping-pong read buffers + write
- * buffer, and open both subchannels. The I/O buffer size is the one fixed by
- * ctci_reserve. Returns the CTCIDEV*, or NULL on any failure (a NSF2xxE message
- * is emitted; nothing is left half-allocated). */
-CTCIDEV *ctci_dev_open(USHORT cuu, USHORT mtu) asm("NSFCIOPD");
+/* The DEVOPS vtable for the CTCI driver, to hand dev_register with a DEVCFG
+ * whose cuu/mtu/ipaddr/name come from the PROFILE DEVICE/LINK/HOME statements.
+ * ops->init allocates the CTCIDEV (from the reserved pools) and attaches the
+ * DEVIO seam (ADR-0021); ops->start opens the channel and drives the first READ;
+ * ops->send queues a PBUF (the executive loop's kick transmits it); ops->shutdown
+ * closes the channel and frees any in-flight WRITE PBUF. */
+struct devops *ctci_devops(void) asm("NSFCIOPS");
 
-/* Start a raw READ into read buffer A (d->rbuf0); IOS posts d->recb. The
- * bottom half's re-drive-before-parse ping-pong is M1-4; here it is the single
- * explicit READ a caller drives. Returns 0 (started). */
-int      ctci_dev_read(CTCIDEV *d) asm("NSFCIDRD");
-
-/* Start a raw WRITE of `len` bytes from `buf` (typically d->wbuf); IOS posts
- * d->wecb. Returns 0 (started), non-zero if len exceeds the buffer. */
-int      ctci_dev_write(CTCIDEV *d, const void *buf, UINT len) asm("NSFCIDWR");
-
-/* Decode a completed request. iswrite selects the subchannel; reqlen is the
- * length that was requested. On return *len = reqlen - residual (bytes moved)
- * and *post = the completion code (0x7F normal). Returns 0 if *post == 0x7F,
- * non-zero otherwise. */
-int      ctci_dev_status(CTCIDEV *d, int iswrite, UINT reqlen,
-                         UINT *len, UCHAR *post) asm("NSFCIDST");
-
-/* CLOSE both subchannels and unallocate both CUUs (SVC 99 S99VRBUN). */
-int      ctci_dev_close(CTCIDEV *d) asm("NSFCIDCL");
-
-/* --- Low-level SVC 99 seam (libc370), also the M1-3 test's proof-today path.
- * ctci_alloc_unit dynamically allocates the device named by the 4-char UNIT
- * `unit4` (e.g. "0E20"), asking the system to return a generated DDNAME into
- * `ddn8` (8 chars + NUL). Returns 0 on success; on failure returns non-zero and
- * fills *s99err / *s99info from the RB99 (S99ERROR / S99INFO). ctci_free_ddn
- * unallocates a DDNAME. Either s99err/s99info may be NULL. */
-int      ctci_alloc_unit(const char *unit4, char *ddn8,
-                         short *s99err, short *s99info) asm("NSFCIALU");
-int      ctci_free_ddn(const char *ddn8) asm("NSFCIFDN");
-
-/* The low-level RB99 wrapper behind ctci_alloc_unit / ctci_free_ddn, exported so
- * a test can drive SVC 99 directly -- both the failure AND the success paths --
- * over OUR request-block construction (not libc370's). `txt99` is a built
- * text-unit array (a libc370 `TXT99 **`, from svc99.h), passed opaquely as
- * `void *` so this header needs no libc370 type; svc99_call marks its last
- * entry, issues SVC 99 with `request` (S99VRBAL / S99VRBUN / ...), and on a
- * successful allocate copies the returned DDNAME into `ddn8` (8 chars + NUL). On
- * failure it fills *s99err / *s99info from the RB99. Returns the SVC 99 rc. */
-int      svc99_call(void *txt99, unsigned char request, char *ddn8,
-                    short *s99err, short *s99info) asm("NSFCISVC");
+#if NSF_DEBUG
+/* The NSFMM pool backing CTCI region storage (which: 0 = CTCIDEV, 1 = subchannel
+ * blocks, 2 = I/O buffers), so a host test can prove device storage returns to
+ * baseline after shutdown. Outside the production interface (mirrors
+ * buf_debug_pool). */
+struct mmpool;
+struct mmpool *ctci_debug_pool(UCHAR which) asm("NSFCIDBP");
+#endif
 
 #endif /* NSFCTCI_H */
