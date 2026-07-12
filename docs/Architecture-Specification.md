@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.18 — Draft for implementation. Companion document to the frozen
+*Version 1.20 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -575,6 +575,10 @@ NSF_SIZE_ASSERT(EVT, 24);
 ```
 for (;;) {
     WAIT on ECBLIST { devECB[n], timerECB, requestECB, cibECB, stopECB }
+         /* skipped while work is already pending: the event queue, the xq
+            handoff, or the device work_pending probe (ADR-0025) — a device
+            completion racing the executive's ECB reset is serviced on the
+            same pass, not parked until the next unrelated wake */
     drain exit handoff stacks (xq_drain) → internal event queue
     while ((ev = q_deq(&evq)) != NULL)
         handlers[ev->type](ev);          /* run to completion */
@@ -606,9 +610,11 @@ when the stack is completely idle (no device completions; the normal state of a
 network stack). The WAIT itself stays a plain untimed `ecb_waitlist`: a timed
 WAIT (`ecb_timed_waitlist`) is disqualified on the executive because it
 TTIMER-CANCELs the task's interval timer on entry (STIMER is a per-task
-singleton — it would kill this very heartbeat) and its timeout was not observed
-to fire on the CRT main task. This consciously trades ADR-0011's "an idle stack
-takes zero timer interrupts" for operator liveness.
+singleton — it would kill this very heartbeat). (An earlier second disqualifier —
+"its timeout was not observed to fire on the CRT main task" — was a misdiagnosis:
+the timeout ECB was outside the WAIT list, so its POST could not wake the wait on
+any task; corrected in ADR-0025.) This consciously trades ADR-0011's "an idle
+stack takes zero timer interrupts" for operator liveness.
 
 ### 5.4 Shutdown Sequence
 
@@ -913,6 +919,25 @@ appendage alternative.
 > ADR-0017 heartbeat, armed at STC start, guarantees loop liveness), MIH across
 > idle tolerated, clean `P NSF` with the subtasks joined and an empty SYSUDUMP.
 
+> **Correction (ADR-0025, issue #21, M2 live).** Three additions from the first
+> sustained live traffic. (1) **Pair sequencing:** the subchannel pair shares one
+> channel, and a WRITE `SIO` issued while the blocking READ is outstanding queues
+> at the IOS level until the *next inbound frame* completes that READ (measured:
+> reply RTT tracked the sender's interval; a burst tail stalled 90 s+). The read
+> re-arm is therefore sequenced **behind the write pipeline**: the DEVIO `service`
+> only marks the release (`rhold`); `kick` POSTs `returnecb` once nothing is
+> queued and no WRITE is outstanding, so every WRITE is issued with the READ
+> parked. The un-armed window is lossless ("Inbound flow control" below). A WRITE
+> originating while the READ is armed (M3+ locally-originated traffic) still
+> queues — HIO or an attention-driven protocol is the documented follow-on.
+> (2) **Timed cross-task waits:** `ecb_timed_waitlist`'s timeout ECB must be IN
+> the waitlist or the timeout never wakes the wait — `nsfthr_timed_wait`/`_join`
+> wait on `{target, tmo}` (proven both ways by TSTTHRW; corrects ADR-0023 §6's
+> "does not fire on the CRT main task"). (3) **WAIT-commit recheck:** the loop
+> consults a side-effect-free device `pending` probe (`nsfdev_work_pending`)
+> before WAITing, so a completion racing the executive's ECB reset is serviced
+> the same pass (§5.3).
+
 - **Top half (HLASM, mainline):** two DCBs (`DSORG=PS,MACRF=E`, `IOBAD=`), one
   per subchannel, opened `INPUT` / `OUTPUT`; `CENDA=` is deliberately omitted.
   Single unchained CCWs: READ `X'02'` with the **`SLI` flag** (an inbound block
@@ -927,12 +952,13 @@ appendage alternative.
   requested length − IOB residual count** (from the CSW). It hands the raw block
   to the executive (POST `dev->ecb`) and waits `returnecb`; the **executive**
   decodes — each `CTCISEG`'s IP packet is **copied out into a PBUF** of the
-  appropriate size class (the I/O buffer is never handed up as a PBUF) — then
-  releases the subtask to read again. (The earlier "re-drive first, then parse"
-  ordering belonged to the pre-subtask single-task model; single-block-sync
-  replaces it, lossless per "Inbound flow control" below.) Outbound, the
-  executive builds the block from a queued PBUF and the write subtask starts the
-  WRITE.
+  appropriate size class (the I/O buffer is never handed up as a PBUF) — and
+  releases the subtask to read again **only after outbound work has drained**
+  (`rhold`, the ADR-0025 pair sequencing above). (The earlier "re-drive first,
+  then parse" ordering belonged to the pre-subtask single-task model;
+  single-block-sync replaces it, lossless per "Inbound flow control" below.)
+  Outbound, the executive builds the block from a queued PBUF and the write
+  subtask starts the WRITE.
 
 **Dynamic allocation (SVC 99 via libc370; M1-3).** The CUUs come from the
 PROFILE `DEVICE` statement (NSFCFG), not from DD cards. NSFCTCI allocates both
@@ -959,14 +985,16 @@ from pools reserved before `mm_init_complete()` seals the region. Under the
 subtask model the read side uses **one buffer** with a synchronous handshake: the
 read subtask EXCPs a READ into it, waits the IOB ECB, hands the filled block to
 the executive (POST `dev->ecb`) and waits `returnecb`; the executive decodes and
-POSTs `returnecb`, releasing the next READ. No READ is outstanding only for the
-microseconds of the decode — **lossless**, because Hercules buffers/back-pressures
+POSTs `returnecb` **once the write pipeline is drained** (ADR-0025 pair
+sequencing), releasing the next READ. No READ is outstanding for the decode plus
+any replies' WRITEs — **lossless**, because Hercules buffers/back-pressures
 inbound frames with no READ outstanding (see "Inbound flow control" below; the
 same property that made the CHE appendage unnecessary). An earlier draft
-specified ping-pong buffers with re-drive-before-parse; that is now the
-**documented throughput follow-on** (it would keep a READ always outstanding at
-the cost of a second buffer and a free-buffer handshake), deferred exactly as the
-appendage is. The write side needs one buffer, since one WRITE is outstanding at
+specified ping-pong buffers with re-drive-before-parse; that remains the
+**documented throughput follow-on**, now explicitly conditional on solving the
+pair's channel serialization first (a READ kept permanently outstanding queues
+every WRITE until the next inbound frame — ADR-0025; HIO or an attention-driven
+protocol), deferred exactly as the appendage is. The write side needs one buffer, since one WRITE is outstanding at
 a time (the executive encodes, the write subtask EXCPs); batching several queued
 PBUFs into one block (what the `CTCIHDR`/`CTCISEG` chain is for) is a later
 optimisation, not v1.
@@ -1795,6 +1823,8 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.20:** **Issue #21 FIXED — CTCI write-path latency band + burst-tail stall; ADR-0025.** Three defects, separately proven. (1) `nsfthr_timed_wait`/`nsfthr_join` passed `ecb_timed_waitlist` a timeout ECB **outside** the WAIT ECBLIST — the STIMER exit posted a dead stack ECB and the "timed" wait was a pure infinite WAIT (the CTCI subtask's 500 ms self-poll was dead code; a join of a hung subtask would hang forever). Fixed: WAIT on `{target, tmo|VL}`; the target ECB stays never-cleared / never-phantom-posted. Proven both ways by the new MVS-only **TSTTHRW** (old shape: no return within 2 s of heartbeats, released only by a real post at 2003 ms; fixed shape: fires at 500 ms on a cthread subtask AND on the main task — correcting ADR-0023 §6's "does not fire on the CRT main task" misdiagnosis; a join of a live subtask times out to RETAIN instead of hanging). (2) The §5.3 WAIT-skip never rechecked device work after the executive's `dev->ecb` reset: `DEVIO` gains a side-effect-free `pending` probe (CTCI: `rready || (wready && txbusy)`), `nsfdev_work_pending` (`NSFDPEND`) rides `evt_set_devices` as a fourth hook, and the loop consults it before committing to WAIT — host-proven with no timer running (a destroyed-wake completion is reaped on the same pass). (3) **The transport mechanism, isolated by the live gate after (1)+(2) were deployed:** a WRITE `SIO` issued while the blocking READ is outstanding queues at the IOS level (the pair shares one channel) until the NEXT inbound frame completes that READ — slow replies tracked the sender's interval exactly (505 ms at `ping -i 0.5`, 2020 ms at `-i 2`), each stuck reply hit the wire ~200 µs after the next echo request, and the last reply of a run never transmitted (the 90 s+ tail stall; the pre-fix "bimodal 200-311 ms band" was that run's ping interval, not heartbeat multiples). Fixed by **pair sequencing**: `service` marks the read release (`CTCIDEV.rhold`) and `kick` POSTs `returnecb` only when nothing is queued and no WRITE is outstanding, so every WRITE is issued with the READ parked; `kick` also walks past dropped frames instead of stranding the sendq. PBUF ownership + the kick-clocked handoff unchanged; the un-armed window is lossless (§9.3). M3+ locally-originated writes under an armed READ remain the documented HIO / attention-protocol follow-on. **The M2 0-loss gate is now CLEAN:** live 1000-packet ping → **1000/1000, 0 % loss, unimodal** RTT min/avg/max = 0.550/0.918/35.1 ms (p99 < 1 ms, zero replies ≥ 100 ms, the last frame answered in 0.899 ms); `LNK1 in 1006 == LNK1 out 1006` (6 pre-flight + 1000), every drop counter 0; `P NSF` → NSF830I→NSF011I→IEF404I within the same second. Host suite 787→**804** (TSTCTCI 168→207); on-MVS regression batch+TSO **188 PASS** (TSTTHRW, TSTCTHR, TSTEVTM, TSTSTCM, TSTCKSUM, TSTIP, TSTICMP, TSTTMACC). §5.3/§9.3 corrected; ADR-0023 annotated; `CTCIDEV` stays 112 B.
 
 **v1.19:** **M2-1..M2-3 DONE — the IPv4 + ICMP echo path; ADR-0024.** M2-1: the
 Internet checksum `in_cksum(chain, off, len)` (RFC 1071, portable, allocation-

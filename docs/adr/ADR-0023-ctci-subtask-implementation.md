@@ -5,6 +5,12 @@ its live validation on MVSCE (issue #18). ADR-0022 decided *that* the CTCI drive
 completes through the M1-2 `doneq` model behind an `cthread` I/O subtask; this ADR
 records the sub-decisions that implementation settled — each of which ADR-0022
 left open or sketched, and several of which the first live runs corrected.
+**Corrected in part by ADR-0025 (issue #21):** §6's claim (1) — "the STIMER-exit
+timeout does not fire on the CRT main task" — was a misdiagnosis (the timeout ECB
+was outside the WAIT list, so its POST could not wake the wait on ANY task); §5's
+"separate timeout ECB" rule now additionally requires that ECB IN the waitlist;
+and §2's read handshake is sequenced behind the write pipeline (the pair shares
+one channel). The operative decisions here otherwise stand.
 **Relates to:** ADR-0022 (the decision), ADR-0019/0020 (EXCP recipe + framing,
 unchanged), ADR-0021 (the superseded DEVIO seam), §9.2/§9.3 (device/CTCI),
 §5.3 (executive loop), CLAUDE.md §3.
