@@ -31,6 +31,7 @@ static void    (*g_opdrain)(void);      /* operator command drain (M0-8)      */
 static int     (*g_devcollect)(NSFECB **, int); /* device ECBs -> ECBLIST (M1) */
 static void    (*g_devpoll)(void);      /* drain device doneqs (M1-2)         */
 static void    (*g_devkick)(void);      /* start device output (M1-2)         */
+static int     (*g_devpending)(void);   /* device work awaits service? (#21)  */
 static int       g_stop;                /* orderly-stop flag                  */
 static UINT      g_ticks;               /* timer wakes serviced               */
 static UINT      g_drops;               /* evt_post pool-exhaustion drops     */
@@ -57,6 +58,7 @@ int nsfevt_init(void)
     g_devcollect = NULL;                 /* no devices until evt_set_devices   */
     g_devpoll    = NULL;
     g_devkick    = NULL;
+    g_devpending = NULL;
     g_stop       = 0;
     g_ticks      = 0u;
     g_drops      = 0u;
@@ -121,11 +123,13 @@ void evt_set_operator(NSFECB *ecb, void (*drain)(void))
 
 void evt_set_devices(int  (*collect_ecbs)(NSFECB **, int),
                      void (*poll_input)(void),
-                     void (*kick_output)(void))
+                     void (*kick_output)(void),
+                     int  (*work_pending)(void))
 {
     g_devcollect = collect_ecbs;
     g_devpoll    = poll_input;
     g_devkick    = kick_output;
+    g_devpending = work_pending;
 }
 
 void nsfevt_wake(void)
@@ -238,8 +242,14 @@ void evt_mainloop(void)
         }
 
         /* 1. WAIT for a source, unless there is already pending work or a stop
-         *    has been requested (an operator STOP just set g_stop above). */
+         *    has been requested (an operator STOP just set g_stop above). The
+         *    device work_pending probe is part of the pending-work check
+         *    (ADR-0025): a device completion handed up between this pass's
+         *    poll (which reset dev->ecb) and this WAIT commit is then serviced
+         *    by looping, not lost until the next unrelated wake -- the same
+         *    reset-then-recheck the evq/xq terms give the loop's own queues. */
         if (Q_EMPTY(&g_evq) && g_xq.head == NULL
+            && (g_devpending == NULL || g_devpending() == 0)
             && g_stop == 0 && (g_stopecb & NSFECB_POSTED) == 0u) {
             nsfevt_plat_wait(ecblist, necb);
         }

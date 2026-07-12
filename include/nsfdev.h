@@ -87,13 +87,22 @@ typedef struct devops {
  *              completed WRITE and free its PBUF exactly once.
  *   kick    -- called at §5.3 step 5 in place of the generic sendq drain: encode
  *              at most one queued PBUF and hand it to the write subtask.
+ *   pending -- side-effect-free probe: non-zero iff `service` has work RIGHT NOW
+ *              (a filled read block / an unreaped WRITE). The loop consults it
+ *              before committing to WAIT (the reset-then-recheck discipline,
+ *              ADR-0025): a completion whose dev->ecb POST raced the executive's
+ *              reset is then serviced on the SAME pass instead of parking until
+ *              the next unrelated wake (the issue #21 bimodal-latency loss).
+ *              MUST mirror service's consume conditions exactly -- reporting
+ *              work service will not consume spins the loop.
  * A driver that leaves dev->io NULL (NSFHOST) keeps the default model: dev->ecb
- * in the ECBLIST, doneq drained to EV_PACKET_RECEIVED, sendq drained via
- * ops->send. */
+ * in the ECBLIST, doneq drained to EV_PACKET_RECEIVED (its pending probe is
+ * "doneq non-empty"), sendq drained via ops->send. */
 typedef struct devio {
     int  (*collect)(NETDEV *dev, NSFECB **list, int max);
     void (*service)(NETDEV *dev);
     void (*kick)   (NETDEV *dev);
+    int  (*pending)(NETDEV *dev);
 } DEVIO;
 
 /* NETDEV type codes (NETDEV.type). */
@@ -155,6 +164,7 @@ NSF_SIZE_ASSERT(NETDEV, 68);
  *   dev_count NSFDCNT   dev_start NSFDSTRT   dev_send NSFDSEND
  *   dev_shutdown NSFDSHUT   dev_set_io NSFDSTIO   nsfdev_collect_ecbs NSFDECBS
  *   nsfdev_poll_input NSFDPOLL   nsfdev_kick_output NSFDKICK
+ *   nsfdev_work_pending NSFDPEND
  */
 
 /* Reset the device table to empty. Call once before registering devices (the
@@ -241,5 +251,17 @@ void    nsfdev_poll_input(void) asm("NSFDPOLL");
  * §5.3 step 5. ctr_out counts a transmitted frame; an immediate ops->send error
  * has already freed the PBUF and counted ctr_oerr (send-ownership contract). */
 void    nsfdev_kick_output(void) asm("NSFDKICK");
+
+/* Side-effect-free probe: non-zero iff any device has service work queued right
+ * now -- a DEVIO device whose io->pending reports work (CTCI: a filled read
+ * block or an unreaped WRITE), or a default-model device with a non-empty
+ * doneq. The loop consults this before committing to WAIT (ADR-0025): a
+ * completion posted into the executive's ECB-reset window is then handled on
+ * the SAME pass; without the recheck it parks until the next unrelated wake
+ * (on the STC, the 100 ms heartbeat -- the issue #21 latency band). It reads
+ * cross-task flags without a lock: the flags are one-writer-per-phase (§3),
+ * and a probe that misses a just-set flag is backstopped by the surviving
+ * dev->ecb POST in the WAIT list. */
+int     nsfdev_work_pending(void) asm("NSFDPEND");
 
 #endif /* NSFDEV_H */

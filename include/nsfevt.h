@@ -99,17 +99,23 @@ void nsfevt_stop(void) asm("NSFEVSTP");
  * (NULL, NULL) for no operator (the default; the four foundation tests). */
 void evt_set_operator(NSFECB *ecb, void (*drain)(void)) asm("NSFEVOPR");
 
-/* Register the device seam (M1-2): NSFDEV wires its three loop hooks so the
- * loop begins servicing devices, without NSFEVT ever naming NSFDEV (the same
- * decoupling evt_set_operator gives the operator seam). `collect_ecbs` appends
- * the device ECB pointers to the loop's ECBLIST at loop entry (returns the
- * count, bounded by the max passed); `poll_input` drains device doneqs up to
- * EV_PACKET_RECEIVED once per pass before dispatch; `kick_output` starts pending
- * output at §5.3 step 5. Pass (NULL, NULL, NULL) for no devices (the default;
- * the foundation tests and the M0-8 STC with no interfaces). */
+/* Register the device seam (M1-2, +work_pending at #21/ADR-0025): NSFDEV wires
+ * its loop hooks so the loop begins servicing devices, without NSFEVT ever
+ * naming NSFDEV (the same decoupling evt_set_operator gives the operator seam).
+ * `collect_ecbs` appends the device ECB pointers to the loop's ECBLIST at loop
+ * entry (returns the count, bounded by the max passed); `poll_input` drains
+ * device doneqs up to EV_PACKET_RECEIVED once per pass before dispatch;
+ * `kick_output` starts pending output at §5.3 step 5; `work_pending` is a
+ * side-effect-free probe the loop rechecks before committing to WAIT, so a
+ * device completion whose ECB POST raced the executive's reset-before-service
+ * is handled on the SAME pass rather than parking until the next unrelated
+ * wake (the reset-then-recheck discipline the evq/xq checks already apply to
+ * the loop's own queues). Pass (NULL, NULL, NULL, NULL) for no devices (the
+ * default; the foundation tests and the M0-8 STC with no interfaces). */
 void evt_set_devices(int  (*collect_ecbs)(NSFECB **list, int max),
                      void (*poll_input)(void),
-                     void (*kick_output)(void)) asm("NSFEVDEV");
+                     void (*kick_output)(void),
+                     int  (*work_pending)(void)) asm("NSFEVDEV");
 
 /* Wake a WAITing loop so it makes one more pass (running the device output kick
  * and operator/timer steps). Used when executive work is queued from outside a

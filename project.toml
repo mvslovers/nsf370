@@ -271,6 +271,20 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstcthr.c", "asm/nsfstim.asm"]
 
+# -- issue #21 Stage 0: the timed-wait linchpin (ADR-0025) -------------------
+# MVS-only (host = false): proves ON MVS that (a) the pre-#21 nsfthr_timed_wait
+# shape (timeout ECB NOT in the WAIT ECBLIST) never times out -- a pure infinite
+# WAIT, the dead 500 ms CTCI self-poll behind the burst-tail stall -- and (b) the
+# fixed shape (timeout ECB IN the list) fires in ~500 ms on a cthread subtask AND
+# on the main task, leaving the target ECB untouched; plus the nsfthr_join bound
+# (a live subtask join times out -> RETAIN instead of hanging). The pthread host
+# shim always fires, so only MVS can tell the shapes apart.
+[[test]]
+name = "TSTTHRW"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstthrw.c", "src/nsfthr.c", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M2 IPv4 + ICMP ("Ping!") --------------------------------------------
 # NSFCKSUM: the Internet checksum (RFC 1071) over a PBUF chain. Pinned FIRST,
 # against literal vectors, before any packet code (spec 11.5). Needs only the

@@ -119,10 +119,11 @@ NETDEV *dev_register(const DEVCFG *cfg, DEVOPS *ops)
     g_used[slot] = 1;
 
     /* Wire the device seam into the loop on the first device: the loop begins
-     * WAITing on device ECBs and running poll_input / kick_output each pass. */
+     * WAITing on device ECBs, running poll_input / kick_output each pass, and
+     * rechecking work_pending before it commits to WAIT. */
     if (!g_wired) {
         evt_set_devices(nsfdev_collect_ecbs, nsfdev_poll_input,
-                        nsfdev_kick_output);
+                        nsfdev_kick_output, nsfdev_work_pending);
         g_wired = 1;
     }
     return dev;
@@ -371,6 +372,31 @@ void nsfdev_poll_input(void)
             cur = nx;
         }
     }
+}
+
+int nsfdev_work_pending(void)
+{
+    int i;
+
+    for (i = 0; i < NSFDEV_MAX; i++) {
+        NETDEV *dev;
+
+        if (!g_used[i]) {
+            continue;
+        }
+        dev = &g_devtab[i];
+        if (dev->io != NULL) {
+            /* DEVIO driver: its probe mirrors its service's consume conditions
+             * (CTCI: a filled read block / an unreaped WRITE). */
+            if (dev->io->pending != NULL && dev->io->pending(dev) != 0) {
+                return 1;
+            }
+        } else if (dev->doneq.head != NULL) {
+            /* Default model: completed inbound I/O awaiting the doneq drain. */
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void nsfdev_kick_output(void)

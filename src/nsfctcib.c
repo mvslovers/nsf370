@@ -208,7 +208,12 @@ static void ctci_decode_block(NETDEV *dev, CTCIDEV *d, const UCHAR *buf, UINT le
 /* Block until *ecb is posted OR the device is stopping. Returns 1 if posted, 0 if
  * a stop was requested first. Every subtask wait goes through this, so a stop is
  * noticed within one CTCI_POLL_TICKS interval -- which is also the MIH-on-idle
- * tolerance for an outstanding READ. */
+ * tolerance for an outstanding READ. The CTCI_POLL_TICKS timeout is a BACKSTOP,
+ * not the primary wake (a real POST is): it bounds the damage of a wake lost
+ * anywhere in the cross-task handoff to one 500 ms interval. It only exists at
+ * runtime because nsfthr_timed_wait's timeout actually fires on the subtask TCB
+ * (ADR-0025; through M2 it silently never did -- the timeout ECB was not in the
+ * WAIT list -- which turned one lost txgo wake into the #21 permanent stall). */
 static int wait_or_stop(CTCIDEV *d, NSFECB *ecb)
 {
     for (;;) {
@@ -421,10 +426,27 @@ static void ctci_io_kick(NETDEV *dev)
         (unsigned)blklen, (unsigned)iplen);
 }
 
+/* Side-effect-free probe for the loop's WAIT-commit recheck (ADR-0025): work is
+ * pending iff service would consume something RIGHT NOW. Mirrors service's
+ * conditions exactly -- rready unconditionally, wready only with txbusy (a
+ * wready service will not consume would spin the loop). Reads subtask-set flags
+ * without a lock: each is one-writer-per-phase (§3) and a probe that misses a
+ * just-set flag is backstopped by the surviving dev->ecb POST in the WAIT list. */
+static int ctci_io_pending(NETDEV *dev)
+{
+    CTCIDEV *d = (CTCIDEV *)dev->priv;
+
+    if (d == NULL) {
+        return 0;
+    }
+    return (d->rready != 0u) || (d->wready != 0u && d->txbusy != 0u);
+}
+
 static DEVIO g_ctci_io = {
     ctci_io_collect,
     ctci_io_service,
-    ctci_io_kick
+    ctci_io_kick,
+    ctci_io_pending
 };
 
 /* ---- subtask lifecycle helper ------------------------------------------- */
