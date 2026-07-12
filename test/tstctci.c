@@ -25,7 +25,17 @@
  *      reading (a following good frame is still delivered);
  *   4. sendq -> WRITE: the captured block carries the CTCIHDR/CTCISEG framing with
  *      the 0x0000 terminator, ctr_out counts, and the PBUF is freed exactly once;
- *   5. leak gate: every pool (PBUF, EVT, CTCI device storage) back to baseline
+ *   5. a completion whose dev->ecb wake was destroyed (the executive's
+ *      reset-before-service racing the subtask's POST, issue #21) is still
+ *      reaped on the loop's next pass via the work_pending recheck -- with NO
+ *      timer ticking on the host, so the reap cannot be a heartbeat rescue;
+ *   6. the loop consults the DEVIO pending probe before committing to WAIT
+ *      (a fake device with pending work but a cleared ECB must be serviced,
+ *      not parked); plus the default-model probe (doneq non-empty);
+ *   7. pair sequencing (ADR-0025): the read re-arm is held while outbound work
+ *      is queued or in flight and released at drain -- deterministic ordering
+ *      assertions on rhold/returnecb;
+ *   8. leak gate: every pool (PBUF, EVT, CTCI device storage) back to baseline
  *      after the subtasks are joined at shutdown.
  */
 #include "nsfctci.h"
@@ -333,6 +343,267 @@ static void scenario_send_many(void)
     CHECK(d->txpbuf == NULL, "many: no in-flight PBUF left");
     CHECK(dev_shutdown(dev) == 0, "many: dev_shutdown");
 }
+
+/* ---- scenario 6: destroyed dev->ecb wake -> reaped via work_pending ----
+ * The issue #21 executive-side loss, made deterministic: a WRITE completes
+ * (wready set, dev->ecb posted), then the wake is destroyed (the executive's
+ * reset-before-service racing the POST -- simulated by clearing dev->ecb before
+ * the loop sees it). The loop's WAIT-commit recheck (nsfdev_work_pending,
+ * ADR-0025) must reap it on the SAME pass. The host build never ticks timers
+ * inside evt_mainloop (nsfstim is a no-op recorder), so if this reap happens at
+ * all it happened through the probe -- a heartbeat rescue is impossible here,
+ * which is exactly what makes the scenario conclusive. A checker thread bounds
+ * the failure mode (a probe-less loop parks in WAIT forever). */
+static NSFECB g_ck_nap;                  /* checker naps on this (never posted) */
+static int    g_ck_reaped;               /* checker saw ctr_out advance         */
+static STSCTR *g_ck_ctr;                 /* the ctr_out the checker watches     */
+
+static int checker_fn(void *arg)
+{
+    UINT i;
+
+    (void)arg;
+    for (i = 0u; i < 30u; i++) {
+        if (g_ck_ctr->value != 0u) {
+            g_ck_reaped = 1;
+            break;
+        }
+        nsfthr_timed_wait(&g_ck_nap, 1u);        /* ~100 ms nap per probe */
+    }
+    nsfevt_stop();                               /* end the loop either way */
+    return 0;
+}
+
+static void scenario_lost_wake_reap(void)
+{
+    UCHAR    ip[28];
+    NETDEV  *dev;
+    CTCIDEV *d;
+    PBUF    *b;
+    NSFTHR  *ck;
+    UINT     i;
+
+    dev = fresh_dev("CTCI6", 0x050C);
+    CHECK(dev_start(dev) == 0, "lostwake: dev_start");
+    d = (CTCIDEV *)dev->priv;
+
+    memset(ip, 0, sizeof(ip));
+    ip[0] = 0x45;
+    ip[3] = 28;
+    b = buf_alloc((USHORT)sizeof(ip));
+    CHECK(b != NULL, "lostwake: buf_alloc");
+    (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
+    CHECK(dev_send(dev, b) == 0, "lostwake: dev_send queued");
+    nsfdev_kick_output();                        /* start the WRITE */
+
+    /* Wait for the subtask's completion handover (wready set, dev->ecb posted)
+     * WITHOUT servicing it. */
+    for (i = 0u; i < 200u && d->wready == 0u; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(d->wready != 0u, "lostwake: WRITE completed and handed up");
+
+    dev->ecb = 0u;                               /* destroy the wake (#21 race) */
+    CHECK(nsfdev_work_pending() != 0, "lostwake: probe sees the unreaped WRITE");
+
+    g_ck_nap = 0u; g_ck_reaped = 0; g_ck_ctr = dev->ctr_out;
+    ck = nsfthr_create(checker_fn, NULL);
+    CHECK(ck != NULL, "lostwake: checker thread created");
+
+    evt_mainloop();                              /* must reap WITHOUT any wake */
+
+    CHECK(g_ck_reaped, "lostwake: reaped with dev->ecb destroyed (probe path)");
+    CHECK_EQ((long)dev->ctr_out->value, 1, "lostwake: ctr_out counted the WRITE");
+    CHECK(d->txpbuf == NULL && d->txbusy == 0u, "lostwake: PBUF freed, tx idle");
+    CHECK(nsfdev_work_pending() == 0, "lostwake: probe idle after the reap");
+
+    nsfthr_post(&g_ck_nap, 1u);                  /* release a napping checker */
+    CHECK_EQ((long)nsfthr_join(ck, 20u), 0, "lostwake: checker joined");
+    CHECK(dev_shutdown(dev) == 0, "lostwake: dev_shutdown");
+}
+
+/* ---- scenario 7: the loop consults the pending probe before WAIT ----
+ * A minimal fake DEVIO device: pending work flagged, ECB deliberately clear.
+ * With the ADR-0025 recheck the loop's first pass skips the WAIT and services
+ * it; without it the loop parks forever (no ECB, no host timer) -- the watchdog
+ * turns that hang into a bounded CHECK failure. Also unit-checks the
+ * default-model probe (io == NULL: doneq non-empty). */
+static int    g_fk_pending;
+static int    g_fk_serviced;
+static int    g_fk_late;
+static NSFECB g_wd_nap;
+
+static int  fk_collect(NETDEV *dev, NSFECB **list, int max)
+{
+    if (max > 0) {
+        list[0] = (NSFECB *)&dev->ecb;
+        return 1;
+    }
+    return 0;
+}
+static void fk_service(NETDEV *dev)
+{
+    (void)dev;
+    if (g_fk_pending) {
+        g_fk_pending  = 0;                       /* consume, exactly once */
+        g_fk_serviced = 1;
+        nsfevt_stop();
+    }
+}
+static void fk_kick(NETDEV *dev)    { (void)dev; }
+static int  fk_pending(NETDEV *dev) { (void)dev; return g_fk_pending; }
+static DEVIO g_fk_io = { fk_collect, fk_service, fk_kick, fk_pending };
+
+static int fk_init(NETDEV *dev, const DEVCFG *cfg)
+{
+    (void)cfg;
+    dev_set_io(dev, &g_fk_io);
+    return 0;
+}
+static DEVOPS g_fk_ops   = { fk_init, NULL, NULL, NULL };
+static DEVOPS g_null_ops = { NULL, NULL, NULL, NULL };
+
+static int watchdog_fn(void *arg)
+{
+    (void)arg;
+    nsfthr_timed_wait(&g_wd_nap, 15u);           /* ~1.5 s bound */
+    if (!g_fk_serviced) {
+        g_fk_late = 1;
+        nsfevt_stop();                           /* unpark a probe-less loop */
+    }
+    return 0;
+}
+
+static void scenario_loop_pending_probe(void)
+{
+    DEVCFG  cfg;
+    NETDEV *dev;
+    NSFTHR *wd;
+    QELEM   qe;
+
+    memset(&cfg, 0, sizeof(cfg));
+    memcpy(cfg.name, "FAKE0", 5);
+    cfg.type = NSFDEV_T_HOST;
+
+    nsfevt_init();
+    dev_init();
+    dev = dev_register(&cfg, &g_fk_ops);
+    CHECK(dev != NULL, "probe: fake DEVIO device registered");
+
+    g_fk_pending = 1; g_fk_serviced = 0; g_fk_late = 0; g_wd_nap = 0u;
+    CHECK(nsfdev_work_pending() != 0, "probe: DEVIO pending reported");
+
+    wd = nsfthr_create(watchdog_fn, NULL);
+    CHECK(wd != NULL, "probe: watchdog created");
+
+    evt_mainloop();                              /* dev->ecb is 0 the whole time */
+
+    CHECK(g_fk_serviced, "probe: loop serviced flagged work without any wake");
+    CHECK(!g_fk_late, "probe: serviced on its own pass, not by the watchdog");
+
+    nsfthr_post(&g_wd_nap, 1u);                  /* release a napping watchdog */
+    CHECK_EQ((long)nsfthr_join(wd, 20u), 0, "probe: watchdog joined");
+
+    /* Default model (io == NULL): pending == doneq non-empty. */
+    memcpy(cfg.name, "NULL0", 5);
+    nsfevt_init();
+    dev_init();
+    dev = dev_register(&cfg, &g_null_ops);
+    CHECK(dev != NULL, "probe: default-model device registered");
+    CHECK(nsfdev_work_pending() == 0, "probe: default model idle when empty");
+    xq_push(&dev->doneq, &qe);
+    CHECK(nsfdev_work_pending() != 0, "probe: default model sees doneq work");
+    (void)xq_drain(&dev->doneq);                 /* take the stack QELEM back */
+    CHECK(nsfdev_work_pending() == 0, "probe: idle again after the drain");
+}
+
+/* ---- scenario 8: pair sequencing -- read re-arm held behind the write ----
+ * The ADR-0025 channel discipline: after a block is decoded, the read subtask
+ * is NOT released while outbound work is queued or in flight (a WRITE issued
+ * under an outstanding blocking READ queues at the channel until the next
+ * inbound frame -- the #21 latency band / burst-tail stall). Hand-driven so
+ * every ordering assertion is deterministic: service must mark rhold, kick must
+ * withhold returnecb while the WRITE is outstanding and release it at drain,
+ * and the read handshake must still cycle afterwards. */
+static void scenario_read_hold_sequencing(void)
+{
+    static UCHAR blk[64], blk2[64];
+    UCHAR    ip[20];
+    UCHAR    out[28];
+    UINT     blklen;
+    NETDEV  *dev;
+    CTCIDEV *d;
+    PBUF    *b;
+    UINT     i;
+
+    dev = fresh_dev("CTCI7", 0x050E);
+    CHECK(dev_start(dev) == 0, "seq: dev_start");
+    d = (CTCIDEV *)dev->priv;
+
+    evt_register(EV_PACKET_RECEIVED, h_rx);      /* frees PBUFs at cleanup */
+    g_rx_count = 0; g_rx_stop_at = 99u; g_rx_devok = 1; g_rx_dev = dev;
+
+    /* A block arrives and is decoded: the re-arm must be HELD, not posted. */
+    make_ip(ip, 0x71);
+    blklen = build_read_block(blk, sizeof(blk), ip, 20u);
+    ctcio_host_inject(d->rscb, blk, blklen);
+    for (i = 0u; i < 200u && d->rready == 0u; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(d->rready != 0u, "seq: block handed up");
+    dev->ecb = 0u;
+    nsfdev_poll_input();                         /* service: decode + mark hold */
+    CHECK(d->rhold != 0u, "seq: read release marked, not posted (service)");
+    CHECK((d->returnecb & NSFECB_POSTED) == 0u,
+          "seq: read subtask still parked after decode");
+
+    /* Outbound work queued: the WRITE must start with the READ still parked. */
+    memset(out, 0, sizeof(out));
+    out[0] = 0x45;
+    out[3] = 28;
+    b = buf_alloc((USHORT)sizeof(out));
+    CHECK(b != NULL, "seq: buf_alloc");
+    (void)buf_copyin(b, out, (USHORT)sizeof(out));
+    CHECK(dev_send(dev, b) == 0, "seq: reply queued");
+    nsfdev_kick_output();
+    CHECK(d->txbusy != 0u, "seq: WRITE started");
+    CHECK(d->rhold != 0u && (d->returnecb & NSFECB_POSTED) == 0u,
+          "seq: read still held while the WRITE is outstanding");
+
+    /* WRITE completes and is reaped: NOW the read is released. */
+    for (i = 0u; i < 200u && d->wready == 0u; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(d->wready != 0u, "seq: WRITE completed");
+    dev->ecb = 0u;
+    nsfdev_poll_input();                         /* reap */
+    nsfdev_kick_output();                        /* drain -> release the READ */
+    CHECK(d->txbusy == 0u, "seq: WRITE reaped");
+    CHECK(d->rhold == 0u, "seq: hold cleared at drain");
+    CHECK((d->returnecb & NSFECB_POSTED) != 0u,
+          "seq: read subtask released after the write pipeline drained");
+
+    /* The handshake still cycles: a second block is read and decoded. */
+    make_ip(ip, 0x72);
+    blklen = build_read_block(blk2, sizeof(blk2), ip, 20u);
+    ctcio_host_inject(d->rscb, blk2, blklen);
+    for (i = 0u; i < 200u && d->rready == 0u; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(d->rready != 0u, "seq: second block handed up (handshake cycles)");
+    dev->ecb = 0u;
+    nsfdev_poll_input();
+    CHECK_EQ((long)dev->ctr_in->value, 2, "seq: both blocks decoded");
+    nsfdev_kick_output();                        /* nothing queued: release */
+    CHECK(d->rhold == 0u, "seq: hold released again with no outbound work");
+
+    /* Dispatch the queued EV_PACKET_RECEIVED events (h_rx frees the PBUFs),
+     * then shut down. */
+    nsfevt_stop();
+    evt_mainloop();
+    CHECK_EQ((long)g_rx_count, 2, "seq: both packets dispatched at cleanup");
+    CHECK(dev_shutdown(dev) == 0, "seq: dev_shutdown");
+}
 #endif /* !__MVS__ */
 
 int main(void)
@@ -356,6 +627,9 @@ int main(void)
     scenario_error_then_good();
     scenario_send_write();
     scenario_send_many();
+    scenario_lost_wake_reap();
+    scenario_loop_pending_probe();
+    scenario_read_hold_sequencing();
 
     /* Leak gate: every per-packet pool AND the CTCI device storage back to
      * baseline after all scenarios have joined their subtasks and shut down. */

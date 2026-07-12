@@ -39,7 +39,13 @@ void nsfthr_post(NSFECB *ecb, UINT code)
  * (wait_or_stop): a cleared completion is lost, a timeout-posted ECB is a phantom
  * completion. We want a wait that leaves *ecb EXACTLY as posted (or not) by the
  * real poster, so we use the raw WAIT ECBLIST primitives with a SEPARATE timeout
- * ECB. */
+ * ECB -- and that timeout ECB MUST BE IN THE WAITLIST (ADR-0025, issue #21):
+ * ecb_timed_waitlist arms STIMER REAL whose exit POSTs *timeecb and then WAITs
+ * on the caller's list AS GIVEN, so a timeout ECB outside the list is posted
+ * into the void and the "timed" wait never wakes -- a pure infinite WAIT (the
+ * CTCI subtask's dead 500 ms self-poll behind the #21 burst-tail stall, and the
+ * real mechanism behind ADR-0023 §6's "does not fire on the CRT main task").
+ * Proven both ways on MVS by test/mvs/tstthrw.c. */
 
 void nsfthr_wait(NSFECB *ecb)
 {
@@ -51,20 +57,22 @@ void nsfthr_wait(NSFECB *ecb)
 
 void nsfthr_timed_wait(NSFECB *ecb, UINT ticks)
 {
-    ECB *wl[1];
+    ECB *wl[2];
     ECB  tmo = 0u;
 
-    /* On timeout ecb_timed_waitlist posts `tmo` (a discarded stack ECB), NOT
-     * *ecb -- so after this call `*ecb & POSTED` reflects a REAL post only, and
-     * *ecb is never cleared. A tick is 100 ms = 10 STIMER units. */
-    wl[0] = (ECB *)((unsigned)ecb | 0x80000000u);
+    /* Wait on {*ecb, tmo}: the STIMER exit posts `tmo` (a discarded stack ECB)
+     * on timeout, which wakes the WAIT because tmo IS in the list -- while
+     * *ecb & POSTED still reflects a REAL post only, and *ecb is never cleared.
+     * A tick is 100 ms = 10 STIMER units. */
+    wl[0] = (ECB *)ecb;
+    wl[1] = (ECB *)((unsigned)&tmo | 0x80000000u);  /* last entry, VL bit */
     (void)ecb_timed_waitlist(wl, &tmo, ticks * 10u, 0u);
 }
 
 int nsfthr_join(NSFTHR *t, UINT ticks)
 {
     CTHDTASK *task = (CTHDTASK *)t;
-    ECB      *wl[1];
+    ECB      *wl[2];
     ECB       tmo = 0u;
 
     if (task == NULL) {
@@ -77,8 +85,11 @@ int nsfthr_join(NSFTHR *t, UINT ticks)
      * EOT (an unbounded address-space hang). With a separate `tmo`, termecb is
      * posted ONLY by the real task-end, so a timeout is distinguishable and we
      * RETAIN the task rather than detach it (§5.4: a hung subtask cannot hang
-     * shutdown unboundedly, but must not be torn down under a live TCB). */
-    wl[0] = (ECB *)((unsigned)&task->termecb | 0x80000000u);
+     * shutdown unboundedly, but must not be torn down under a live TCB).
+     * `tmo` is IN the waitlist (ADR-0025): outside it the timeout post would
+     * never wake this WAIT and a hung subtask would hang the join forever. */
+    wl[0] = (ECB *)&task->termecb;
+    wl[1] = (ECB *)((unsigned)&tmo | 0x80000000u);  /* last entry, VL bit */
     (void)ecb_timed_waitlist(wl, &tmo, ticks * 10u, 0u);
     if ((task->termecb & ECB_POSTED_BIT) == 0u) {
         return 1;                   /* still live -- do NOT detach a running task */

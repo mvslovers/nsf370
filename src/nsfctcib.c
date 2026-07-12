@@ -21,8 +21,20 @@
  * The executive's DEVIO seam: collect -> &dev->ecb (the ONE ECB it waits on);
  * service -> decode the read block into PBUFs ON THE EXECUTIVE (§9.2/§3) + reap a
  * completed WRITE + free its PBUF once; kick -> encode a queued PBUF into wbuf and
- * hand it to write_sub. Every cross-task field in CTCIDEV is written by one side
- * per phase and handed over by a POST (no lock, §3).
+ * hand it to write_sub; pending -> the WAIT-commit recheck probe. Every cross-task
+ * field in CTCIDEV is written by one side per phase and handed over by a POST (no
+ * lock, §3).
+ *
+ * PAIR SEQUENCING (ADR-0025, issue #21). The subchannel pair shares one channel:
+ * a WRITE SIO issued while the blocking READ is outstanding queues at the IOS
+ * level until the NEXT inbound frame completes that READ (live-measured -- the
+ * reply RTT tracked the sender's interval, and a burst tail stalled 90 s+). So
+ * the read re-arm is sequenced BEHIND the write pipeline: service only marks the
+ * release (rhold); kick posts returnecb once nothing is queued or outstanding.
+ * The un-armed window is lossless (Hercules buffers inbound, §9.3). A WRITE that
+ * originates while the READ is already armed (M3+ locally-originated traffic,
+ * not the M2 reply pattern) still hits the queueing -- the documented follow-on
+ * is HIO or an attention-driven protocol, ADR-0025.
  *
  * OWNERSHIP (§3, single-owner PBUFs). Inbound: the decoder copies each IPv4
  * segment into a fresh PBUF (EV_PACKET_RECEIVED); the read buffer is never handed
@@ -208,7 +220,12 @@ static void ctci_decode_block(NETDEV *dev, CTCIDEV *d, const UCHAR *buf, UINT le
 /* Block until *ecb is posted OR the device is stopping. Returns 1 if posted, 0 if
  * a stop was requested first. Every subtask wait goes through this, so a stop is
  * noticed within one CTCI_POLL_TICKS interval -- which is also the MIH-on-idle
- * tolerance for an outstanding READ. */
+ * tolerance for an outstanding READ. The CTCI_POLL_TICKS timeout is a BACKSTOP,
+ * not the primary wake (a real POST is): it bounds the damage of a wake lost
+ * anywhere in the cross-task handoff to one 500 ms interval. It only exists at
+ * runtime because nsfthr_timed_wait's timeout actually fires on the subtask TCB
+ * (ADR-0025; through M2 it silently never did -- the timeout ECB was not in the
+ * WAIT list -- which turned one lost txgo wake into the #21 permanent stall). */
 static int wait_or_stop(CTCIDEV *d, NSFECB *ecb)
 {
     for (;;) {
@@ -320,9 +337,9 @@ static int ctci_io_collect(NETDEV *dev, NSFECB **list, int max)
 }
 
 /* Once per pass, on the executive: decode a completed READ block into PBUFs and
- * release the read subtask to read again; reap a completed WRITE and free its
- * in-flight PBUF exactly once. Both a read and a write can complete in one wake,
- * so check both (not else-if). */
+ * mark the read re-arm (released by kick after outbound work, ADR-0025); reap a
+ * completed WRITE and free its in-flight PBUF exactly once. Both a read and a
+ * write can complete in one wake, so check both (not else-if). */
 static void ctci_io_service(NETDEV *dev)
 {
     CTCIDEV *d = (CTCIDEV *)dev->priv;
@@ -331,7 +348,14 @@ static void ctci_io_service(NETDEV *dev)
         return;
     }
 
-    /* read completion: the subtask filled the buffer and posted dev->ecb. */
+    /* read completion: the subtask filled the buffer and posted dev->ecb. The
+     * read RE-ARM is only MARKED here (rhold) -- kick releases it once the
+     * write pipeline is drained (ADR-0025): the pair shares one channel, and a
+     * WRITE SIO issued under an outstanding blocking READ queues at the IOS
+     * level until the next inbound frame completes that READ. Replies to this
+     * very block are queued by the handlers between service and kick, so the
+     * release decision belongs after them. The un-armed window is lossless
+     * (Hercules buffers inbound, §9.3). */
     if (d->rready) {
         if (d->rpost == CTCI_POST_NORMAL) {
             ctci_decode_block(dev, d, d->rbuf, d->rlen);
@@ -341,7 +365,7 @@ static void ctci_io_service(NETDEV *dev)
                 (unsigned)(d->rpost & 0xFFu));
         }
         d->rready = 0u;                     /* consumed */
-        nsfthr_post(&d->returnecb, 0u);     /* let the read subtask read again */
+        d->rhold  = 1u;                     /* re-arm deferred to kick */
     }
 
     /* write completion: the write subtask read its own status, set wpost, then
@@ -369,62 +393,95 @@ static void ctci_io_service(NETDEV *dev)
 
 /* Start at most ONE WRITE from the sendq (one outstanding at a time). The
  * executive encodes the PBUF into the write buffer here -- the PBUF never crosses
- * to the write subtask -- and hands only wbuf/txlen over via txgoecb. */
+ * to the write subtask -- and hands only wbuf/txlen over via txgoecb. When the
+ * write pipeline is drained (nothing queued, nothing outstanding), a held read
+ * re-arm (rhold, set by service) is released here -- AFTER the outbound work,
+ * never before (ADR-0025 pair sequencing): a WRITE issued under an outstanding
+ * blocking READ queues at the channel until the next inbound frame. */
 static void ctci_io_kick(NETDEV *dev)
 {
     CTCIDEV *d = (CTCIDEV *)dev->priv;
     QELEM   *qe;
-    PBUF    *b;
-    UINT     iplen;
-    UINT     blklen;
-    USHORT   got;
 
     if (d == NULL || d->txbusy) {
         return;                             /* a WRITE is already outstanding */
     }
-    qe = q_deq(&dev->sendq);
-    if (qe == NULL) {
-        return;                             /* nothing queued */
-    }
-    b = Q_ENTRY(qe, PBUF, q);
+    /* Drop-cases continue to the next queued frame (never strand the queue
+     * until the next wake), so falling out of the loop means the sendq is
+     * empty AND no WRITE was started. */
+    while ((qe = q_deq(&dev->sendq)) != NULL) {
+        PBUF  *b = Q_ENTRY(qe, PBUF, q);
+        UINT   iplen;
+        UINT   blklen;
+        USHORT got;
 
-    iplen  = (UINT)buf_chain_len(b);
-    blklen = (UINT)sizeof(CTCIHDR) + (UINT)sizeof(CTCISEG) + iplen
-             + (UINT)sizeof(CTCIHDR);
-    /* Reject a frame that will not fit the block (drop + count, never grow). */
-    if (iplen == 0u || blklen > d->bufsize) {
-        buf_free(b);
-        ctr(dev->ctr_oerr);
-        return;
-    }
-    /* Copy the IP straight into the write buffer at the segment payload offset,
-     * then frame in place (ctcif_encode_hdr). buf_copyout stays on the executive. */
-    got = buf_copyout(b, d->wbuf + (UINT)sizeof(CTCIHDR) + (UINT)sizeof(CTCISEG),
-                      (USHORT)iplen);
-    if ((UINT)got != iplen) {               /* short copy (should not happen): drop */
-        buf_free(b);
-        ctr(dev->ctr_oerr);
-        return;
-    }
-    blklen = ctcif_encode_hdr(d->wbuf, d->bufsize, iplen);
-    if (blklen == 0u) {
-        buf_free(b);
-        ctr(dev->ctr_oerr);
+        iplen  = (UINT)buf_chain_len(b);
+        blklen = (UINT)sizeof(CTCIHDR) + (UINT)sizeof(CTCISEG) + iplen
+                 + (UINT)sizeof(CTCIHDR);
+        /* Reject a frame that will not fit the block (drop + count, never grow). */
+        if (iplen == 0u || blklen > d->bufsize) {
+            buf_free(b);
+            ctr(dev->ctr_oerr);
+            continue;
+        }
+        /* Copy the IP straight into the write buffer at the segment payload
+         * offset, then frame in place (ctcif_encode_hdr). buf_copyout stays on
+         * the executive. */
+        got = buf_copyout(b,
+                          d->wbuf + (UINT)sizeof(CTCIHDR) + (UINT)sizeof(CTCISEG),
+                          (USHORT)iplen);
+        if ((UINT)got != iplen) {           /* short copy (should not happen): drop */
+            buf_free(b);
+            ctr(dev->ctr_oerr);
+            continue;
+        }
+        blklen = ctcif_encode_hdr(d->wbuf, d->bufsize, iplen);
+        if (blklen == 0u) {
+            buf_free(b);
+            ctr(dev->ctr_oerr);
+            continue;
+        }
+
+        d->txpbuf = b;                      /* executive-owned until reap */
+        d->txlen  = blklen;
+        d->txbusy = 1u;
+        nsfthr_post(&d->txgoecb, 0u);       /* wake the write subtask */
+        TRC(DRIVER, "CTCI %04X WRITE %u bytes (ip %u)", (unsigned)d->cuu,
+            (unsigned)blklen, (unsigned)iplen);
         return;
     }
 
-    d->txpbuf = b;                          /* executive-owned until reap */
-    d->txlen  = blklen;
-    d->txbusy = 1u;
-    nsfthr_post(&d->txgoecb, 0u);           /* wake the write subtask */
-    TRC(DRIVER, "CTCI %04X WRITE %u bytes (ip %u)", (unsigned)d->cuu,
-        (unsigned)blklen, (unsigned)iplen);
+    /* Outbound drained: re-arm the READ if service is holding one back. Every
+     * path that empties the pipeline ends in a pass that runs kick (write reap
+     * -> dev->ecb wake -> service -> kick; drop -> this same call), so a held
+     * read cannot be stranded. */
+    if (d->rhold) {
+        d->rhold = 0u;
+        nsfthr_post(&d->returnecb, 0u);     /* let the read subtask read again */
+    }
+}
+
+/* Side-effect-free probe for the loop's WAIT-commit recheck (ADR-0025): work is
+ * pending iff service would consume something RIGHT NOW. Mirrors service's
+ * conditions exactly -- rready unconditionally, wready only with txbusy (a
+ * wready service will not consume would spin the loop). Reads subtask-set flags
+ * without a lock: each is one-writer-per-phase (§3) and a probe that misses a
+ * just-set flag is backstopped by the surviving dev->ecb POST in the WAIT list. */
+static int ctci_io_pending(NETDEV *dev)
+{
+    CTCIDEV *d = (CTCIDEV *)dev->priv;
+
+    if (d == NULL) {
+        return 0;
+    }
+    return (d->rready != 0u) || (d->wready != 0u && d->txbusy != 0u);
 }
 
 static DEVIO g_ctci_io = {
     ctci_io_collect,
     ctci_io_service,
-    ctci_io_kick
+    ctci_io_kick,
+    ctci_io_pending
 };
 
 /* ---- subtask lifecycle helper ------------------------------------------- */
