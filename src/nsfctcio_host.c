@@ -25,7 +25,7 @@
  *     error-path test.
  */
 #include "nsfctci.h"
-#include "nsfevtp.h"            /* NSFECB, nsfevt_plat_post (wake the loop)    */
+#include "nsfthr.h"             /* NSFECB, nsfthr_post (wake the waiting subtask) */
 
 #include <string.h>
 
@@ -79,8 +79,7 @@ static void hscb_complete_read(HOSTSCB *h, UCHAR *buf, UINT buflen, UINT *ecb,
         h->post     = (UINT)CTCI_POST_NORMAL;
         h->residual = (blklen <= buflen) ? (buflen - blklen) : 0u;
     }
-    *ecb = NSFECB_POSTED;
-    nsfevt_plat_post((NSFECB *)ecb);
+    nsfthr_post((NSFECB *)ecb, 0u);         /* wake the subtask's nsfthr_wait */
 }
 
 /* ---- top-half primitives (the asm() interface) --------------------------- */
@@ -138,8 +137,7 @@ int ctci_write(void *scb, void *buf, UINT len, UINT *ecb)
         h->post     = (UINT)CTCI_POST_NORMAL;
         h->residual = 0u;                   /* whole block written                 */
     }
-    *ecb = NSFECB_POSTED;
-    nsfevt_plat_post((NSFECB *)ecb);
+    nsfthr_post((NSFECB *)ecb, 0u);         /* wake the subtask's nsfthr_wait */
     return 0;
 }
 

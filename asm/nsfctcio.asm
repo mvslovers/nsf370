@@ -40,13 +40,19 @@
 *  ENTRY CONVENTION (issue #8; CLAUDE.md 3): every entry is built the
 *  STANDARD cc370 way -- COPY MVSMACS + COPY PDPTOP, FUNHEAD / FUNEXIT,
 *  modeled on libc370 @@getclk.asm.  A hand-rolled STM/BALR/USING seam
-*  breaks the cc370 C-runtime path (@@CRTGET, ABEND S0C6).  The four
-*  macro-issuing entries (OPEN/CLOSE/EXCP are SVCs) use FUNHEAD SAVE=
-*  so a called service has a save area; the two leaf entries
-*  (scb_size, status) issue no SVC and use the plain leaf form (like
-*  nsf_now).  The FUNHEAD entry name IS the 8-char asm() alias in
-*  include/nsfctci.h, character for character (PR #7): NSFCISZ /
-*  NSFCIOPN / NSFCIRD / NSFCIWR / NSFCIST / NSFCICL.
+*  breaks the cc370 C-runtime path (@@CRTGET, ABEND S0C6).  The two leaf
+*  entries (scb_size, status) issue no SVC and use the plain leaf form
+*  (like nsf_now).  The four macro-issuing entries (OPEN/CLOSE/EXCP are
+*  SVCs) also use the FUNHEAD leaf form, then CHAIN R13 onto the save
+*  area IN THEIR OWN scb (SCSAVE) before the SVC and restore it before
+*  FUNEXIT -- the standard SAVE=static prologue done PER-scb.  Why not
+*  FUNHEAD SAVE=<static>: with the M1-4b I/O subtasks (ADR-0022) the read
+*  and write subtasks call these entries CONCURRENTLY, so one shared
+*  static save area is corrupted by two tasks at once (the live S238).  A
+*  per-scb area (read subtask -> rscb, write subtask -> wscb) never
+*  overlaps -- concurrency-safe with no lock (§3).  The FUNHEAD entry name
+*  IS the 8-char asm() alias in include/nsfctci.h, character for character
+*  (PR #7): NSFCISZ / NSFCIOPN / NSFCIRD / NSFCIWR / NSFCIST / NSFCICL.
 *
 *  AS370 QUIRKS kept in force (each cost a live ABEND in an M0 seam):
 *   1) Address static data (the MODEL DCB) by EXPLICIT displacement
@@ -108,8 +114,12 @@ NSFCISZ  FUNHEAD ,                return sizeof(CTCISC)
 *     Copy the MODEL DCB into scb, patch the returned DDNAME, OPEN    *
 *     INPUT (forwrite==0) or OUTPUT (forwrite!=0).  rc 0 = opened.    *
 *---------------------------------------------------------------------*
-NSFCIOPN FUNHEAD SAVE=CTCISAVE,US=NO
+NSFCIOPN FUNHEAD ,                per-scb save area set below
          L     R2,0(,R1)          R2 = scb (DCB copy sits at scb+0)
+         LA    R15,SCSAVE-CTCISC(,R2)   own 18F save area
+         ST    R15,8(,R13)        chain down: caller SA -> own
+         ST    R13,4(,R15)        chain up:   own -> caller SA
+         LR    R13,R15           R13 = own save area (OPEN safe)
          L     R6,4(,R1)          R6 = forwrite (0=read, else write)
          L     R3,8(,R1)          R3 = ddname (8 chars)
          LA    R8,MODLDCB-NSFCIOPN(,R12)   R8 = &model DCB
@@ -123,14 +133,19 @@ CIOPENW  OPEN  ((R2),OUTPUT)      write subchannel
 CIOPCHK  TM    DCBOFLGS-IHADCB(R2),DCBOFOPN   opened OK?
          BNO   CIOPBAD
          SLR   R15,R15            rc = 0 (opened)
-         FUNEXIT RC=(R15)
+         B     CIOPX
 CIOPBAD  LA    R15,1              rc = 1 (open failed)
+CIOPX    L     R13,4(,R13)        restore caller SA before FUNEXIT
          FUNEXIT RC=(R15)
 *---------------------------------------------------------------------*
 *  ctci_read(scb, buf, len, ecb) -> INT   EXCP an inbound READ.       *
 *---------------------------------------------------------------------*
-NSFCIRD  FUNHEAD SAVE=CTCISAVE,US=NO
+NSFCIRD  FUNHEAD ,                per-scb save area set below
          L     R2,0(,R1)          R2 = scb
+         LA    R15,SCSAVE-CTCISC(,R2)   own 18F save area
+         ST    R15,8(,R13)        chain down: caller SA -> own
+         ST    R13,4(,R15)        chain up:   own -> caller SA
+         LR    R13,R15           R13 = own save area (EXCP safe)
          L     R4,4(,R1)          R4 = buffer
          L     R5,8(,R1)          R5 = length
          L     R3,12(,R1)         R3 = &ecb
@@ -141,13 +156,18 @@ NSFCIRD  FUNHEAD SAVE=CTCISAVE,US=NO
          MVI   5(R6),X'00'        reserved
          STCM  R5,B'0011',6(R6)   CCW count = length
          BAL   R14,CISTART        clear ECB, build IOB, EXCP
+         L     R13,4(,R13)        restore caller SA before FUNEXIT
          SLR   R15,R15            rc = 0 (started)
          FUNEXIT RC=(R15)
 *---------------------------------------------------------------------*
 *  ctci_write(scb, buf, len, ecb) -> INT   EXCP an outbound WRITE.    *
 *---------------------------------------------------------------------*
-NSFCIWR  FUNHEAD SAVE=CTCISAVE,US=NO
+NSFCIWR  FUNHEAD ,                per-scb save area set below
          L     R2,0(,R1)          R2 = scb
+         LA    R15,SCSAVE-CTCISC(,R2)   own 18F save area
+         ST    R15,8(,R13)        chain down: caller SA -> own
+         ST    R13,4(,R15)        chain up:   own -> caller SA
+         LR    R13,R15           R13 = own save area (EXCP safe)
          L     R4,4(,R1)          R4 = buffer
          L     R5,8(,R1)          R5 = length
          L     R3,12(,R1)         R3 = &ecb
@@ -158,6 +178,7 @@ NSFCIWR  FUNHEAD SAVE=CTCISAVE,US=NO
          MVI   5(R6),X'00'        reserved
          STCM  R5,B'0011',6(R6)   CCW count = length
          BAL   R14,CISTART        clear ECB, build IOB, EXCP
+         L     R13,4(,R13)        restore caller SA before FUNEXIT
          SLR   R15,R15            rc = 0 (started)
          FUNEXIT RC=(R15)
 *---------------------------------------------------------------------*
@@ -201,36 +222,37 @@ NSFCIST  FUNHEAD ,                read completion status
 *  ctci_close_sub(scb) -> INT   CLOSE the subchannel (direction       *
 *     agnostic).  The C layer unallocates the CUU (SVC 99) after.     *
 *---------------------------------------------------------------------*
-NSFCICL  FUNHEAD SAVE=CTCISAVE,US=NO
+NSFCICL  FUNHEAD ,                per-scb save area set below
          L     R2,0(,R1)          R2 = scb (DCB at scb+0)
+         LA    R15,SCSAVE-CTCISC(,R2)   own 18F save area
+         ST    R15,8(,R13)        chain down: caller SA -> own
+         ST    R13,4(,R15)        chain up:   own -> caller SA
+         LR    R13,R15           R13 = own save area (CLOSE safe)
          CLOSE ((R2),)
+         L     R13,4(,R13)        restore caller SA before FUNEXIT
          SLR   R15,R15            rc = 0
          FUNEXIT RC=(R15)
 *
          LTORG ,
 *---------------------------------------------------------------------*
-*  Read-only MODEL DCB (copied per subchannel) + shared save area.    *
+*  Read-only MODEL DCB (copied per subchannel).                       *
 *  DSORG=PS,MACRF=E (EXCP); DDNAME is a placeholder patched at open.  *
 *  CENDA= is DELIBERATELY OMITTED -- naming an appendage would        *
 *  activate one (ADR-0019).  IOBAD names a dummy model IOB the macro  *
 *  wants; the per-request IOB is the scb's SCIOB, passed to EXCP.     *
+*  NB (M1-4b, ADR-0022): there is NO shared static save area anymore. *
+*  The read and write I/O SUBTASKS call these OPEN/EXCP/CLOSE entries  *
+*  CONCURRENTLY, so a single static area would be corrupted by two     *
+*  tasks at once (the S238 that fell out of the first live run).  Each *
+*  entry now uses the save area IN ITS OWN scb (SCSAVE below): the read *
+*  subtask always passes rscb, the write subtask wscb, so their save   *
+*  areas never overlap -- concurrency-safe with no lock (§3).          *
 *---------------------------------------------------------------------*
          DS    0D
 MODLDCB  DCB   DSORG=PS,MACRF=E,DDNAME=NSFCTCID,IOBAD=MODLIOB
 MODLDCBE DS    0X
          DS    0D
 MODLIOB  DC    XL64'00'           dummy model IOB for the DCB macro
-*  One shared static save area: only the single executive task calls
-*  these entries, run-to-completion, never nested -- so one 18F area
-*  is safe (the single-task rationale of nsfstim's static state).
-*  CONSTRAINT (issue #16 item 3): this ALSO assumes ESTAE never RETURNS
-*  into an interrupted NSFCI* entry.  Benign today -- nsf_recover
-*  percolates and never retries, so the recovery path (-> ctci_close ->
-*  NSFCICL) reuses CTCISAVE but nothing resumes the interrupted NSFCIRD/
-*  NSFCIWR whose caller regs it held.  If §17 ever adds RETRY, the
-*  recovery entries need their own save area or this corrupts.
-         DS    0D
-CTCISAVE DC    18F'0'
 *  Model-DCB length (the MVC copy size), a backward reference here.
 SCDCBL   EQU   MODLDCBE-MODLDCB
 *---------------------------------------------------------------------*
@@ -238,6 +260,8 @@ SCDCBL   EQU   MODLDCBE-MODLDCB
 *    +0        the copied DCB       (SCDCBL bytes)                    *
 *    SCIOBO    the IOB              (SCIOBL bytes, doubleword)        *
 *    SCCCWO    the single CCW       (8 bytes, doubleword)             *
+*    SCSAVE    this subchannel's own 18F OS save area (per-scb, so the *
+*              read and write subtasks never share one -- see above)  *
 *  SCIOBO / SCCCWO / CTCISCL are absolute EQUs (immune to quirk 3).   *
 *---------------------------------------------------------------------*
 SCIOBL   EQU   64                 IOB standard section + IOS slop
@@ -247,6 +271,8 @@ SCDCB    DS    CL(SCDCBL)         copied DCB (subchannel DDNAME)
 SCIOB    DS    CL(SCIOBL)         request IOB (doubleword aligned)
          DS    0D
 SCCCW    DS    D                  single unchained CCW (doubleword)
+         DS    0D
+SCSAVE   DS    18F                per-scb OS save area
 CTCISCL  EQU   *-CTCISC           total bytes per subchannel block
 SCIOBO   EQU   SCIOB-CTCISC       IOB offset within CTCISC
 SCCCWO   EQU   SCCCW-CTCISC       CCW offset within CTCISC

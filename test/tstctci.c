@@ -1,25 +1,34 @@
 /*
- * tstctci.c -- CTCI driver bottom-half tests over the host channel shim
- * (spec 9.3; ADR-0019/0020/0021). It drives the REAL DEVOPS path (register ->
- * start -> send -> shutdown) and the DEVIO completion seam against the shim's
- * model of the 3088 (src/nsfctcio_host.c). It proves the driver's LOGIC; a wrong
- * CCW flag or IOB field is caught only by the real device (TSTCTCM on MVSCE).
+ * tstctci.c -- CTCI driver bottom-half tests over the host channel + thread
+ * shims (spec 9.3; ADR-0019/0020/0022). It drives the REAL DEVOPS path
+ * (register -> start -> send -> shutdown) with the two I/O subtasks running as
+ * genuine pthreads (src/nsfthr_host.c) against the shim's model of the 3088
+ * (src/nsfctcio_host.c). So the SAME subtask logic (read_sub / write_sub) and the
+ * single-block-synchronous handoff run here and on MVS -- exactly as M1-2's
+ * NSFHOST reader thread validated the doneq handoff across a real thread boundary.
+ * It proves the driver's LOGIC; a wrong CCW flag or IOB field is caught only by
+ * the real device (TSTCTCM on MVSCE).
+ *
+ * The flow under test (ADR-0022): a frame injected on the read subchannel
+ * completes the read subtask's outstanding EXCP READ (shim posts recb); the
+ * subtask stores len/post, POSTs dev->ecb, and waits returnecb; the executive
+ * (evt_mainloop) wakes on dev->ecb, DECODES the buffer into PBUFs on its own task
+ * (EV_PACKET_RECEIVED), and POSTs returnecb so the subtask reads again. On the
+ * send side the executive encodes into wbuf and POSTs txgoecb; the write subtask
+ * EXCPs the WRITE (shim captures) and POSTs dev->ecb; the executive reaps and
+ * frees the PBUF once.
  *
  * Coverage:
- *   1. inject a block -> EV_PACKET_RECEIVED with the exact IP payload;
- *   2. ping-pong: two queued blocks -> the re-drive targets the OTHER buffer and
- *      happens BEFORE the parse, so the first block is decoded uncorrupted and
- *      both are delivered in order;
- *   3. stale-ECB phantom-completion guard: after a completion with nothing more
- *      queued, recb is left CLEARED, so a further service pass delivers nothing;
- *   4. an error post code counts ctr_ierr, does NOT decode, and STILL re-drives
- *      (a READ stays outstanding);
- *   5. sendq -> WRITE: the captured block carries the CTCIHDR/CTCISEG framing
- *      with the 0x0000 terminator, and the in-flight PBUF is freed exactly once;
- *   6. leak gate: every pool (PBUF, EVT, CTCI device storage) back to baseline.
+ *   1. one frame -> exactly one EV_PACKET_RECEIVED with the exact IP payload;
+ *   2. two frames -> both delivered, in order (the returnecb handshake cycles);
+ *   3. an error post code counts ctr_ierr, does NOT decode, and the subtask keeps
+ *      reading (a following good frame is still delivered);
+ *   4. sendq -> WRITE: the captured block carries the CTCIHDR/CTCISEG framing with
+ *      the 0x0000 terminator, ctr_out counts, and the PBUF is freed exactly once;
+ *   5. leak gate: every pool (PBUF, EVT, CTCI device storage) back to baseline
+ *      after the subtasks are joined at shutdown.
  */
 #include "nsfctci.h"
-#include "nsfctcif.h"
 #include "nsfctcio_host.h"
 #include "nsfdev.h"
 #include "nsfevt.h"
@@ -27,20 +36,19 @@
 #include "nsfmm.h"
 #include "nsftmr.h"
 #include "nsfsts.h"
+#include "nsfthr.h"             /* nsfthr_timed_wait (drive the send path)     */
 #include "nsfevtp.h"            /* NSFECB_POSTED */
 #include <mbtcheck.h>
 #include <string.h>
+#include <stdio.h>
 
-/* HOST-ONLY. This suite drives the channel MODEL (src/nsfctcio_host.c) through
- * its inject/capture/force hooks, which have no MVS counterpart -- the real
- * device is driven by traffic, not injection. On the MVS cross-build it links to
- * a trivial skip (main below); the CTCI bottom half is validated on real MVS by
- * TSTCTCM. Same pattern as TSTDEV skipping where nsfhost_ops() is NULL. */
+/* HOST-ONLY. This suite drives the channel + thread MODELS, which have no MVS
+ * counterpart. On the MVS cross-build it links to a trivial skip; the CTCI bottom
+ * half is validated on real MVS by TSTCTCM. */
 #ifndef __MVS__
 
-/* Two distinguishable 20-byte IPv4 packets (version nibble 4). Byte 4 is a tag
- * so a test can tell which block a delivered payload came from. */
-static UCHAR ip_a(void)  { return 0xA1; }
+/* A 20-byte IPv4 packet (version nibble 4); byte 4 is a tag so a test can tell
+ * which frame a delivery came from. */
 static void make_ip(UCHAR *ip, UCHAR tag)
 {
     memset(ip, 0, 20);
@@ -50,11 +58,10 @@ static void make_ip(UCHAR *ip, UCHAR tag)
     ip[9] = 1;                          /* protocol ICMP (cosmetic) */
 }
 
-/* Build the READ form of a one-segment block for `ip`/`iplen`: exactly what
- * Hercules delivers to the guest -- [CTCIHDR hwOffset=end][CTCISEG 0x0800][IP]
- * with NO 0x0000 terminator. We reuse the encoder (which appends the terminator)
- * and drop its last 2 bytes, so the leading hwOffset = end-of-data is identical
- * to the wire. Returns the delivered length. */
+/* Build the READ form of a one-segment block for `ip`: exactly what Hercules
+ * delivers -- [CTCIHDR hwOffset=end][CTCISEG 0x0800][IP] with NO 0x0000
+ * terminator. Reuse the encoder (which appends the terminator) and drop its last
+ * 2 bytes. Returns the delivered length. */
 static UINT build_read_block(UCHAR *blk, UINT blksize, const UCHAR *ip, UINT iplen)
 {
     UINT n = ctcif_encode(blk, blksize, ip, iplen);
@@ -65,7 +72,7 @@ static UINT build_read_block(UCHAR *blk, UINT blksize, const UCHAR *ip, UINT ipl
 #define RX_MAX  8
 static UINT   g_rx_count;
 static UINT   g_rx_stop_at;
-static UCHAR  g_rx_tag[RX_MAX];         /* payload byte 4 (our tag) per delivery */
+static UCHAR  g_rx_tag[RX_MAX];
 static USHORT g_rx_len[RX_MAX];
 static int    g_rx_devok;
 static NETDEV *g_rx_dev;
@@ -92,7 +99,7 @@ static void h_rx(EVT *ev)
     }
 }
 
-/* Build + register + start a fresh CTCI device for a scenario. */
+/* Build + register a fresh CTCI device for a scenario (fresh loop state too). */
 static NETDEV *fresh_dev(const char *name, USHORT cuu)
 {
     DEVCFG  cfg;
@@ -111,7 +118,7 @@ static NETDEV *fresh_dev(const char *name, USHORT cuu)
     return dev;
 }
 
-/* ---- scenario 1: inject one block -> EV_PACKET_RECEIVED ---- */
+/* ---- scenario 1: one frame -> one EV_PACKET_RECEIVED ---- */
 static void scenario_receive_one(void)
 {
     static UCHAR blk[64];
@@ -122,35 +129,32 @@ static void scenario_receive_one(void)
 
     dev = fresh_dev("CTCI0", 0x0500);
     CHECK(dev != NULL, "recv1: CTCI device registered");
-    CHECK(dev->io != NULL, "recv1: DEVIO seam attached (ADR-0021)");
+    CHECK(dev->io != NULL, "recv1: DEVIO seam attached");
 
     evt_register(EV_PACKET_RECEIVED, h_rx);
     g_rx_count = 0; g_rx_stop_at = 1; g_rx_devok = 1; g_rx_dev = dev;
 
-    CHECK(dev_start(dev) == 0, "recv1: dev_start opened the channel + drove READ");
+    CHECK(dev_start(dev) == 0, "recv1: dev_start created + OPENed the subtasks");
     d = (CTCIDEV *)dev->priv;
     CHECK(d != NULL, "recv1: CTCIDEV attached after start");
-    CHECK(ctcio_host_outstanding(d->rscb) == 1, "recv1: a READ is outstanding after start");
 
-    make_ip(ip, ip_a());
+    make_ip(ip, 0xA1);
     blklen = build_read_block(blk, sizeof(blk), ip, 20u);
-    ctcio_host_inject(d->rscb, blk, blklen);   /* a frame "arrives" */
+    ctcio_host_inject(d->rscb, blk, blklen);   /* completes the subtask's READ */
 
-    evt_mainloop();
+    evt_mainloop();                            /* executive decodes -> EV_PACKET */
 
     CHECK_EQ((long)g_rx_count, 1, "recv1: exactly one EV_PACKET_RECEIVED");
     CHECK(g_rx_devok, "recv1: u1 resolved to the device");
     CHECK_EQ((long)g_rx_len[0], 20, "recv1: delivered payload length is 20");
-    CHECK_EQ((long)g_rx_tag[0], (long)ip_a(), "recv1: delivered the exact IP payload");
+    CHECK_EQ((long)g_rx_tag[0], 0xA1, "recv1: delivered the exact IP payload");
     CHECK_EQ((long)dev->ctr_in->value, 1, "recv1: ctr_in counted the receive");
-    CHECK((d->recb & NSFECB_POSTED) == 0u,
-          "recv1: recb left cleared after the re-drive (no stale posted bit)");
 
-    CHECK(dev_shutdown(dev) == 0, "recv1: dev_shutdown quiesced the device");
+    CHECK(dev_shutdown(dev) == 0, "recv1: dev_shutdown joined the subtasks");
 }
 
-/* ---- scenario 2: ping-pong re-drive targets the OTHER buffer, before parse ---- */
-static void scenario_pingpong(void)
+/* ---- scenario 2: two frames -> both delivered, in order ---- */
+static void scenario_receive_two(void)
 {
     static UCHAR blk1[64], blk2[64];
     UCHAR   ip1[20], ip2[20];
@@ -159,12 +163,12 @@ static void scenario_pingpong(void)
     CTCIDEV *d;
 
     dev = fresh_dev("CTCI1", 0x0502);
-    CHECK(dev != NULL, "pingpong: device registered");
+    CHECK(dev != NULL, "recv2: device registered");
 
     evt_register(EV_PACKET_RECEIVED, h_rx);
     g_rx_count = 0; g_rx_stop_at = 2; g_rx_devok = 1; g_rx_dev = dev;
 
-    CHECK(dev_start(dev) == 0, "pingpong: dev_start");
+    CHECK(dev_start(dev) == 0, "recv2: dev_start");
     d = (CTCIDEV *)dev->priv;
 
     make_ip(ip1, 0x11);
@@ -172,104 +176,62 @@ static void scenario_pingpong(void)
     l1 = build_read_block(blk1, sizeof(blk1), ip1, 20u);
     l2 = build_read_block(blk2, sizeof(blk2), ip2, 20u);
 
-    /* block1 completes the outstanding READ (lands in rbuf0); block2 is queued.
-     * On the completion, the correct driver re-drives into rbuf1 (popping block2
-     * there) BEFORE parsing rbuf0 -- so block1 in rbuf0 is NOT clobbered. A
-     * buggy re-drive into rbuf0 would overwrite block1 with block2 before parse,
-     * and the first delivery would carry tag 0x22 instead of 0x11. */
+    /* frame1 completes the outstanding READ; frame2 queues in the shim and is
+     * picked up when the subtask reads again after the returnecb handshake. The
+     * single read buffer is safe: the subtask does not re-read until the
+     * executive has finished decoding (posted returnecb). */
     ctcio_host_inject(d->rscb, blk1, l1);
     ctcio_host_inject(d->rscb, blk2, l2);
 
     evt_mainloop();
 
-    CHECK_EQ((long)g_rx_count, 2, "pingpong: both blocks delivered");
-    CHECK_EQ((long)g_rx_tag[0], 0x11,
-             "pingpong: first delivery is block1 (re-drive hit the OTHER buffer, before parse)");
-    CHECK_EQ((long)g_rx_tag[1], 0x22, "pingpong: second delivery is block2 (FIFO order)");
-    CHECK_EQ((long)dev->ctr_in->value, 2, "pingpong: ctr_in counted both");
+    CHECK_EQ((long)g_rx_count, 2, "recv2: both frames delivered");
+    CHECK_EQ((long)g_rx_tag[0], 0x11, "recv2: first delivery is frame1 (FIFO)");
+    CHECK_EQ((long)g_rx_tag[1], 0x22, "recv2: second delivery is frame2 (FIFO)");
+    CHECK_EQ((long)dev->ctr_in->value, 2, "recv2: ctr_in counted both");
 
-    CHECK(dev_shutdown(dev) == 0, "pingpong: dev_shutdown");
+    CHECK(dev_shutdown(dev) == 0, "recv2: dev_shutdown");
 }
 
-/* ---- scenario 3: stale-ECB phantom-completion guard ---- */
-static void scenario_phantom_guard(void)
+/* ---- scenario 3: an error post code -> ctr_ierr, no decode, keeps reading ---- */
+static void scenario_error_then_good(void)
 {
-    static UCHAR blk[64];
-    UCHAR   ip[20];
-    UINT    blklen;
-    NETDEV *dev;
-    CTCIDEV *d;
-    UINT    in_before;
-
-    dev = fresh_dev("CTCI2", 0x0504);
-    evt_register(EV_PACKET_RECEIVED, h_rx);
-    g_rx_count = 0; g_rx_stop_at = 99; g_rx_devok = 1; g_rx_dev = dev;
-
-    CHECK(dev_start(dev) == 0, "phantom: dev_start");
-    d = (CTCIDEV *)dev->priv;
-
-    make_ip(ip, 0x33);
-    blklen = build_read_block(blk, sizeof(blk), ip, 20u);
-    ctcio_host_inject(d->rscb, blk, blklen);
-
-    /* One service pass consumes the completion (manual pump -- no loop, so no
-     * phantom can be hidden by an early stop). */
-    nsfdev_poll_input();
-    in_before = dev->ctr_in->value;
-    CHECK_EQ((long)in_before, 1, "phantom: the injected block was delivered once");
-    CHECK((d->recb & NSFECB_POSTED) == 0u,
-          "phantom: recb cleared by the re-drive (empty queue -> not re-posted)");
-
-    /* A second service pass must find NOTHING to do: recb is clear, so no
-     * phantom re-decode of the same buffer. Non-vacuous: if the driver had not
-     * re-driven (thus not cleared recb), this pass would re-decode and bump
-     * ctr_in to 2. */
-    nsfdev_poll_input();
-    CHECK_EQ((long)dev->ctr_in->value, (long)in_before,
-             "phantom: no second delivery from a stale posted bit");
-
-    /* Flush the delivered event (dispatch + free the PBUF) so the leak gate is
-     * clean: set stop, run the loop once to drain the evq. */
-    nsfevt_stop();
-    evt_mainloop();
-    CHECK_EQ((long)g_rx_count, 1, "phantom: exactly one event dispatched");
-
-    CHECK(dev_shutdown(dev) == 0, "phantom: dev_shutdown");
-}
-
-/* ---- scenario 4: an error post code counts ctr_ierr, still re-drives ---- */
-static void scenario_error_post(void)
-{
-    static UCHAR blk[64];
-    UCHAR   ip[20];
-    UINT    blklen;
+    static UCHAR blk[64], blk2[64];
+    UCHAR   ip[20], ip2[20];
+    UINT    blklen, l2;
     NETDEV *dev;
     CTCIDEV *d;
 
     dev = fresh_dev("CTCI3", 0x0506);
     evt_register(EV_PACKET_RECEIVED, h_rx);
-    g_rx_count = 0; g_rx_stop_at = 99; g_rx_devok = 1; g_rx_dev = dev;
+    g_rx_count = 0; g_rx_stop_at = 1; g_rx_devok = 1; g_rx_dev = dev;
 
     CHECK(dev_start(dev) == 0, "errpost: dev_start");
     d = (CTCIDEV *)dev->priv;
 
-    /* Force the next READ completion to carry a non-normal post code. */
+    /* Force the FIRST READ completion to carry a non-normal post code; a good
+     * frame follows. The bad one must be counted+dropped and the subtask must
+     * keep reading, so the good one is still delivered. */
     ctcio_host_force(d->rscb, 0x41, 0u);
     make_ip(ip, 0x44);
     blklen = build_read_block(blk, sizeof(blk), ip, 20u);
     ctcio_host_inject(d->rscb, blk, blklen);
 
-    nsfdev_poll_input();
+    make_ip(ip2, 0x55);
+    l2 = build_read_block(blk2, sizeof(blk2), ip2, 20u);
+    ctcio_host_inject(d->rscb, blk2, l2);
 
-    CHECK_EQ((long)dev->ctr_in->value, 0, "errpost: a bad completion is not decoded");
-    CHECK_EQ((long)dev->ctr_ierr->value, 1, "errpost: the I/O error counted ctr_ierr");
-    CHECK(ctcio_host_outstanding(d->rscb) == 1,
-          "errpost: a READ is STILL outstanding after the error (never left without one)");
+    evt_mainloop();
+
+    CHECK_EQ((long)dev->ctr_ierr->value, 1, "errpost: the bad completion counted ctr_ierr");
+    CHECK_EQ((long)dev->ctr_in->value, 1, "errpost: only the good frame decoded");
+    CHECK_EQ((long)g_rx_count, 1, "errpost: exactly one delivery (the good frame)");
+    CHECK_EQ((long)g_rx_tag[0], 0x55, "errpost: the delivered frame is the good one");
 
     CHECK(dev_shutdown(dev) == 0, "errpost: dev_shutdown");
 }
 
-/* ---- scenario 5: sendq -> WRITE framing + PBUF freed once ---- */
+/* ---- scenario 4: sendq -> WRITE framing + PBUF freed once ---- */
 static void scenario_send_write(void)
 {
     UCHAR        ip[28];
@@ -284,7 +246,6 @@ static void scenario_send_write(void)
     CHECK(dev_start(dev) == 0, "send: dev_start");
     d = (CTCIDEV *)dev->priv;
 
-    /* A 28-byte IPv4 packet to transmit. */
     memset(ip, 0, sizeof(ip));
     ip[0] = 0x45;
     ip[3] = 28;
@@ -296,15 +257,19 @@ static void scenario_send_write(void)
     (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
 
     CHECK(dev_send(dev, b) == 0, "send: dev_send queued the frame");
-    nsfdev_kick_output();               /* io->kick encodes + issues the WRITE */
-    CHECK(d->txflight != NULL, "send: the in-flight PBUF is held during the WRITE");
+    nsfdev_kick_output();               /* io->kick encodes + hands to write_sub */
 
-    nsfdev_poll_input();                /* io->service handles WRITE completion */
+    /* The write subtask EXCPs the WRITE (shim captures) and POSTs dev->ecb; wait
+     * for it, then reap via service. Bounded so a stuck write cannot hang. */
+    for (i = 0u; i < 200u && dev->ctr_out->value == 0; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);   /* <= 0.1 s per spin */
+        dev->ecb = 0u;
+        nsfdev_poll_input();                /* io->service reaps the WRITE */
+    }
+
     CHECK_EQ((long)dev->ctr_out->value, 1, "send: ctr_out counted the transmit");
-    CHECK(d->txflight == NULL, "send: the in-flight PBUF was freed on completion");
+    CHECK(d->txpbuf == NULL, "send: the in-flight PBUF was freed on completion");
 
-    /* The captured block carries the validated WRITE framing (ADR-0020):
-     * [CTCIHDR hwOffset=end][CTCISEG len/0x0800/0][IP][CTCIHDR 0x0000]. */
     cap = ctcio_host_captured(d->wscb, &caplen);
     CHECK_EQ((long)caplen, (long)(8u + 28u + 2u), "send: captured block length");
     CHECK((UINT)((cap[0] << 8) | cap[1]) == 8u + 28u,
@@ -321,11 +286,9 @@ static void scenario_send_write(void)
 
 int main(void)
 {
-    printf("=== nsf370 NSFCTCI bottom-half tests (over the host shim) ===\n");
+    printf("=== nsf370 NSFCTCI bottom-half tests (subtask model, host shims) ===\n");
 #ifdef __MVS__
-    /* Host-only: the channel shim + its hooks are not present on MVS. The CTCI
-     * bottom half is validated on real 3.8j by TSTCTCM. */
-    printf("host-only suite (drives the channel shim); MVS validates via TSTCTCM\n");
+    printf("host-only suite (drives the channel + thread shims); MVS validates via TSTCTCM\n");
     return 0;
 #else
 
@@ -338,13 +301,12 @@ int main(void)
     mm_init_complete();
 
     scenario_receive_one();
-    scenario_pingpong();
-    scenario_phantom_guard();
-    scenario_error_post();
+    scenario_receive_two();
+    scenario_error_then_good();
     scenario_send_write();
 
     /* Leak gate: every per-packet pool AND the CTCI device storage back to
-     * baseline after all scenarios shut down. */
+     * baseline after all scenarios have joined their subtasks and shut down. */
 #if NSF_DEBUG
     {
         MMSTATS s;

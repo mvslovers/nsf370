@@ -3,28 +3,29 @@
  * (src/nsfctci.c), swapped in by the project.toml [host].replace map. Host test
  * builds only; never compiled by cc370.
  *
- * On the host there is no MVS device to allocate and no DCB to OPEN: the host
- * channel shim (src/nsfctcio_host.c) models the subchannel directly, so bringing
- * a device up is a success no-op. The portable bottom half (src/nsfctcib.c)
- * therefore drives ctci_chan_open/close identically on host and MVS -- on MVS
- * they do the real SVC 99 allocate + OPEN (src/nsfctci.c). The SVC 99 wrappers
- * (svc99_call / ctci_alloc_unit / ctci_free_ddn) are MVS-only (TSTCTCM), so they
- * are not provided here.
+ * On the host there is no MVS device to allocate: the host channel shim
+ * (src/nsfctcio_host.c) models the subchannel directly, so SVC 99 allocate /
+ * unallocate is a success no-op. The OPEN/CLOSE run on the owning subtask via the
+ * top-half shim (ctci_open_sub / ctci_close_sub in nsfctcio_host.c), so the
+ * portable bottom half (src/nsfctcib.c) brings a device up the same way on host
+ * and MVS. The SVC 99 wrappers (svc99_call / ctci_alloc_unit / ctci_free_ddn) are
+ * MVS-only (TSTCTCM), so they are not provided here.
  */
 #include "nsfctci.h"
 
-int ctci_chan_open(CTCIDEV *d)
+int ctci_chan_alloc(CTCIDEV *d)
 {
+    /* No real allocation on the host; leave the DDNAMEs empty (the shim ignores
+     * them). The subtask's ctci_open_sub shim succeeds regardless. */
     if (d != NULL) {
-        d->state = CTCI_S_UP;
+        d->rddn[0] = '\0';
+        d->wddn[0] = '\0';
     }
     return 0;
 }
 
-int ctci_chan_close(CTCIDEV *d)
+int ctci_chan_unalloc(CTCIDEV *d)
 {
-    if (d != NULL) {
-        d->state = CTCI_S_DOWN;
-    }
+    (void)d;
     return 0;
 }

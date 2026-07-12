@@ -20,6 +20,7 @@
 #include "nsfmsg.h"
 #include "nsfmm.h"
 #include "nsftmr.h"
+#include "nsfstim.h"           /* nsftmr_plat_arm (the liveness heartbeat)    */
 #include "nsftrc.h"
 #include "nsfsts.h"
 #include "nsfdev.h"            /* dev_register / dev_start / dev_shutdown     */
@@ -71,8 +72,18 @@ static void nsf_rx_packet(EVT *ev)
     PBUF *b = (PBUF *)ev->p1;
 
     if (b != NULL) {
-        TRC(DRIVER, "RX %u bytes on dev %u", (unsigned)buf_chain_len(b),
-            (unsigned)ev->u1);
+        USHORT n = buf_chain_len(b);
+
+        TRC(DRIVER, "RX %u bytes on dev %u", (unsigned)n, (unsigned)ev->u1);
+        /* Hexdump the packet head into the trace ring (flag-gated inside; F
+         * NSF,TRACE DRIVER ON enables it) -- the M1 exit gate's "ping ->
+         * hexdump in trace". Bounded: the IP header + a little payload tells
+         * the story; full frames would flood the 128 B ring entries. */
+        {
+            UCHAR head[48];
+            USHORT hn = buf_copyout(b, head, (USHORT)sizeof(head));
+            nsftrc_hexdump(TRCF_DRIVER, "RX", head, hn);
+        }
         buf_free(b);
     }
 }
@@ -261,8 +272,23 @@ int main(int argc, char **argv)
 
     nsfmsg("NSF001I NSF INITIALIZATION COMPLETE");
 
-    /* 7. Run the executive until STOP / P NSF (evt_mainloop runs the §5.4
-     *    shutdown sequence internally before it returns). */
+    /* 7. Arm the liveness heartbeat, then run the executive until STOP / P NSF
+     *    (evt_mainloop runs the §5.4 shutdown sequence internally).
+     *    The heartbeat: the ADR-0017 async STIMER exit is SELF-RE-ARMING
+     *    (validated on MVS, TSTEVTM), so one arm gives the loop a guaranteed
+     *    periodic wake for as long as it runs. Without it the loop is woken by
+     *    real POSTs alone, and an operator MODIFY arriving while the stack is
+     *    IDLE (no device completions -- an idle network stack is the normal
+     *    state) can sit undrained until the next completion. 1 tick = 100 ms,
+     *    the exact TSTEVTM-validated arm; it also keeps the loop's
+     *    nsftmr_run(1) tick accounting correct once real timers exist (M2+).
+     *    Cost: 10 interrupts/s -- ADR-0011's "an idle stack takes zero timer
+     *    interrupts" is consciously traded for operator liveness here.
+     *    (The WAIT itself also has a 1 s ecb_timed_waitlist bound, but under
+     *    the STC's TIME=1440 that STIMER-timeout was not observed to tick --
+     *    the self-re-arming exit is the proven mechanism.) evt_shutdown
+     *    disarms it (nsftmr_plat_disarm). */
+    nsftmr_plat_arm(1u);
     evt_mainloop();
 
     /* 8. Final teardown. Quiesce devices first (close channels, release SVC 99

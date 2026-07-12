@@ -69,21 +69,24 @@ typedef struct devops {
     int (*shutdown)(NETDEV *dev);
 } DEVOPS;
 
-/* Optional ECB-completion I/O seam (spec 9.2, ADR-0021). A driver whose I/O
- * completes by an OS-posted ECB rather than an async producer thread (CTCI, per
- * ADR-0019: IOS posts the IOB ECB, doneq stays empty) attaches a DEVIO through
- * dev_set_io. It is the per-device mirror of the loop's three global device
- * hooks (§5.3): the NSFDEV hooks consult it and, when present, use it INSTEAD of
- * the default doneq/ecb model:
- *   collect -- append this device's own completion ECB(s) to the ECBLIST (CTCI:
- *              the read + write IOB ECBs), returning the count; called at loop
- *              entry in place of contributing the single dev->ecb.
- *   service -- called once per pass before dispatch (where poll_input would
- *              drain the doneq): demux which ECB posted and run the read/write
- *              completion -- for CTCI, re-drive the READ then decode+evt_post,
- *              and free the in-flight WRITE PBUF.
- *   kick    -- called at §5.3 step 5 in place of the generic sendq drain: start
- *              at most one outstanding I/O from the sendq (CTCI: one WRITE).
+/* Optional per-device I/O seam (spec 9.2; shape from ADR-0021, semantics from
+ * ADR-0022/0023). A driver with its own completion pipeline (CTCI: two I/O
+ * subtasks, a raw-block handoff, one-outstanding WRITE) attaches a DEVIO through
+ * dev_set_io; it is the per-device mirror of the loop's three global device
+ * hooks (§5.3). THE EXECUTIVE WAITS ONLY ON ECBs IT OWNS (dev->ecb) -- never a
+ * raw IOB ECB (recb/wecb): an IOS POST landing in the executive's multi-ECB
+ * WAIT corrupts it (issue #18). The subtasks wait those, single-ECB, and wake
+ * the executive with a plain POST of dev->ecb (same address space).
+ *   collect -- contribute &dev->ecb (the ONE executive-owned wake ECB) to the
+ *              ECBLIST; NEVER the driver's raw IOB ECBs.
+ *   service -- called once per pass before dispatch, AFTER nsfdev_poll_input has
+ *              cleared dev->ecb (reset-before-service, the UFSD discipline; a
+ *              stale posted dev->ecb re-creates the #18 hazard): decode the
+ *              subtask-delivered read block into PBUFs (EV_PACKET_RECEIVED, on
+ *              the executive task, §3) and release the read subtask; reap a
+ *              completed WRITE and free its PBUF exactly once.
+ *   kick    -- called at §5.3 step 5 in place of the generic sendq drain: encode
+ *              at most one queued PBUF and hand it to the write subtask.
  * A driver that leaves dev->io NULL (NSFHOST) keeps the default model: dev->ecb
  * in the ECBLIST, doneq drained to EV_PACKET_RECEIVED, sendq drained via
  * ops->send. */

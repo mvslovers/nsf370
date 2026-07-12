@@ -327,10 +327,18 @@ void nsfdev_poll_input(void)
         }
         dev = &g_devtab[i];
 
-        /* ECB-completion driver (CTCI): the DEVIO service demuxes its own
-         * completion ECB(s) and runs the read/write bottom half itself (it
-         * clears each ECB before re-driving). doneq is unused (ADR-0019). */
+        /* ECB-completion driver (CTCI, ADR-0022): the DEVIO service decodes the
+         * subtask-delivered block and reaps a completed WRITE. Clear dev->ecb
+         * BEFORE servicing -- exactly as the default doneq path below clears it
+         * before draining -- so a stale posted dev->ecb never lingers in the
+         * executive's WAIT ECBLIST. A lingering posted ECB corrupts the multi-ECB
+         * WAIT so a later operator/stop POST no longer wakes it (the #18 hazard,
+         * re-introduced if this clear is missing). Lost-wakeup safe: the read path
+         * is serialized by the returnecb handshake (the subtask cannot re-post
+         * dev->ecb until service posts returnecb), and a write-completion post
+         * landing after the clear simply leaves it set for the next WAIT. */
         if (dev->io != NULL && dev->io->service != NULL) {
+            dev->ecb = 0u;
             dev->io->service(dev);
             continue;
         }
