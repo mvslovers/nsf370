@@ -59,7 +59,16 @@ void nsfthr_post(NSFECB *ecb, UINT code) asm("NSFTHPST");
 void nsfthr_wait(NSFECB *ecb) asm("NSFTHWT");
 
 /* Block until *ecb is posted OR `ticks` (100 ms units) elapse -- so an idle
- * subtask polls its stop flag (and tolerates MIH on an outstanding READ). */
+ * subtask polls its stop flag (and tolerates MIH on an outstanding READ).
+ * CONSTRAINT (MVS): the timed wait is ecb_timed_waitlist, which TTIMER-CANCELs
+ * the CALLING task's interval timer (STIMER is a per-task singleton). On a
+ * subtask that is fine (it owns its timer). On the EXECUTIVE task it would kill
+ * the liveness heartbeat (nsftmr_plat_arm, nsfmain.c) -- so the executive may
+ * call this (and nsfthr_join) only OUTSIDE the heartbeat window: device start
+ * runs before the arm, teardown after the disarm. Re-arm after any future
+ * mid-run use (an M2+ VARY-style device restart). Empirically the timeout also
+ * does NOT fire on the CRT main task (only on cthread subtasks) -- one more
+ * reason the executive must not rely on it. */
 void nsfthr_timed_wait(NSFECB *ecb, UINT ticks) asm("NSFTHTWT");
 
 /* Join a subtask: wait up to `ticks` (100 ms units) for it to terminate, then

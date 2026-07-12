@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.16 — Draft for implementation. Companion document to the frozen
+*Version 1.18 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -599,6 +599,17 @@ with `IEE342I TASK BUSY`. The drain walks the CIB chain, dispatches each
 CIB/QEDIT and WTO seams reuse libc370 (`__gtcom`/`__cibget`/`__cibdel`, `wto`) —
 ADR-0018.
 
+Liveness heartbeat (M1-4b, ADR-0023 §6). The STC arms the ADR-0017 self-re-arming
+async STIMER exit at startup (`nsftmr_plat_arm(1)`, 100 ms), so the loop iterates
+— and the unconditional operator drain runs — at least ten times a second even
+when the stack is completely idle (no device completions; the normal state of a
+network stack). The WAIT itself stays a plain untimed `ecb_waitlist`: a timed
+WAIT (`ecb_timed_waitlist`) is disqualified on the executive because it
+TTIMER-CANCELs the task's interval timer on entry (STIMER is a per-task
+singleton — it would kill this very heartbeat) and its timeout was not observed
+to fire on the CRT main task. This consciously trades ADR-0011's "an idle stack
+takes zero timer interrupts" for operator liveness.
+
 ### 5.4 Shutdown Sequence
 
 `P NSF` / `MODIFY NSF,STOP` → EV_SHUTDOWN →
@@ -836,10 +847,15 @@ struct netdev {
     USHORT   flags;
     QUEUE    sendq;          /* bounded outbound queue          */
     XQ       doneq;          /* concurrent producer→mainline; used by
-                               NSFHOST's reader thread. Drivers that
-                               complete via an ECB (CTCI, ADR-0019)
-                               leave it empty.                       */
-    UINT     ecb;            /* device ECB (in main ECB list)   */
+                               NSFHOST's reader thread. CTCI's subtasks
+                               use the CTCIDEV handoff fields instead
+                               (single-block-sync, ADR-0023) and leave
+                               it empty.                             */
+    UINT     ecb;            /* device ECB -- THE one ECB the executive
+                               WAITs on for this device; an async
+                               producer (reader thread / I/O subtask)
+                               POSTs it. Never a raw IOB ECB
+                               (ADR-0022).                           */
     STSCTR  *ctr_in, *ctr_out, *ctr_ierr, *ctr_oerr;
     void    *priv;           /* driver private block            */
 };
@@ -877,17 +893,25 @@ posts the IOB ECB when the channel program terminates. No CHE appendage is writt
 or installed. See **ADR-0019** for the decision and for the fully documented
 appendage alternative.
 
-> **Correction (ADR-0022, M1-4 live).** ADR-0019 further said the §5.3 executive
-> loop "can wait on the IOB ECB directly," in its ECBLIST. **That is wrong on real
-> MVS and is superseded:** an asynchronous IOS POST of the read IOB ECB, out of
-> phase with the executive's multi-ECB `WAIT ECBLIST`, hangs the loop so a later
-> operator/stop POST no longer wakes it (bisected live, issue #18). The executive
-> **WAITs only on ECBs it owns** (`dev->ecb`), and CTCI completion reaches it
-> through the **M1-2 `doneq` model** driven by a CTCI I/O **subtask** (libc370
-> `cthread`) that owns `EXCP` + a single-ECB `ecb_wait` on the IOB ECB (the safe
-> path proven by TSTCTCM) and POSTs `dev->ecb` + pushes the block to `doneq`. The
-> EXCP recipe, framing (ADR-0020) and ping-pong below are unchanged; only *who
-> waits on the IOB ECB* changes. M1-4b (issue #18) implements it.
+> **Correction (ADR-0022, M1-4 live; implemented + validated at M1-4b, ADR-0023).**
+> ADR-0019 further said the §5.3 executive loop "can wait on the IOB ECB directly,"
+> in its ECBLIST. **That is wrong on real MVS and is superseded:** an asynchronous
+> IOS POST of the read IOB ECB, out of phase with the executive's multi-ECB
+> `WAIT ECBLIST`, hangs the loop so a later operator/stop POST no longer wakes it
+> (bisected live, issue #18). The executive **WAITs only on ECBs it owns**
+> (`dev->ecb`). As implemented (ADR-0023): each subchannel is owned by its own
+> **I/O subtask** (libc370 `cthread` behind the `nsfthr` seam) that OPENs it,
+> issues `EXCP`, and does a **single-ECB** wait on the IOB ECB (the path TSTCTCM
+> proved safe); the read subtask hands the filled RAW block up
+> (single-block-synchronous, a `returnecb` handshake — not ping-pong; see below)
+> and wakes the executive with a plain SVC-2 POST of `dev->ecb`; the **executive**
+> decodes into PBUFs (§9.2, §3 single-task storage) and clears `dev->ecb` before
+> each service (reset-before-WAIT — a lingering posted ECB re-creates the #18
+> hazard). The EXCP recipe and framing (ADR-0020) are unchanged; only *who waits
+> on the IOB ECB* changed. Validated live end to end (issue #18 closed): reads →
+> `EV_PACKET_RECEIVED`, operator responsive in every state incl. idle (the
+> ADR-0017 heartbeat, armed at STC start, guarantees loop liveness), MIH across
+> idle tolerated, clean `P NSF` with the subtasks joined and an empty SYSUDUMP.
 
 - **Top half (HLASM, mainline):** two DCBs (`DSORG=PS,MACRF=E`, `IOBAD=`), one
   per subchannel, opened `INPUT` / `OUTPUT`; `CENDA=` is deliberately omitted.
@@ -898,13 +922,17 @@ appendage alternative.
   (`IOBECBPB` / `IOBSTRTB` / `IOBDCBPB`, mapping `IEZIOB`), then `EXCP`. Clearing
   the ECB first is mandatory: a stale posted bit would make the loop process a
   phantom completion. Nothing runs in exit state.
-- **Bottom half (C, executive task):** woken by the device ECB. Post code `X'7F'`
-  means normal completion; **bytes transferred = requested length − IOB residual
-  count** (from the CSW). It then **re-drives the READ first, and only then
-  parses** the block just received — this ordering is normative, not a nicety
-  (see "Inbound flow control" below). Each `CTCISEG`'s IP packet is **copied out
-  into a PBUF** of the appropriate size class; the I/O buffer is never handed up
-  as a PBUF. Outbound, it builds a block from queued PBUFs and starts the WRITE.
+- **Bottom half (C; subtasks + executive, ADR-0023):** the read subtask waits the
+  IOB ECB. Post code `X'7F'` means normal completion; **bytes transferred =
+  requested length − IOB residual count** (from the CSW). It hands the raw block
+  to the executive (POST `dev->ecb`) and waits `returnecb`; the **executive**
+  decodes — each `CTCISEG`'s IP packet is **copied out into a PBUF** of the
+  appropriate size class (the I/O buffer is never handed up as a PBUF) — then
+  releases the subtask to read again. (The earlier "re-drive first, then parse"
+  ordering belonged to the pre-subtask single-task model; single-block-sync
+  replaces it, lossless per "Inbound flow control" below.) Outbound, the
+  executive builds the block from a queued PBUF and the write subtask starts the
+  WRITE.
 
 **Dynamic allocation (SVC 99 via libc370; M1-3).** The CUUs come from the
 PROFILE `DEVICE` statement (NSFCFG), not from DD cards. NSFCTCI allocates both
@@ -924,17 +952,24 @@ All DEVICE storage — the `CTCIDEV` block, the two per-subchannel control block
 (each a copied DCB + IOB + CCW, sized by the HLASM `ctci_scb_size`), and the
 ping-pong I/O buffers — is NSFMM pool storage reserved once in the init window.
 
-**Device I/O buffers (ping-pong).** A CTCI block is up to 20 KB and carries many
-IP frames, so it is *not* a PBUF. Each device owns dedicated I/O buffers, sized
-`min(Hercules buffer, MVS 3.8j maximum I/O length)`, obtained once at device init
-before `mm_init_complete()` seals the region, and never freed. The read side uses
-**two buffers alternately**: on completion the driver immediately re-drives the
-READ into buffer B and then parses buffer A, so the window with no READ
-outstanding shrinks to a few instructions. Ping-pong needs no second IOB or ECB —
-only one READ is ever outstanding; the driver merely alternates the data address
-in the CCW. The write side needs one buffer, since the `sendq` serialises WRITEs;
-batching several queued PBUFs into one block (what the `CTCIHDR`/`CTCISEG` chain
-is for) is a later optimisation, not v1.
+**Device I/O buffers (single-block-synchronous; ADR-0023).** A CTCI block is up
+to 20 KB and carries many IP frames, so it is *not* a PBUF. Each device owns
+dedicated I/O buffers, sized `min(Hercules buffer, MVS 3.8j maximum I/O length)`,
+from pools reserved before `mm_init_complete()` seals the region. Under the
+subtask model the read side uses **one buffer** with a synchronous handshake: the
+read subtask EXCPs a READ into it, waits the IOB ECB, hands the filled block to
+the executive (POST `dev->ecb`) and waits `returnecb`; the executive decodes and
+POSTs `returnecb`, releasing the next READ. No READ is outstanding only for the
+microseconds of the decode — **lossless**, because Hercules buffers/back-pressures
+inbound frames with no READ outstanding (see "Inbound flow control" below; the
+same property that made the CHE appendage unnecessary). An earlier draft
+specified ping-pong buffers with re-drive-before-parse; that is now the
+**documented throughput follow-on** (it would keep a READ always outstanding at
+the cost of a second buffer and a free-buffer handshake), deferred exactly as the
+appendage is. The write side needs one buffer, since one WRITE is outstanding at
+a time (the executive encodes, the write subtask EXCPs); batching several queued
+PBUFs into one block (what the `CTCIHDR`/`CTCISEG` chain is for) is a later
+optimisation, not v1.
 
 **Inbound flow control (verified against Hercules `ctc_ctci.c`).** Hercules
 buffers arriving frames into its device frame buffer *regardless* of whether a
@@ -1637,7 +1672,7 @@ than force-run (a percolate leaves a dump + terminates the address space).
 | M1-1 | **Verify CTCI frame format against Hercules `ctc_ctci.c`; write into Ch. 9.3 as normative.** **Done** (byte-exact: 3088 pair, CTCIHDR/CTCISEG, big-endian). | S |
 | M1-2 | NSFDEV device table + DEVOPS contract + NSFHOST loopback/TUN driver. **Done** (§9.2/§9.4; the async `doneq → EV_PACKET_RECEIVED` handoff validated over the host loopback driver's pthread reader thread — the CTCI-exit analog; TSTDEV 80/80 host-green). | M |
 | M1-3 | HLASM top half (`asm/nsfctcio.asm`) + C lifecycle (`src/nsfctci.c`): SVC 99 allocate + OPEN the 3088 CUU pair, EXCP a raw buffer each way, decode completion (post `X'7F'`, length = requested − residual). Per **ADR-0019** it is plain `EXCP` — IOS posts the IOB ECB, **no** I/O-completion exit, **no** appendage. **Done** — host suite 488/488, cross-links clean, alias scan clean; and **validated live on MVSCE** against a real Hercules 3088 CTCI pair (CUU 500/501 on `tun0`), `test-mvs` TSTCTCM **CC 0, 12/12**: SVC 99 allocated both subchannels (two distinct DDNAMEs), OPEN, EXCP **WRITE** post `X'7F'` (crafted ICMP echo seen in host `tcpdump`), EXCP **READ** post `X'7F'` (length = requested − IOB residual; block walked to 227 well-formed `CTCISEG`s). Fixed the SVC 99 unit-name width (3-digit CUU, not 4 — `021C`) and corrected §9.3's READ framing (**ADR-0020**). The `CTCISEG`↔PBUF codec + DEVOPS is **M1-4**. | L |
-| M1-4 | C bottom half: frame ↔ PBUF, READ re-drive, sendq kick, MIH idle handling | M |
+| M1-4 | C bottom half: frame ↔ PBUF codec, DEVOPS, sendq kick, MIH idle handling — **Done** (incl. M1-4b, issue #18 / ADR-0022/0023): codec (`nsfctcif`, TSTCTCIF 37) + portable bottom half (`nsfctcib`, TSTCTCI over the host thread+channel shims) + the **CTCI I/O subtasks** (libc370 `cthread` behind the `nsfthr` seam; Stage-0 de-risk TSTCTHR CC 0). The executive WAITs only on `dev->ecb`; the read subtask owns OPEN+EXCP+CLOSE of its subchannel, hands raw blocks up single-block-sync, the executive decodes (§3); one WRITE outstanding, executive encodes / write subtask EXCPs; per-scb save area in the HLASM top half (concurrent subtask calls — the shared-static S238); idle liveness via the ADR-0017 heartbeat. **Validated live on MVSCE** (STC on pair 0500/0501): reads → `EV_PACKET_RECEIVED` (`ctr_in` rising), `F NSF,STATS` responsive in every state incl. after READs and post-traffic idle (the #18 hang), MIH across idle tolerated, `P NSF` clean (subtasks joined, SYSUDUMP empty); crafted send seen in host `tcpdump` (TSTCTCM). | M |
 | M1-5 | Trace hexdump of received packet on console; hand-crafted packet sent | S |
 
 **Exit gate:** ping from the host produces hexdumps in NSF trace (no reply
@@ -1731,6 +1766,40 @@ application in a **foreign** address space is a genuine cross-AS POST and **will
 need UFSD's machinery — the client ECB in CSA (key 0) and `__xmpost` (cross-AS
 SVC-2 POST causes S102) — decided later at the socket/NSFRQE layer, out of scope
 for ADR-0022. ADR-0022 stays **Accepted** (this only scopes it).
+
+**v1.18:** M1-4 **DONE — M1-4b (issue #18) implemented and validated live in the
+STC; ADR-0023.** The CTCI driver's completion path is two **I/O subtasks**
+(libc370 `cthread` behind the new portable **`nsfthr`** seam — pthread on the
+host, so the SAME subtask logic runs both ways; the seam and `cthread` itself
+were de-risked in isolation first: **TSTCTHR** CC 0, a subtask SVC-2 POST into
+the executive's multi-ECB WAIT alongside the STIMER heartbeat, termecb join,
+ESTAE-isolated fault). Each subtask OWNS OPEN+EXCP+CLOSE of its subchannel (one
+TCB, so its CLOSE purges its own EXCP; SVC 99 alloc stays on the executive —
+`ctci_chan_open/close` → `ctci_chan_alloc/unalloc`); the read side is
+**single-block-synchronous** (one buffer + a `returnecb` handshake; the raw block
+is decoded into PBUFs **on the executive**, §3/§9.2 — doneq payload settled as
+raw blocks, NOT subtask-allocated PBUFs, because NSFMM is deliberately
+unserialised); the write side is one-outstanding (executive encodes, subtask
+EXCPs, executive reaps + frees the PBUF once). `CTCIDEV` 68→108. Hard-won
+correctness rules (each cost a live failure): a **per-scb save area** in the
+HLASM top half (two subtasks call the entries concurrently; the shared static
+`CTCISAVE` corrupted → S238); `nsfthr` waits use `ecb_(timed_)waitlist` with a
+**separate timeout ECB** (`cthread_wait` clears the ECB, `ecb_timed_wait` posts
+it on timeout — either forges/loses a completion, and a join timeout would
+DETACH a live subtask); the executive **clears `dev->ecb` before the CTCI
+service** (a lingering posted ECB in the multi-ECB WAIT is the #18 hazard); and
+**idle liveness = the ADR-0017 heartbeat armed at STC start** — a timed
+executive WAIT is disqualified because `ecb_timed_waitlist` TTIMER-CANCELs the
+task's interval timer (STIMER is a per-task singleton) and its timeout does not
+fire on the CRT main task (ADR-0023 §6). §5.3 (heartbeat), §9.2 (DEVIO
+semantics), §9.3 (subtask model, single-block-sync) updated. Host 569 green;
+cross-build + alias scan clean. **Validated live on MVSCE** (STC, pair
+0500/0501): reads → `EV_PACKET_RECEIVED` (`ctr_in` 0→59→86), `F NSF,STATS`
+prompt in every state — fresh idle, during reads (the exact #18 hang), and
+post-traffic idle; MIH across idle tolerated (IGF991I/995I, device kept
+working); `P NSF` → NSF830I→NSF011I→IEF404I within one second, subtasks joined,
+SYSUDUMP **empty**. **M1 exit gate met: ping → EV_PACKET_RECEIVED in the running
+STC; crafted packet in host `tcpdump`.**
 
 **v1.17:** M1-4 (CTCI C bottom half) **built and host-green, but NOT done — the
 production STC integration is blocked (issue #18 / ADR-0022).** Delivered: the
