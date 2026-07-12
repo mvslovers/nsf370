@@ -46,7 +46,11 @@ cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1", "-pthread"]
 #              (src/nsfctci_host.c) -- the host shim MODELS the subchannel, so
 #              bringing a device up needs no allocation. The portable bottom half
 #              (src/nsfctcib.c) drives ctci_chan_open/close identically on both.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c", "asm/nsfctcio.asm" = "src/nsfctcio_host.c", "src/nsfctci.c" = "src/nsfctci_host.c" }
+#   nsfthr  -- the I/O-subtask threading seam (M1-4b, spec 9.3 / ADR-0022):
+#              libc370 cthread (ATTACH a subtask, SVC-2 POST, WAIT, termecb join)
+#              on MVS (src/nsfthr.c), a pthread + condvar on the host
+#              (src/nsfthr_host.c) so the SAME CTCI subtask logic runs both ways.
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c", "asm/nsfctcio.asm" = "src/nsfctcio_host.c", "src/nsfctci.c" = "src/nsfctci_host.c", "src/nsfthr.c" = "src/nsfthr_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -235,7 +239,7 @@ sources = ["test/tstctcif.c", "src/nsfctcif.c"]
 [[test]]
 name = "TSTCTCI"
 startup = "crt1"
-sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M1-3 CTCI top half (NSFCTCI): allocate + open the CUU pair + EXCP --------
 # MVS-only (host = false): the driver uses the libc370 SVC 99 dynamic-allocation
@@ -249,7 +253,7 @@ sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c"
 name = "TSTCTCM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M1-4b Stage 0: cthread seam de-risk (issue #18 / ADR-0022) --------------
 # MVS-only (host = false): proves the libc370 `cthread` seam in ISOLATION before
@@ -276,7 +280,7 @@ sources = ["test/mvs/tstcthr.c", "asm/nsfstim.asm"]
 [[module]]
 name = "NSF"
 startup = "crt1"
-sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB

@@ -8,10 +8,12 @@
  * This file owns exactly the pieces that touch real MVS device services:
  *   - the SVC 99 wrapper (svc99_call) and its allocate/unallocate helpers
  *     (ctci_alloc_unit / ctci_free_ddn), validated on TK5/MVSCE (issue #16);
- *   - ctci_chan_open / ctci_chan_close: SVC 99 allocate the CUU pair, OPEN both
- *     subchannels (read INPUT, write OUTPUT), and the reverse.
- * The region storage, CTCIDEV allocation, ping-pong READ, completion demux,
- * codec and DEVOPS all live in the portable src/nsfctcib.c.
+ *   - ctci_chan_alloc / ctci_chan_unalloc: SVC 99 allocate / free the CUU pair
+ *     (address-space scoped, so it stays on the executive). The OPEN/CLOSE of each
+ *     subchannel moved to its OWNING SUBTASK (ADR-0022): a subchannel is OPENed
+ *     and EXCP'd on one TCB, so its CLOSE at stop purges its own outstanding EXCP.
+ * The region storage, CTCIDEV allocation, the read/write subtasks, completion
+ * demux, codec and DEVOPS all live in the portable src/nsfctcib.c.
  *
  * The SVC 99 unit name is 3 hex digits ("%03X"): 3.8j device numbers are 3
  * digits, so a 4-digit name is an undefined unit (S99ERROR 021C) even for a
@@ -117,22 +119,27 @@ int ctci_free_ddn(const char *ddn8)
     return err;
 }
 
-/* ---- channel open/close ------------------------------------------------- */
+/* ---- channel allocate / unallocate (SVC 99; executive, AS-scoped) -------- *
+ * The OPEN/CLOSE moved to the owning subtask (ADR-0022): a subchannel is OPENed
+ * and EXCP'd on ONE TCB, so its CLOSE at stop purges its own outstanding EXCP.
+ * SVC 99 allocate/unallocate is address-space scoped (not TCB), so it stays here
+ * on the executive: alloc fills d->rddn/d->wddn before the subtasks are created;
+ * unalloc runs after they have CLOSEd + joined. */
 
-int ctci_chan_open(CTCIDEV *d)
+int ctci_chan_alloc(CTCIDEV *d)
 {
     char  unit[5];
     short s99err  = 0;
     short s99info = 0;
 
-    /* SVC 99 allocate both subchannels (read = cuu, write = cuu+1). MVS 3.8j
-     * device numbers are 3 hex digits (CUU); a 4-digit unit name is UNDEFINED to
-     * SVC 99 (S99ERROR 021C), so format the address as 3 digits (ADR-0020). */
+    /* MVS 3.8j device numbers are 3 hex digits (CUU); a 4-digit unit name is
+     * UNDEFINED to SVC 99 (S99ERROR 021C), so format as 3 digits (ADR-0020). */
     snprintf(unit, sizeof(unit), "%03X", (unsigned)d->cuu);
     if (ctci_alloc_unit(unit, d->rddn, &s99err, &s99info)) {
         nsfmsg("NSF202E CTCI %04X ALLOC FAILED S99 ERR %04X INFO %04X",
                (unsigned)d->cuu, (unsigned)(s99err & 0xFFFF),
                (unsigned)(s99info & 0xFFFF));
+        d->rddn[0] = '\0';
         return 1;
     }
     snprintf(unit, sizeof(unit), "%03X", (unsigned)d->wcuu);
@@ -142,43 +149,16 @@ int ctci_chan_open(CTCIDEV *d)
                (unsigned)(s99info & 0xFFFF));
         ctci_free_ddn(d->rddn);
         d->rddn[0] = '\0';
-        return 1;
-    }
-
-    /* OPEN read subchannel INPUT, write subchannel OUTPUT. */
-    if (ctci_open_sub(d->rscb, 0u, d->rddn)) {
-        nsfmsg("NSF204E CTCI %04X READ OPEN FAILED", (unsigned)d->cuu);
-        ctci_free_ddn(d->rddn);
-        ctci_free_ddn(d->wddn);
-        d->rddn[0] = '\0';
         d->wddn[0] = '\0';
         return 1;
     }
-    if (ctci_open_sub(d->wscb, 1u, d->wddn)) {
-        nsfmsg("NSF204E CTCI %04X WRITE OPEN FAILED", (unsigned)d->wcuu);
-        ctci_close_sub(d->rscb);
-        ctci_free_ddn(d->rddn);
-        ctci_free_ddn(d->wddn);
-        d->rddn[0] = '\0';
-        d->wddn[0] = '\0';
-        return 1;
-    }
-
-    d->state = CTCI_S_UP;
-    nsfmsg("NSF210I CTCI %04X/%04X UP DD %s/%s MTU %u", (unsigned)d->cuu,
-           (unsigned)d->wcuu, d->rddn, d->wddn, (unsigned)d->mtu);
     return 0;
 }
 
-int ctci_chan_close(CTCIDEV *d)
+int ctci_chan_unalloc(CTCIDEV *d)
 {
     if (d == NULL) {
         return 0;
-    }
-    if (d->state == CTCI_S_UP) {
-        ctci_close_sub(d->rscb);
-        ctci_close_sub(d->wscb);
-        d->state = CTCI_S_DOWN;
     }
     ctci_free_ddn(d->rddn);
     ctci_free_ddn(d->wddn);
