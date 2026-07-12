@@ -33,8 +33,11 @@
 #define HOME_IP   0x0A010102u       /* 10.1.1.2 -- this stack        */
 #define PEER_IP   0x0A010101u       /* 10.1.1.1 -- the remote pinger */
 
-static UINT ctr_get_icmp(const char *name);
 static UINT pool_inuse_small(void);
+
+/* Counter readback: a direct registry read (sts_value) -- robust on the target,
+ * where libc370's sscanf does not parse a width-limited "%Ns %Ns %u". */
+#define ctr_get_icmp(name)  sts_value("NSFICM", (name))
 
 /* ---- byte-wise helpers ------------------------------------------------------- */
 static void put16(UCHAR *p, USHORT v) { p[0] = (UCHAR)(v >> 8); p[1] = (UCHAR)v; }
@@ -206,34 +209,7 @@ static void scenario_badcksum(void)
     CHECK_EQ((long)pool_inuse_small(), 0, "bad-checksum request freed (no leak)");
 }
 
-/* ---- counter / pool helpers -------------------------------------------------- */
-static UINT ctr_get_icmp(const char *name)
-{
-    static char buf[8192];
-    char *line;
-
-    (void)sts_render(buf, (UINT)sizeof(buf));
-    line = buf;
-    while (*line != '\0') {
-        char  c[16], nm[16];
-        unsigned v;
-        char *nl = strchr(line, '\n');
-
-        if (nl != NULL) {
-            *nl = '\0';
-        }
-        if (sscanf(line, "%15s %15s %u", c, nm, &v) == 3 &&
-            strcmp(c, "NSFICM") == 0 && strcmp(nm, name) == 0) {
-            return (UINT)v;
-        }
-        if (nl == NULL) {
-            break;
-        }
-        line = nl + 1;
-    }
-    return 0u;
-}
-
+/* ---- pool helper ------------------------------------------------------------- */
 static UINT pool_inuse_small(void)
 {
 #if NSF_DEBUG

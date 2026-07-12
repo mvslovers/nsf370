@@ -17,7 +17,7 @@
  *   - no route: an output with no matching route counts ip_noroute and frees;
  *   - leak gate: all pools back to baseline.
  *
- * Counters are read back through the real registry (sts_render), so the test
+ * Counters are read back through the real registry (sts_value), so the test
  * exercises registration too.
  */
 #include "nsfip.h"
@@ -32,6 +32,8 @@
 #include <mbtcheck.h>
 #include <stdio.h>
 #include <string.h>
+
+#define ctr_get(comp, name)  sts_value((comp), (name))
 
 #define HOME_IP   0x0A010102u       /* 10.1.1.2 -- this stack           */
 #define PEER_IP   0x0A010101u       /* 10.1.1.1 -- the point-to-point peer */
@@ -134,34 +136,7 @@ static PBUF *rx_pbuf(const UCHAR *pkt, USHORT len)
     return b;
 }
 
-/* ---- counter readback via the registry --------------------------------------- */
-static UINT ctr_get(const char *comp, const char *name)
-{
-    static char buf[8192];
-    char *line;
-
-    (void)sts_render(buf, (UINT)sizeof(buf));
-    line = buf;
-    while (*line != '\0') {
-        char  c[16], nm[16];
-        unsigned v;
-        char *nl = strchr(line, '\n');
-
-        if (nl != NULL) {
-            *nl = '\0';
-        }
-        if (sscanf(line, "%15s %15s %u", c, nm, &v) == 3 &&
-            strcmp(c, comp) == 0 && strcmp(nm, name) == 0) {
-            return (UINT)v;
-        }
-        if (nl == NULL) {
-            break;
-        }
-        line = nl + 1;
-    }
-    return 0u;
-}
-
+/* ---- counter readback via the registry (sts_value, see the macro above) ----- */
 static UINT pool_inuse(UCHAR class)
 {
 #if NSF_DEBUG
