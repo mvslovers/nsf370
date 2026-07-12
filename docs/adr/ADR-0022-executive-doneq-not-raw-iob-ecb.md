@@ -104,6 +104,27 @@ own runs), `cthread` is **not** exercised anywhere in the code we can see. Its
 first use is therefore **itself an MVS-validation item** in M1-4b — not assumed
 safe.
 
+## Scope of this decision
+
+The same-address-space simplification above (plain POST, problem state, key 8, no
+CSA, no `__xmpost`) applies **only** to the CTCI **I/O subtask → executive
+completion** path. That path is intra-AS **forever**: a `cthread` subtask lives in
+the executive's *own* address space, and that does not change when NSF becomes a
+subsystem (`NSFS`, M3+). So intra-AS I/O completion stays a plain POST. This must
+**not** be read as a blanket property of NSF.
+
+When NSF becomes a subsystem (M3+), an application issuing an EZASOKET call runs in
+a **foreign** address space; waking that application is a genuine **cross-AS**
+POST and **will** require UFSD's machinery — the client ECB in **CSA (key 0)** and
+`__xmpost` (CVT0PT01 branch entry, supervisor state), because a cross-AS SVC-2 POST
+causes **S102**. That boundary is deliberately **out of scope here**: it is decided
+at the socket / NSFRQE layer, not by this ADR (which governs only device→executive
+completion).
+
+In short: **intra-AS I/O completion = plain POST (this ADR); cross-AS consumer
+wakeup = UFSD's cross-AS pattern (later, at the socket/NSFRQE layer).** This
+section only *scopes* the decision; ADR-0022 stays **Accepted**.
+
 ## Rejected for v1 — the CHE appendage (ADR-0019 Option B)
 
 An appendage could POST `dev->ecb` by branch entry directly from the I/O

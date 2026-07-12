@@ -1721,6 +1721,17 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 
 ## Appendix A — Change Log
 
+**v1.18:** Docs-only. **ADR-0022** gains a "Scope of this decision" section: the
+same-address-space simplification (plain POST, problem state, key 8, no CSA, no
+`__xmpost`) governs **only** the CTCI I/O subtask → executive completion path,
+which is intra-AS forever (a `cthread` subtask lives in the executive's own
+address space, unchanged by the `NSFS` subsystem split). It is **not** a blanket
+property of NSF: when NSF becomes a subsystem (M3+), waking an EZASOKET
+application in a **foreign** address space is a genuine cross-AS POST and **will**
+need UFSD's machinery — the client ECB in CSA (key 0) and `__xmpost` (cross-AS
+SVC-2 POST causes S102) — decided later at the socket/NSFRQE layer, out of scope
+for ADR-0022. ADR-0022 stays **Accepted** (this only scopes it).
+
 **v1.17:** M1-4 (CTCI C bottom half) **built and host-green, but NOT done — the
 production STC integration is blocked (issue #18 / ADR-0022).** Delivered: the
 **codec** `nsfctcif` (`CTCISEG`↔raw-IP, byte-wise big-endian, decode walks by
