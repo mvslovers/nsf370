@@ -46,7 +46,6 @@ static void put32(UCHAR *p, UINT v)
     p[0] = (UCHAR)(v >> 24); p[1] = (UCHAR)(v >> 16);
     p[2] = (UCHAR)(v >> 8);  p[3] = (UCHAR)v;
 }
-static USHORT get16(const UCHAR *p) { return (USHORT)(((USHORT)p[0] << 8) | p[1]); }
 static UINT   get32(const UCHAR *p)
 {
     return ((UINT)p[0] << 24) | ((UINT)p[1] << 16) | ((UINT)p[2] << 8) | p[3];
