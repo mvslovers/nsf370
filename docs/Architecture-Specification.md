@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.21 — Draft for implementation. Companion document to the frozen
+*Version 1.22 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1848,6 +1848,46 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.22: Toolchain-hygiene pass, issue #25 CLOSED — two pre-existing on-MVS
+`test-mvs` failures fixed; M3 preamble baseline.** Found while validating v1.21
+(M2-4/M2-5) live: **#25.1**, `TSTCFG` loads its 14-file corpus from a
+host-relative path (`test/cfg/`) never staged as an MVS dataset, so it could
+only ever fail under `test-mvs`. mbt had no existing way to express "host-only"
+(only its mirror, `host = false` = "MVS-only") — added `mvs = false`
+(`mvslovers/mbt#55`, submodule bumped) and marked `TSTCFG` with it: still
+111/111 on `make test-host`, now cleanly absent from the MVS build entirely
+(never cross-compiled/linked, so never appears in `test-mvs`) rather than
+failing there. **#25.2**, `TSTTRC`'s over-long-text case caught libc370's
+`vsnprintf`/`snprintf` NOT NUL-terminating on truncation (`strlen` == the full
+field width, not width-1) — a real glibc/C99 (7.19.6.5) conformance gap.
+Isolated and pinned first (`test/mvs/tstvsnp.c`, `TSTVSNP`, host = false, kept
+permanently as the reference): a canary-arena probe proved `size` **is** a hard
+write bound (not a memory-safety bug — an early draft without the canary gave
+a false alarm here from reading an unterminated buffer's `strlen` past its
+bounds, pure UB) — only the terminator is missing, and the return value on
+truncation is still C99's "would-be length." A second, unrelated cc370 quirk
+fell out while building the probe: indexing a literal **string** with a
+compile-time constant folds to the **host's** (ASCII) byte value instead of
+the target's EBCDIC encoding, while a single **character** literal (the whole
+codebase's established idiom) encodes correctly — documented inline and worked
+around. Fixed with one seam: `nsf_vsnprintf`/`nsf_snprintf` (`include/nsffmt.h`
++ `src/nsffmt.c`, aliases `NSFFMVSN`/`NSFFMSNP`, ADR-0026) — always
+NUL-terminates when `size > 0` (always in-bounds, per the Stage-0 finding) and
+returns the clamped "characters actually in the buffer" count, not the raw
+C99 value. Converted every existing caller (`nsftrc.c`, `nsfmsg.c` — dropping
+its now-redundant manual terminator, the actual inconsistency behind #25.2 —
+`nsfcfg.c`, `nsfstc.c` ×3, `nsfsts.c`, `nsfctci.c` ×2); `src/nsffmt.c` added to
+every module/test linking a converted file (13 `project.toml` entries). New
+`TSTFMT` (dual host+MVS) exercises the wrapper's own clamping logic directly.
+Host **861→875** (+14 `TSTFMT`); `-Wall -Wextra -Werror` clean; cross build +
+alias scan clean (`NSFFMVSN`/`NSFFMSNP`, no collisions). **Full `test-mvs`
+regression (25 modules, batch+TSO) is now 950 PASS, 0 FAIL** — `TSTTRC`
+(previously 2 failures/leg) clean, `TSTVSNP`/`TSTFMT` both CC 0, `TSTCFG`
+correctly absent. §3 (CLAUDE.md toolchain rules) + ADR-0026 + module map
+updated. **This does NOT touch M2 code paths (§11) or PR #24** — a clean
+`make test-mvs` (0 fail) and the pinned libc370 divergence are the M3
+preamble baseline.
 
 **v1.21: M2-4 (ICMP error generation) + M2-5 (stats/trace/fragdrop close-out) DONE
 — M2 COMPLETE.** `nsficmp_send_error` (`src/nsficmp.c`, alias `NSFICMSE`) is
