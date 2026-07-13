@@ -93,10 +93,11 @@ void nsftrc_init(void) asm("NSFTRINI");
 void nsftrc_enable(UINT flags) asm("NSFTRENA");
 void nsftrc_disable(UINT flags) asm("NSFTRDIS");
 
-/* Append one formatted entry to the ring, oldest-overwritten. vsnprintf
- * truncates the text to fit the 112-byte field (always NUL-terminated). Does
- * NOT test nsftrc_flags -- the TRC macro is the gate; a direct caller has
- * already decided to trace. */
+/* Append one formatted entry to the ring, oldest-overwritten. nsf_vsnprintf
+ * truncates the text to fit the 112-byte field (always NUL-terminated -- see
+ * nsffmt.h; libc370's own vsnprintf does not, issue #25.2). Does NOT test
+ * nsftrc_flags -- the TRC macro is the gate; a direct caller has already
+ * decided to trace. */
 void nsftrc_write(UINT flag, const char *fmt, ...) asm("NSFTRWRT") NSFTRC_PRINTF(2, 3);
 
 /* Format a hex + printable-character dump of len bytes at p into ring entries

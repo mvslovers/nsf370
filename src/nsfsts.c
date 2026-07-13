@@ -12,8 +12,9 @@
  * it once and STS_INC()s it on the hot path with no lookup.
  */
 #include "nsfsts.h"
+#include "nsffmt.h"           /* nsf_snprintf (libc370's own snprintf does not
+                               * NUL-terminate on truncation, issue #25.2)  */
 
-#include <stdio.h>            /* snprintf */
 #include <string.h>         /* memset, memcpy */
 
 /* One registry record: the component label plus its counter. */
@@ -135,8 +136,8 @@ UINT sts_render(char *buf, UINT bufsize)
 
         /* Precisions bound every read to the field width, so a field that
          * exactly fills its array (no NUL) cannot over-read. */
-        len = snprintf(line, sizeof(line), "%.8s %.12s %u\n",
-                       r->component, r->ctr.name, (unsigned)r->ctr.value);
+        len = nsf_snprintf(line, sizeof(line), "%.8s %.12s %u\n",
+                           r->component, r->ctr.name, (unsigned)r->ctr.value);
         if (len < 0) {
             continue;                   /* encoding error: skip the line */
         }

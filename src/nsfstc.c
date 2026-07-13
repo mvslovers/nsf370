@@ -15,7 +15,8 @@
 #include "nsfbuf.h"             /* buf_init_counts, NSFBUF_*_COUNT        */
 #include "nsfmm.h"              /* mm_shutdown                            */
 #include "nsfstim.h"            /* nsftmr_plat_disarm (stop the timer exit) */
-#include <stdio.h>              /* snprintf */
+#include "nsffmt.h"             /* nsf_snprintf (libc370's own snprintf does
+                                 * not NUL-terminate on truncation, #25.2) */
 
 /* The config remembered by the last successful nsf_init_from_cfg. */
 static const NSFCFG *g_active_cfg;
@@ -138,7 +139,7 @@ static void render(char *errbuf, UINT errsize, const char *fmt,
                    UINT code, const char *nm)
 {
     if (errbuf != NULL && errsize > 0u) {
-        snprintf(errbuf, errsize, fmt, (unsigned)code, nm);
+        nsf_snprintf(errbuf, errsize, fmt, (unsigned)code, nm);
     }
 }
 
@@ -156,10 +157,10 @@ INT nsf_cfg_check_refs(const NSFCFG *cfg, char *errbuf, UINT errsize)
                           (UINT)sizeof(cfg->dev[0]),
                           (UINT)offsetof(NSFCFGDEV, name))) {
             if (errbuf != NULL && errsize > 0u) {
-                snprintf(errbuf, errsize,
-                         "NSF%03uE LINK %.16s NAMES UNDEFINED DEVICE %.16s",
-                         (unsigned)NSFSTC_E_LINKDEV,
-                         cfg->link[i].name, cfg->link[i].devname);
+                nsf_snprintf(errbuf, errsize,
+                            "NSF%03uE LINK %.16s NAMES UNDEFINED DEVICE %.16s",
+                            (unsigned)NSFSTC_E_LINKDEV,
+                            cfg->link[i].name, cfg->link[i].devname);
             }
             return NSFSTC_E_LINKDEV;
         }
@@ -209,9 +210,9 @@ INT nsf_init_from_cfg(const NSFCFG *cfg, char *errbuf, UINT errsize)
     large = nsf_cfg_pool_count(cfg, "BUFLARGE", (UINT)NSFBUF_LARGE_COUNT);
     if (buf_init_counts(small, large) != 0) {
         if (errbuf != NULL && errsize > 0u) {
-            snprintf(errbuf, errsize,
-                     "NSF%03uE BUFFER POOL CREATION FAILED",
-                     (unsigned)NSFSTC_E_BUFPOOL);
+            nsf_snprintf(errbuf, errsize,
+                        "NSF%03uE BUFFER POOL CREATION FAILED",
+                        (unsigned)NSFSTC_E_BUFPOOL);
         }
         return NSFSTC_E_BUFPOOL;
     }
