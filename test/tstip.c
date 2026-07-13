@@ -29,6 +29,7 @@
 #include "nsfmm.h"
 #include "nsftmr.h"
 #include "nsfsts.h"
+#include "nsftrc.h"
 #include <mbtcheck.h>
 #include <stdio.h>
 #include <string.h>
@@ -241,11 +242,14 @@ static void test_output(NETDEV *dev)
     UCHAR  payload[16];
     UINT   i;
     USHORT id1, id2;
+    UINT   out0;
 
     (void)dev;
     for (i = 0u; i < sizeof(payload); i++) {
         payload[i] = (UCHAR)i;
     }
+
+    out0 = ctr_get("NSFIP", "out");
 
     /* First output. */
     b = buf_alloc(sizeof(payload));
@@ -256,6 +260,7 @@ static void test_output(NETDEV *dev)
           "nsfip_output routed to the peer");
     nsfdev_kick_output();
     CHECK_EQ((long)g_capcount, 1, "output packet was transmitted");
+    CHECK_EQ((long)ctr_get("NSFIP", "out"), (long)out0 + 1, "ip_out counted the transmitted packet");
 
     /* The captured packet: v4/IHL5, header verifies to 0, addresses, total len. */
     CHECK_EQ((long)(g_cap[0]), 0x45L, "output header is version 4 IHL 5");
@@ -273,8 +278,87 @@ static void test_output(NETDEV *dev)
     nsfdev_kick_output();
     id2 = get16(g_cap + 4);
     CHECK(id2 != id1, "identification counter advanced between packets");
+    CHECK_EQ((long)ctr_get("NSFIP", "out"), (long)out0 + 2, "ip_out counted both transmitted packets");
 
     CHECK_EQ((long)pool_inuse(NSFBUF_CLASS_SMALL), 0, "output path leaked nothing");
+}
+
+/* ---- an unsupported protocol counts noproto (M2-4 trigger) ------------------ */
+static void test_noproto(NETDEV *dev)
+{
+    UCHAR  pkt[64];
+    UCHAR  payload[8];
+    USHORT total;
+    PBUF  *b;
+    UINT   before, i;
+
+    for (i = 0u; i < sizeof(payload); i++) {
+        payload[i] = (UCHAR)i;
+    }
+
+    before = ctr_get("NSFIP", "noproto");
+    total  = build_ip(pkt, 0x45u, 0u, 64u, 253u /* unassigned */,
+                      PEER_IP, HOME_IP, payload, sizeof(payload));
+    b = rx_pbuf(pkt, total);
+    CHECK(b != NULL, "noproto: rx_pbuf allocated");
+    nsfip_input(dev, b);
+    nsfdev_kick_output();          /* drain the M2-4 protocol-unreachable error */
+    CHECK_EQ((long)ctr_get("NSFIP", "noproto"), (long)before + 1,
+             "unassigned protocol -> ip_noproto");
+    CHECK_EQ((long)pool_inuse(NSFBUF_CLASS_SMALL), 0, "noproto path leaked nothing");
+}
+
+/* ---- trace flag gates the NSFTRC ring (M2-5) --------------------------------- */
+static void test_trace(NETDEV *dev)
+{
+    UCHAR  pkt[128];
+    UCHAR  icmp[16];
+    USHORT il, total;
+    PBUF  *b;
+    UINT   base, i, found_ip, found_icmp;
+
+    nsftrc_init();
+    CHECK_EQ((long)nsftrc_flags, 0L, "trace flags are off by default");
+
+    il    = build_icmp(icmp, 8u, 0x2222u, 1u, (const UCHAR *)"trace-me", 8u);
+    total = build_ip(pkt, 0x45u, 0u, 64u, NSFIP_PROTO_ICMP, PEER_IP, HOME_IP, icmp, il);
+
+    /* Flags off: nothing recorded even though the packet is fully valid. */
+    base = nsftrc_count();
+    b = rx_pbuf(pkt, total);
+    CHECK(b != NULL, "trace(off): rx_pbuf allocated");
+    nsfip_input(dev, b);
+    nsfdev_kick_output();
+    CHECK_EQ((long)nsftrc_count(), (long)base, "flags off -> ring gains nothing");
+
+    /* Flags on: the same packet leaves both an IP and an ICMP entry. */
+    nsftrc_enable((UINT)(TRCF_IP | TRCF_ICMP));
+    base = nsftrc_count();
+    b = rx_pbuf(pkt, total);
+    CHECK(b != NULL, "trace(on): rx_pbuf allocated");
+    nsfip_input(dev, b);
+    nsfdev_kick_output();
+    CHECK(nsftrc_count() > base, "flag on -> ring gained at least one entry");
+
+    found_ip = 0u;
+    found_icmp = 0u;
+    for (i = base; i < nsftrc_count(); i++) {
+        const TRCENT *e = nsftrc_peek(i);
+        if (e == NULL) {
+            continue;
+        }
+        if (e->flag == TRCF_IP) {
+            found_ip = 1u;
+        }
+        if (e->flag == TRCF_ICMP) {
+            found_icmp = 1u;
+        }
+    }
+    CHECK(found_ip != 0u, "the ring has an IP-flagged entry for the packet");
+    CHECK(found_icmp != 0u, "the ring has an ICMP-flagged entry for the packet");
+
+    nsftrc_disable((UINT)(TRCF_IP | TRCF_ICMP));
+    CHECK_EQ((long)pool_inuse(NSFBUF_CLASS_SMALL), 0, "trace test leaked nothing");
 }
 
 /* ---- no route -------------------------------------------------------------- */
@@ -334,7 +418,12 @@ int main(void)
     test_input_drops(dev);
     test_valid_demux(dev);
     test_output(dev);
-    test_no_route();
+    test_noproto(dev);
+    test_trace(dev);
+    test_no_route();          /* rebuilds the routing table -- run last */
+
+    CHECK_EQ((long)ctr_get("NSFIP", "ttlexp"), 0L,
+             "ttlexp stays 0 in v1 (host, not router -- spec 11.1)");
 
     /* Leak gate: every buffer freed; the EVT pool untouched by this path. */
     CHECK_EQ((long)pool_inuse(NSFBUF_CLASS_SMALL), 0, "BUFSMALL at baseline (no leak)");
