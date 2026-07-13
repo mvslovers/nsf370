@@ -164,9 +164,14 @@ sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm
 # NSF7xx code AND the exact 1-based line; plus dotted-decimal edge cases and
 # charset-transparent (code-page-independent) case folding. Pure portable C --
 # no asm, no MVS services -- so it runs host + MVS unchanged.
+# host-only (issue #25.1): the corpus is loaded from the host-relative path
+# test/cfg/, never staged as an MVS dataset, so this can only fail under
+# test-mvs; on-MVS coverage of the parser's EBCDIC path is not essential since
+# it is already exercised live by the real PROFILE at S NSF.
 [[test]]
 name = "TSTCFG"
 startup = "crt1"
+mvs = false
 sources = ["test/tstcfg.c", "src/nsfcfg.c"]
 
 # -- M0-8 operator dispatcher + startup sequencing (NSFOPR / NSFSTC) -----
