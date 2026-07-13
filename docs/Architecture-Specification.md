@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.20 — Draft for implementation. Companion document to the frozen
+*Version 1.21 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1251,6 +1251,26 @@ void  nsficmp_input(NETDEV *dev, PBUF *b, const IPHDR *ip);
 void  nsficmp_send_error(const PBUF *orig, UCHAR type, UCHAR code);
 ```
 
+**M2-4 realization (`nsficmp_send_error`) — trigger status.** The generator is
+fully implemented (a fresh PBUF: new IP header + ICMP `type`/`code` header
+quoting `orig`'s IP header and the first 8 bytes of its payload, RFC 792) and
+suppressed per RFC 1122 §3.2.2 (never in response to an ICMP error message, a
+broadcast/multicast-destined datagram, a non-initial fragment, or a datagram
+whose source is not a single unicast host) — but only ONE of its three possible
+callers is wired in v1:
+
+- **Protocol unreachable (type 3, code 2) — LIVE.** `nsfip_input`'s existing
+  `noproto` path (any inbound protocol NSF does not demux — TCP/UDP stubs
+  included, since neither has a real implementation yet) now also calls
+  `nsficmp_send_error`. This is accurate for v1: there genuinely is no listener
+  for that protocol number on this host.
+- **Port unreachable (type 3, code 3) — infrastructure-only.** No caller exists
+  until UDP/TCP can report a closed port (M4); wiring one now would be dead
+  code with nothing to trigger it.
+- **Time exceeded (type 11) — infrastructure-only, and stays that way through
+  v1.** `ttlexp` never increments (§11.1: NSF is a host, not a router, so TTL
+  expiry is never NSF's to report) — there is deliberately no send path for it.
+
 ### 11.3 Fragmentation Policy (explicit, previously implicit)
 
 **v1 does not reassemble and does not fragment.**
@@ -1309,8 +1329,10 @@ destination is not one of ours (there is no forward path, §11.1), and `ttlexp`
 stays 0 in v1 (§11.1).
 
 ICMP (component `NSFICM`): `in, inecho, outecho, errsent, badcksum, indrop`
-(`errsent` reserved for the M2-4 error generator; `indrop` counts a verified
-non-echo message dropped in M2-3).
+(`errsent` counts a transmitted `nsficmp_send_error` — M2-4, live via the
+`noproto`→protocol-unreachable path, §11.2; `indrop` counts a verified non-echo
+message dropped in M2-3). A datagram `nsficmp_send_error` suppresses per RFC
+1122 §3.2.2 is not counted — spec 11.7 has no counter for a suppressed send.
 
 ---
 
@@ -1750,14 +1772,17 @@ yet); a crafted packet from NSF is visible in host `tcpdump`.
 
 | WP | Deliverable | Size |
 |---|---|---|
-| M2-1 | `in_cksum` + RFC 1071 vectors (host tests first) | S |
-| M2-2 | IP input (validate/demux) + output (build/route) + routing table from PROFILE | M |
-| M2-3 | ICMP echo responder (reply in-place in the same PBUF) | S |
-| M2-4 | ICMP errors: port/proto unreachable, TTL exceeded | S |
-| M2-5 | Stats + trace wired through; fragment-drop counting (ADR-0012) | S |
+| M2-1 | `in_cksum` + RFC 1071 vectors (host tests first). **Done.** | S |
+| M2-2 | IP input (validate/demux) + output (build/route) + routing table from PROFILE. **Done.** | M |
+| M2-3 | ICMP echo responder (reply in-place in the same PBUF). **Done.** | S |
+| M2-4 | ICMP errors: proto unreachable **live** (the only v1 trigger); port unreachable / TTL exceeded fully built, uncalled until M4/M6+ (§11.2). **Done.** | S |
+| M2-5 | Stats + trace wired through (already true from M2-1..3); fragment-drop counting (ADR-0012) confirmed + test coverage closed (every counter reads back by name, incl. `out`/`noproto`/`ttlexp`==0; a dedicated flag-on/flag-off trace test). **Done.** | S |
 
-**Exit gate:** `ping <mvs-ip>` works sustained (1000 packets, 0 loss on
-loopback-quality link); stats consistent; pools at baseline afterwards.
+**Exit gate MET.** `ping <mvs-ip>` sustained 1000 packets, 0% loss (v1.20); a
+raw protocol-253 datagram from the host draws a protocol-unreachable reply
+(`errsent`/`noproto` both 1) visible in `tcpdump`; `F NSF,STATS` after a ping
+run shows every §11.7 counter populated and consistent; pools at baseline
+afterwards (v1.21). **M2 COMPLETE.**
 
 ### M3 — UDP + socket path end-to-end
 
@@ -1823,6 +1848,47 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.21: M2-4 (ICMP error generation) + M2-5 (stats/trace/fragdrop close-out) DONE
+— M2 COMPLETE.** `nsficmp_send_error` (`src/nsficmp.c`, alias `NSFICMSE`) is
+fully built per spec 11.2/RFC 792: a FRESH PBUF (orig stays read-only, single
+owner unaffected) carrying a new IP header + ICMP `type`/`code` header quoting
+`orig`'s IP header and the first 8 bytes of its payload, checksummed once over
+the whole message. Suppressed per RFC 1122 §3.2.2 (an ICMP error message, a
+broadcast/multicast destination, a non-initial fragment, or a non-unicast
+source) with no counter for a suppressed send (spec 11.7 has none). Only ONE
+trigger is live in v1 — `nsfip_input`'s existing `noproto` path (any inbound
+protocol NSF does not implement) now also calls `nsficmp_send_error(orig, 3,
+2)` (protocol unreachable); port unreachable and time exceeded stay fully
+implemented but uncalled until M4 sockets and a forward path exist
+respectively (§11.2 documents why, so the next reader isn't surprised two of
+three error types have no live caller). M2-5 found the full §11.7 counter set,
+fragment-drop, and NSFTRC wiring already in place from M2-1..3 (`nsfip.c`/
+`nsficmp.c` already called `TRC(IP,...)`/`TRC(ICMP,...)` on every path, flag-
+gated and off by default) — the M2-5 work was closing the test gap: every IP
+counter (including `out`, `noproto`, and `ttlexp` staying 0) now reads back by
+name, and a dedicated trace test proves a flag-off run leaves the ring
+untouched while a flag-on run leaves both an IP- and an ICMP-flagged entry.
+`test/tsticmp.c` gained a CAPTURE-device scenario for the live proto-
+unreachable trigger (byte-exact: IP header, ICMP type/code/checksum, and the
+quoted original header + 8 payload bytes) and a direct-call scenario per
+suppression rule (nsfip_input's own demux filters fragments/non-local-dest/
+ICMP before the noproto trigger, so three of the four rules cannot be driven
+end-to-end — driven directly against `nsficmp_send_error` instead, with the
+capture route still wired so a broken guard would be caught, not silently
+pass). Host **804→861** (TSTICMP 23→66, TSTIP 39→53); `-Wall -Wextra -Werror`
+clean; cross build (cc370/as370/ld370) links clean, alias scan clean (one new
+unique export, `NSFICMSE`, no collisions across all 24 module sources + the
+asm CSECTs). **Both live checks pass on MVSCE** (STC, real CTCI pair
+0500/0501): (1) a raw protocol-253 datagram from the host draws `ICMP
+192.168.200.1 protocol 253 unreachable` in `tcpdump`, quoting the original
+datagram exactly, `NSFICM errsent` 0→1, `NSFIP noproto` 0→1; (2) `F NSF,STATS`
+after a 20-packet ping run (0% loss) shows every §11.7 counter populated and
+consistent (`NSFIP in/out` 21/21, `NSFICM inecho/outecho` 20/20, every error
+counter 0 except the one deliberate `noproto`/`errsent`); `P NSF` →
+NSF830I→NSF011I→IEF404I in the same second, no dump. §11.2 (trigger-status
+note) and §11.7 (errsent, suppression) updated. **M2 (IPv4 + ICMP, ping with
+0% loss) is now fully complete. M3 (sockets + NSFRQE + UDP + EZASOKET) next.**
 
 **v1.20:** **Issue #21 FIXED — CTCI write-path latency band + burst-tail stall; ADR-0025.** Three defects, separately proven. (1) `nsfthr_timed_wait`/`nsfthr_join` passed `ecb_timed_waitlist` a timeout ECB **outside** the WAIT ECBLIST — the STIMER exit posted a dead stack ECB and the "timed" wait was a pure infinite WAIT (the CTCI subtask's 500 ms self-poll was dead code; a join of a hung subtask would hang forever). Fixed: WAIT on `{target, tmo|VL}`; the target ECB stays never-cleared / never-phantom-posted. Proven both ways by the new MVS-only **TSTTHRW** (old shape: no return within 2 s of heartbeats, released only by a real post at 2003 ms; fixed shape: fires at 500 ms on a cthread subtask AND on the main task — correcting ADR-0023 §6's "does not fire on the CRT main task" misdiagnosis; a join of a live subtask times out to RETAIN instead of hanging). (2) The §5.3 WAIT-skip never rechecked device work after the executive's `dev->ecb` reset: `DEVIO` gains a side-effect-free `pending` probe (CTCI: `rready || (wready && txbusy)`), `nsfdev_work_pending` (`NSFDPEND`) rides `evt_set_devices` as a fourth hook, and the loop consults it before committing to WAIT — host-proven with no timer running (a destroyed-wake completion is reaped on the same pass). (3) **The transport mechanism, isolated by the live gate after (1)+(2) were deployed:** a WRITE `SIO` issued while the blocking READ is outstanding queues at the IOS level (the pair shares one channel) until the NEXT inbound frame completes that READ — slow replies tracked the sender's interval exactly (505 ms at `ping -i 0.5`, 2020 ms at `-i 2`), each stuck reply hit the wire ~200 µs after the next echo request, and the last reply of a run never transmitted (the 90 s+ tail stall; the pre-fix "bimodal 200-311 ms band" was that run's ping interval, not heartbeat multiples). Fixed by **pair sequencing**: `service` marks the read release (`CTCIDEV.rhold`) and `kick` POSTs `returnecb` only when nothing is queued and no WRITE is outstanding, so every WRITE is issued with the READ parked; `kick` also walks past dropped frames instead of stranding the sendq. PBUF ownership + the kick-clocked handoff unchanged; the un-armed window is lossless (§9.3). M3+ locally-originated writes under an armed READ remain the documented HIO / attention-protocol follow-on. **The M2 0-loss gate is now CLEAN:** live 1000-packet ping → **1000/1000, 0 % loss, unimodal** RTT min/avg/max = 0.550/0.918/35.1 ms (p99 < 1 ms, zero replies ≥ 100 ms, the last frame answered in 0.899 ms); `LNK1 in 1006 == LNK1 out 1006` (6 pre-flight + 1000), every drop counter 0; `P NSF` → NSF830I→NSF011I→IEF404I within the same second. Host suite 787→**804** (TSTCTCI 168→207); on-MVS regression batch+TSO **188 PASS** (TSTTHRW, TSTCTHR, TSTEVTM, TSTSTCM, TSTCKSUM, TSTIP, TSTICMP, TSTTMACC). §5.3/§9.3 corrected; ADR-0023 annotated; `CTCIDEV` stays 112 B.
 

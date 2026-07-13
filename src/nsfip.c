@@ -316,7 +316,17 @@ void nsfip_input(NETDEV *dev, PBUF *b)
     case NSFIP_PROTO_TCP:
     case NSFIP_PROTO_UDP:
     default:
-        ipc(ip_noproto);                            /* M3/M4 stubs, or unknown */
+        /* M3/M4 stubs, or a protocol NSF does not implement at all: this stack
+         * has no listener for it, full stop, so "protocol unreachable" (RFC 792)
+         * is accurate for v1 -- the LIVE M2-4 trigger for nsficmp_send_error.
+         * Once TCP/UDP land (M3/M4) their real demux replaces this case for
+         * those two protocols and this path narrows to truly unknown ones;
+         * closed-port "port unreachable" is a separate, still-unwired M4
+         * concern (spec 11.2). send_error reads b (still ours) and does not
+         * take ownership -- we free it right after, as every other drop does. */
+        ipc(ip_noproto);
+        nsficmp_send_error(b, (UCHAR)NSFICMP_DEST_UNREACH,
+                           (UCHAR)NSFICMP_UNREACH_PROTO);
         buf_free(b);
         break;
     }
