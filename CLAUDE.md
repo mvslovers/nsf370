@@ -164,6 +164,17 @@ Violating one is a review-blocking defect, not a style nit.
   column 71. A green host build and a clean link are **not** evidence — this
   failure is MVS-runtime only (issue #8).
 
+**Standard library truncation (libc370, ADR-0026)**
+- `vsnprintf`/`snprintf` on libc370 do **NOT** NUL-terminate on truncation — a
+  real glibc/C99 violation, pinned live by `TSTVSNP` (issue #25): `size` IS a
+  hard write bound (not a memory-safety bug), but the target is filled solid
+  through byte `size-1` with data, leaving no byte for a terminator; the
+  return value is still the C99 "would-be length" regardless. **Never call
+  `vsnprintf`/`snprintf` directly** — use `nsf_vsnprintf`/`nsf_snprintf`
+  (`include/nsffmt.h`), which always NUL-terminate when `size > 0` and return
+  the count of characters actually in the buffer (clamped), not the raw C99
+  value.
+
 **Contracts**
 - `NSFRQE` (the app↔stack request block) **freezes at the M3 exit gate**.
   Changing it afterwards requires an ADR.
@@ -390,4 +401,5 @@ isolated so M0–M4 already deliver a usable in-process stack.
 | NSFOPR | Operator interface (dispatcher + CIB seam; M0-8) | 5 / 17 | 800–899 |
 | NSFMSG | WTO message seam (libc370 `wto`; M0-8) | 5 / 17 | — |
 | NSFSTC | STC startup + NSFCFG→init wiring (M0-8) | 5 / 14 | 000–099 |
+| NSFFMT | Safe formatting seam (`nsf_vsnprintf`/`nsf_snprintf`; libc370 truncation fix, ADR-0026, issue #25) | — | — |
 | (recovery) | ESTAE via libc370 `__estae` + C `nsf_recover` (ADR-0018; no NSFESTAE CSECT) | 17 | 900–999 |

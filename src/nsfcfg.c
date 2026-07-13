@@ -17,8 +17,10 @@
  * EBCDIC PDS member on MVS and the ASCII host corpus. See nsfcfg.h.
  */
 #include "nsfcfg.h"
+#include "nsffmt.h"             /* nsf_snprintf (libc370's own snprintf does not
+                                 * NUL-terminate on truncation, issue #25.2)  */
 
-#include <stdio.h>              /* snprintf, FILE, fopen, fread, fgetc */
+#include <stdio.h>              /* FILE, fopen, fread, fgetc */
 #include <string.h>            /* memset, memcpy */
 
 /* Longest physical line we accept; a longer line is a syntax error (NSF700E)
@@ -189,8 +191,8 @@ static INT cfg_err(NSFCFG *out, UINT line, UINT code, const char *text)
     memset(out, 0, sizeof(*out));
     out->err.line = line;
     out->err.code = code;
-    snprintf(out->err.msg, sizeof(out->err.msg), "NSF%03uE %s",
-             (unsigned)code, text);
+    nsf_snprintf(out->err.msg, sizeof(out->err.msg), "NSF%03uE %s",
+                 (unsigned)code, text);
     return (INT)code;
 }
 

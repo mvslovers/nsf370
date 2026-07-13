@@ -30,3 +30,5 @@ out as they are revisited. ADR-0014 onward are authored directly here.
 | 0022 | Executive WAITs only on ECBs it owns (doneq via I/O subtask), not the raw IOB ECB — supersedes ADR-0019's WAIT premise | ADR-0022-executive-doneq-not-raw-iob-ecb.md |
 | 0023 | CTCI I/O subtask implementation: raw-block doneq (Option B), single-block-sync READ, subtask-owned channel (per-scb save area), nsfthr seam | ADR-0023-ctci-subtask-implementation.md |
 | 0024 | IPv4 host model: not-for-us→inaddrerr, TTL parsed-not-gated, routing from HOME/GATEWAY (peer=next-hop 0), addresses UINT + byte-wise wire | ADR-0024-ipv4-host-model-routing-and-address-convention.md |
+| 0025 | Timed cross-task waits (timeout ECB in the waitlist) + CTCI pair sequencing (read re-arm behind the write pipeline) | ADR-0025-timed-waits-and-ctci-pair-sequencing.md |
+| 0026 | nsffmt: safe vsnprintf/snprintf seam — libc370 does not NUL-terminate on truncation (issue #25) | ADR-0026-nsffmt-safe-formatting-seam.md |

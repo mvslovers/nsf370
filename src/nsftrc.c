@@ -21,10 +21,11 @@
  * (as NSFXQ claims its stack top) before this code can be called off-mainline.
  */
 #include "nsftrc.h"
+#include "nsffmt.h"           /* nsf_vsnprintf (libc370 doesn't NUL-terminate
+                                * on truncation, issue #25.2)                */
 #include "nsftime.h"
 
-#include <stdarg.h>            /* va_list, vsnprintf */
-#include <stdio.h>            /* vsnprintf */
+#include <stdarg.h>            /* va_list                                   */
 #include <string.h>          /* memset, memcpy */
 #include <ctype.h>          /* isprint (EBCDIC-aware on the target) */
 
@@ -76,7 +77,7 @@ void nsftrc_write(UINT flag, const char *fmt, ...)
     e->task = nsf_taskid();
 
     va_start(ap, fmt);
-    (void)vsnprintf(e->text, sizeof(e->text), fmt, ap);  /* truncates to fit */
+    (void)nsf_vsnprintf(e->text, sizeof(e->text), fmt, ap);  /* truncates to fit */
     va_end(ap);
 
     /* Advance the cursor and grow the live count until the ring is full. */

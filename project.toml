@@ -104,14 +104,35 @@ sources = ["test/tstbuf.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c"]
 [[test]]
 name = "TSTTRC"
 startup = "crt1"
-sources = ["test/tsttrc.c", "src/nsftrc.c", "asm/nsftime.asm"]
+sources = ["test/tsttrc.c", "src/nsftrc.c", "src/nsffmt.c", "asm/nsftime.asm"]
+
+# libc370 vsnprintf/snprintf toolchain-divergence probe (issue #25.2): TSTTRC's
+# over-long-text case caught libc370 NOT NUL-terminating on truncation (a real
+# glibc/C99 conformance gap). This is that divergence isolated and pinned in ONE
+# place, independent of NSFTRC -- host = false because the divergence is
+# invisible on host (a host test would just prove glibc is C99-conformant).
+# KEEP even after nsffmt.c lands: the wrapper's contract is built against this.
+[[test]]
+name = "TSTVSNP"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstvsnp.c"]
+
+# NSFFMT: the safe formatting seam (nsf_vsnprintf/nsf_snprintf) that fixes the
+# TSTVSNP-pinned libc370 gap -- always NUL-terminates on truncation, clamped
+# return value. Portable C, dual host+MVS: the wrapper's own clamping logic is
+# platform-independent, so this runs and asserts identically both ways.
+[[test]]
+name = "TSTFMT"
+startup = "crt1"
+sources = ["test/tstfmt.c", "src/nsffmt.c"]
 
 # NSFSTS: distinct counter registration, STS_INC/STS_ADD, registry overflow,
 # reset-to-zero, and the component+name+value render into a caller buffer.
 [[test]]
 name = "TSTSTS"
 startup = "crt1"
-sources = ["test/tststs.c", "src/nsfsts.c"]
+sources = ["test/tststs.c", "src/nsfsts.c", "src/nsffmt.c"]
 
 # -- M0-5 timer manager unit tests (NSFTMR) ----------------------------
 # NSFTMR: sorted delta-queue insertion order + successor bookkeeping, in-order
@@ -164,10 +185,15 @@ sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm
 # NSF7xx code AND the exact 1-based line; plus dotted-decimal edge cases and
 # charset-transparent (code-page-independent) case folding. Pure portable C --
 # no asm, no MVS services -- so it runs host + MVS unchanged.
+# host-only (issue #25.1): the corpus is loaded from the host-relative path
+# test/cfg/, never staged as an MVS dataset, so this can only fail under
+# test-mvs; on-MVS coverage of the parser's EBCDIC path is not essential since
+# it is already exercised live by the real PROFILE at S NSF.
 [[test]]
 name = "TSTCFG"
 startup = "crt1"
-sources = ["test/tstcfg.c", "src/nsfcfg.c"]
+mvs = false
+sources = ["test/tstcfg.c", "src/nsfcfg.c", "src/nsffmt.c"]
 
 # -- M0-8 operator dispatcher + startup sequencing (NSFOPR / NSFSTC) -----
 # NSFOPR: the portable MODIFY command dispatcher (DISPLAY/STATS/TRACE/STOP/HELP)
@@ -179,7 +205,7 @@ sources = ["test/tstcfg.c", "src/nsfcfg.c"]
 [[test]]
 name = "TSTOPR"
 startup = "crt1"
-sources = ["test/tstopr.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfstc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstopr.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfstc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # NSFSTC: the NSFCFG->component-init wiring -- trace-flag mapping, NSFPOOL count
 # resolution, cross-statement referential integrity (spec 14.5), and
@@ -188,7 +214,7 @@ sources = ["test/tstopr.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c",
 [[test]]
 name = "TSTSTC"
 startup = "crt1"
-sources = ["test/tststc.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsftrc.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c", "asm/nsftime.asm", "asm/nsfstim.asm"]
+sources = ["test/tststc.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsftrc.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsftime.asm", "asm/nsfstim.asm"]
 
 # NSFSTC on-MVS component validation (host = false): parse an embedded profile,
 # wire it into the component inits on real 3.8j (EBCDIC PDS-independent path,
@@ -200,7 +226,7 @@ sources = ["test/tststc.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsftrc.c", "src
 name = "TSTSTCM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tststcm.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tststcm.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M1-2 device abstraction + host driver (NSFDEV / NSFHOST) ------------
 # NSFDEV: the DEVOPS contract + device table + the async completion handoff
@@ -216,7 +242,7 @@ sources = ["test/mvs/tststcm.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsfmsg.c",
 [[test]]
 name = "TSTDEV"
 startup = "crt1"
-sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm"]
+sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm"]
 
 # -- M1-4 CTCI frame codec (nsfctcif): CTCISEG<->raw IP ----------------------
 # Pure portable byte<->byte transform (spec 9.3 / ADR-0020). Literal wire-byte
@@ -239,7 +265,7 @@ sources = ["test/tstctcif.c", "src/nsfctcif.c"]
 [[test]]
 name = "TSTCTCI"
 startup = "crt1"
-sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M1-3 CTCI top half (NSFCTCI): allocate + open the CUU pair + EXCP --------
 # MVS-only (host = false): the driver uses the libc370 SVC 99 dynamic-allocation
@@ -253,7 +279,7 @@ sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c"
 name = "TSTCTCM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M1-4b Stage 0: cthread seam de-risk (issue #18 / ADR-0022) --------------
 # MVS-only (host = false): proves the libc370 `cthread` seam in ISOLATION before
@@ -299,14 +325,14 @@ sources = ["test/tstcksum.c", "src/nsfcksum.c"]
 [[test]]
 name = "TSTIP"
 startup = "crt1"
-sources = ["test/tstip.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstip.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # NSFICM: ICMP echo responder (in-place, single-owner). Injects an echo request
 # over the NSFHOST loopback and asserts a well-formed reply emerges.
 [[test]]
 name = "TSTICMP"
 startup = "crt1"
-sources = ["test/tsticmp.c", "src/nsficmp.c", "src/nsfip.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tsticmp.c", "src/nsficmp.c", "src/nsfip.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
@@ -317,7 +343,7 @@ sources = ["test/tsticmp.c", "src/nsficmp.c", "src/nsfip.c", "src/nsfcksum.c", "
 [[module]]
 name = "NSF"
 startup = "crt1"
-sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB

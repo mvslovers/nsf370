@@ -27,9 +27,10 @@
 
 #include "nsfctci.h"
 #include "nsfmsg.h"
+#include "nsffmt.h"            /* nsf_snprintf (libc370's own snprintf does not
+                                * NUL-terminate on truncation, issue #25.2)  */
 
 #include <string.h>
-#include <stdio.h>
 
 #include <svc99.h>             /* RB99, TXT99, __tx* builders, S99* verbs    */
 #include <clibary.h>          /* arraycount / FreeTXT99Array array helper   */
@@ -134,7 +135,7 @@ int ctci_chan_alloc(CTCIDEV *d)
 
     /* MVS 3.8j device numbers are 3 hex digits (CUU); a 4-digit unit name is
      * UNDEFINED to SVC 99 (S99ERROR 021C), so format as 3 digits (ADR-0020). */
-    snprintf(unit, sizeof(unit), "%03X", (unsigned)d->cuu);
+    nsf_snprintf(unit, sizeof(unit), "%03X", (unsigned)d->cuu);
     if (ctci_alloc_unit(unit, d->rddn, &s99err, &s99info)) {
         nsfmsg("NSF202E CTCI %04X ALLOC FAILED S99 ERR %04X INFO %04X",
                (unsigned)d->cuu, (unsigned)(s99err & 0xFFFF),
@@ -142,7 +143,7 @@ int ctci_chan_alloc(CTCIDEV *d)
         d->rddn[0] = '\0';
         return 1;
     }
-    snprintf(unit, sizeof(unit), "%03X", (unsigned)d->wcuu);
+    nsf_snprintf(unit, sizeof(unit), "%03X", (unsigned)d->wcuu);
     if (ctci_alloc_unit(unit, d->wddn, &s99err, &s99info)) {
         nsfmsg("NSF202E CTCI %04X ALLOC FAILED S99 ERR %04X INFO %04X",
                (unsigned)d->wcuu, (unsigned)(s99err & 0xFFFF),
