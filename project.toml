@@ -106,6 +106,18 @@ name = "TSTTRC"
 startup = "crt1"
 sources = ["test/tsttrc.c", "src/nsftrc.c", "asm/nsftime.asm"]
 
+# libc370 vsnprintf/snprintf toolchain-divergence probe (issue #25.2): TSTTRC's
+# over-long-text case caught libc370 NOT NUL-terminating on truncation (a real
+# glibc/C99 conformance gap). This is that divergence isolated and pinned in ONE
+# place, independent of NSFTRC -- host = false because the divergence is
+# invisible on host (a host test would just prove glibc is C99-conformant).
+# KEEP even after nsffmt.c lands: the wrapper's contract is built against this.
+[[test]]
+name = "TSTVSNP"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstvsnp.c"]
+
 # NSFSTS: distinct counter registration, STS_INC/STS_ADD, registry overflow,
 # reset-to-zero, and the component+name+value render into a caller buffer.
 [[test]]
