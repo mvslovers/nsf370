@@ -334,6 +334,21 @@ name = "TSTICMP"
 startup = "crt1"
 sources = ["test/tsticmp.c", "src/nsficmp.c", "src/nsfip.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M3-0a Stage 0: can problem state halt an outstanding CTCI READ? --------
+# MVS-only (host = false), standalone: NOT the M1-4b subtask/DEVOPS driver --
+# a raw single-task probe reusing the M1-3 primitives (ctci_alloc_unit/
+# ctci_open_sub/ctci_read/ctci_status/ctci_close_sub) directly. Tests IOHALT
+# (SVC 33) by default; rebuild with -DTSTHIO_PURGE added to [build].cflags
+# (temporarily; revert before commit) for the PURGE (SVC 16) fallback probe.
+# test/asm/tsthalt.asm carries the two SVC-issuing entries neither IOHALT nor
+# PURGE has anywhere else in the codebase -- see its header + test/mvs/tsthio.c
+# for the primary-source citations. No changes to src/ or asm/.
+[[test]]
+name = "TSTHIO"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tsthio.c", "test/asm/tsthalt.asm", "test/asm/tststmw.asm", "asm/nsfctcio.asm", "src/nsfctci.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfabend.c", "src/nsffmt.c"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
