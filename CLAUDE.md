@@ -153,9 +153,18 @@ Violating one is a review-blocking defect, not a style nit.
   = FIELD` — wrong for any USING base off the CSECT origin, e.g. every `FUNHEAD`
   entry after the first (a runtime-only wrong field, MVS-only; cc370 #18). Keep
   `CS`/`LM` (RS-format)
-  operands `D(B)`, never `D(,B)` (#5). Keep every statement inside **column 71**
-  (as370 reads column 72 as a continuation flag and silently merges the next
-  line).
+  operands `D(B)`, never `D(,B)` (#5). Keep every statement inside **column 71**:
+  as370 reads column 72 as a continuation flag, so a **comment that overruns
+  column 71 on an INSTRUCTION line** makes as370 treat the next line as a
+  continuation and **silently drop the operand — or the whole instruction**. The
+  M3-0b S0C1 was exactly this: an over-long comment on the `SVC 33` line dropped
+  the `SVC 33` itself (and the save-area restore), so `ctci_halt_read` returned
+  through garbage and branched to low storage. **A green host build and a clean
+  cc370/as370/ld370 link are NOT evidence** — the merge is invisible off-target;
+  only the live ABEND (or the `as370 -a=` listing) shows it. Keep
+  instruction-line comments short and within column 71; put long rationale in a
+  leading `*` comment block (those are full-width, whole-line comments and are
+  safe).
 - **Exception:** a routine the OS invokes as an *exit* (not called from C) is not
   a C callee and does not get `FUNHEAD` — e.g. `NSFTMEXP`, the STIMER exit.
 - **Reviewer checklist (assembler):** a new C-callable routine uses

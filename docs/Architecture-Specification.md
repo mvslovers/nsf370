@@ -1922,6 +1922,41 @@ COMPLETE** (the ADR-0025 M3+ locally-originated follow-on is discharged). Spec �
 (active park, three completion classes) + ADR-0027; `CTCIDEV` 124 B. **M3-1
 (sockets + NSFRQE) next.**
 
+*Pre-merge (PR #27) test-robustness fix — no production/driver change.* The
+sequencing/lostwake host tests (`TSTCTCI`) were timing-flaky (~4/20) on the
+pthread host shim, not on MVS (there the subtask/executive handoff is
+deterministic over real ECBs; the live 1000-ping was clean). Two host-only
+causes, both fixed in the sanctioned test scope (`src/nsfctcio_host.c` +
+`test/tstctci.c`), leaving `src/nsfctcib.c` and every driver path untouched: (1)
+a **data race on the host channel model** — the reader (subtask) thread's
+`ctci_read` re-arm and the test/executive thread's `ctcio_host_inject` /
+`ctci_halt_read` touched one `HOSTSCB` with no lock, corrupting the arm/deliver
+handshake (a block queued while the read armed, delivered by neither); on MVS the
+channel subsystem serialises this, so the shim now takes one mutex to model that
+(posts issued after the unlock, so it nests strictly above the thread-seam lock).
+(2) a **halt-before-arm ordering artifact of hand-driving `kick`**: a test that
+issued the write-kick before the read subtask had armed its EXCP made the IOHALT
+a no-op, after which the `halting` guard withheld a useful re-halt and stranded
+the WRITE — resolved by a test barrier that waits for the read to be armed
+(`ctcio_host_outstanding`) before the halt, modelling the MVS steady state
+(the executive runs `kick` only after the subtask has re-armed). `TSTCTCI`
+876→**909**; **50×/100× sequential clean** (mbt runs host tests sequentially). A
+rare host-thread wake artifact (macOS `pthread_cond_timedwait` under **extreme
+inter-process oversubscription** — many parallel copies, which mbt never runs)
+remains and is a stress-harness condition only, not the driver and not MVS.
+**Follow-on for M3-1** (the first production locally-originated transmit path):
+the halt-before-arm interaction above is a potential real race on a
+multiprocessor once locally-originated sends exist (a send racing a read re-arm
+could halt the read before its EXCP is outstanding; the `halting` guard then
+withholds the re-halt and the WRITE degrades to the old inbound-gated stall until
+the next frame). It cannot occur in v1 (the STC originates no traffic) and did
+not occur on the uniprocessor live target. Open validation item for M3-1 (**issue
+#28**): **what does IOHALT do against a subchannel with no outstanding I/O** (true no-op, or a
+halt-pending that purges the next EXCP)? The answer decides whether the guard
+needs revisiting. Also re-pinned in **CLAUDE.md §3**: an instruction-line comment
+overrunning **column 71** makes as370 drop the operand/instruction (the M3-0b
+S0C1 dropped the `SVC 33`) — long rationale goes in a leading `*` block.
+
 **v1.22: Toolchain-hygiene pass, issue #25 CLOSED — two pre-existing on-MVS
 `test-mvs` failures fixed; M3 preamble baseline.** Found while validating v1.21
 (M2-4/M2-5) live: **#25.1**, `TSTCFG` loads its 14-file corpus from a

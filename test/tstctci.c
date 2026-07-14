@@ -268,6 +268,13 @@ static void scenario_send_write(void)
 
     CHECK(dev_send(dev, b) == 0, "send: dev_send queued the frame");
 
+    /* Barrier: wait until the read subtask has ARMED before the halt-kick, so the
+     * halt hits an armed read (the MVS steady state; see scenario_lost_wake_reap). */
+    for (i = 0u; i < 200u && !ctcio_host_outstanding(d->rscb); i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(ctcio_host_outstanding(d->rscb), "send: read armed before the local WRITE");
+
     /* Locally-originated WRITE on an idle link: the first kick halt-parks the
      * armed read (ADR-0027), a later kick issues the WRITE, and service reaps it.
      * Pump kick+poll_input each spin so the whole halt->park->write->reap sequence
@@ -320,6 +327,14 @@ static void scenario_send_many(void)
     memset(ip, 0, sizeof(ip));
     ip[0] = 0x45;
     ip[3] = 28;
+
+    /* Barrier: the first frame halt-parks the armed read, so wait until the read
+     * subtask has armed before the burst (the MVS steady state; see
+     * scenario_lost_wake_reap). Subsequent frames find the read already parked. */
+    for (i = 0u; i < 200u && !ctcio_host_outstanding(d->rscb); i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(ctcio_host_outstanding(d->rscb), "many: read armed before the burst");
 
     for (n = 0u; n < N; n++) {
         PBUF *b = buf_alloc((USHORT)sizeof(ip));
@@ -399,6 +414,17 @@ static void scenario_lost_wake_reap(void)
     CHECK(b != NULL, "lostwake: buf_alloc");
     (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
     CHECK(dev_send(dev, b) == 0, "lostwake: dev_send queued");
+
+    /* Barrier: wait until the read subtask has ARMED its EXCP READ before the
+     * halt-kick below. This models the MVS steady state -- the executive runs
+     * kick only after the subtask has (re-)armed. A halt issued before the arm
+     * would be a no-op, and the halting guard would then withhold a useful
+     * re-halt, stranding the WRITE (a scheduler-order artifact of hand-driving
+     * kick, not a driver bug -- on the live target the read is always armed here). */
+    for (i = 0u; i < 200u && !ctcio_host_outstanding(d->rscb); i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(ctcio_host_outstanding(d->rscb), "lostwake: read armed before the halt");
 
     /* Idle link: the first kick halt-parks the armed read (ADR-0027). Drive the
      * park (service it), then start the WRITE, then wait for the WRITE to complete
