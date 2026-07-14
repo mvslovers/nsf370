@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.23 — Draft for implementation. Companion document to the frozen
+*Version 1.24 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1181,6 +1181,17 @@ Socket table: fixed array (`SOCKET` pool, default 64). Descriptors handed
 to applications are `(gen << 16) | id`, so a stale descriptor after
 close/reuse fails with EBADF instead of hitting the wrong connection.
 
+**Generation lives in the table slot, not (only) the SOCKCB (M3-1
+refinement).** The table is an array of `{SOCKCB *sock; USHORT gen}` slots:
+`gen` is the stable identity of a *slot* and must survive the SOCKCB's
+free/realloc, so a slot reused by a later `mm_alloc` cannot hand back an old
+descriptor's generation. The `gen` field kept in the SOCKCB (10.2 struct) is a
+mirror stamped at alloc, used only to build the descriptor and in a dump; the
+slot's copy is authoritative. This is what makes §10.5's "bump `gen`, `mm_free`"
+meaningful — bumping a field inside the block you are about to free would do
+nothing — and is what actually rejects a *reused* descriptor with EBADF, not
+just a *closed* one. Generations start at 1, so descriptor 0 is always invalid.
+
 ### 10.3 Blocking Semantics (the parked-request pattern)
 
 The stack never blocks. A blocking RECV on an empty queue *parks* the
@@ -1869,6 +1880,41 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.24: M3-1 DONE — NSFSOC socket object model + the NSFRQE frozen contract.**
+The protocol-independent socket machinery, host-tested end to end over a
+test-only dummy protocol (no event loop, no real transport, no new MVS seam;
+sockets are not yet reachable). Deliverables: **`include/nsfreq.h`** — the
+`NSFRQE` request block *defined complete now* as the phase-boundary contract
+(64-byte core, `NSF_SIZE_ASSERT`, pool objsize 96, eyecatcher `"RQE "`), Phase-2
+fields (`ubuf`/`ulen` cross-memory-move semantics, and `owner_ascb` on the
+SOCKCB) included so the layout does not change when M5 lands; the request
+function codes, `RQ_F_NONBLOCK`, and the EZASOKET `NSF_E*` errno values (IBM/BSD
+numbering per libc370, `NSF_`-prefixed to never collide with `<errno.h>`, marked
+provisional — the frozen part is the LAYOUT, not `errno_`; `docs/ezasoket-
+conformance.md` remains the M6 artifact). **`include/nsfsoc.h` / `src/nsfsoc.c`**
+— the SOCKCB (72 B, `NSF_SIZE_ASSERT`, ≤128 per §10.2), the `SOCKET` pool
+reserved in the init window, `sock_alloc` (EMFILE on exhaustion) / `sock_lookup`
+(gen-checked, stale/reused → EBADF) / `soc_desc`, the `PROTOPS` vtable +
+`soc_dispatch` (pure mechanism: invoke the op, never auto-complete), the
+parked-request pattern (`soc_park` / `soc_complete`, non-blocking →
+EWOULDBLOCK), and **`soc_destroy`** — the ONE teardown checklist (detach, flush
+rxq/acceptq PBUFs, complete every parked NSFRQE with `NSF_ECONNABORTED`, release
+pcb, bump the slot generation, `mm_free`) that every close/reset/shutdown path
+must call. **Refinement (§10.2):** the generation counter lives in the *table
+slot*, not only the SOCKCB, so a reused slot rejects an old descriptor — §10.5's
+"bump gen, mm_free" is otherwise a no-op. `soc_complete`'s app-ecb POST is a
+same-address-space plain POST over the existing thread seam (`nsfthr_post`, a
+real SVC 2 POST on MVS); cross-AS wakeup stays M5/Phase 2 (ADR-0022), NSF stays
+unauthorized/problem-state. **NSFRQE freezes at the M3 exit gate** (changing it
+afterward needs an ADR). Host suite **906→979** (TSTSOC **73**: table capacity +
+EMFILE, descriptor stale-fd/reuse guard, dispatch of all eight callbacks +
+EOPNOTSUPP/EINVAL, park/complete + non-blocking, and the destroy leak gate with a
+per-pend-slot sweep); `-Wall -Wextra -Werror -pthread` clean; cross build
+(cc370/as370/ld370) links clean; alias scan clean (12 unique `NSFSO*`). Not
+wired into the STC and NOT added to the `NSF` load module — sockets are
+unreachable, so `S NSF` is byte-for-byte unchanged; NSFREQ (the request
+transport) is M3-2, UDP is M3-3. **M3-2 (NSFREQ + EZASOKET plumbing) next.**
 
 **v1.23: M3-0b DONE — IOHALT active read-park for locally-originated writes
 (ADR-0027); M3-0 COMPLETE.** The generalization of ADR-0025 pair sequencing:
