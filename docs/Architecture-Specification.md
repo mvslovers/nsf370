@@ -1925,25 +1925,37 @@ COMPLETE** (the ADR-0025 M3+ locally-originated follow-on is discharged). Spec �
 *Pre-merge (PR #27) test-robustness fix — no production/driver change.* The
 sequencing/lostwake host tests (`TSTCTCI`) were timing-flaky (~4/20) on the
 pthread host shim, not on MVS (there the subtask/executive handoff is
-deterministic over real ECBs; the live 1000-ping was clean). Two host-only
-causes, both fixed in the sanctioned test scope (`src/nsfctcio_host.c` +
-`test/tstctci.c`), leaving `src/nsfctcib.c` and every driver path untouched: (1)
-a **data race on the host channel model** — the reader (subtask) thread's
-`ctci_read` re-arm and the test/executive thread's `ctcio_host_inject` /
-`ctci_halt_read` touched one `HOSTSCB` with no lock, corrupting the arm/deliver
-handshake (a block queued while the read armed, delivered by neither); on MVS the
-channel subsystem serialises this, so the shim now takes one mutex to model that
-(posts issued after the unlock, so it nests strictly above the thread-seam lock).
-(2) a **halt-before-arm ordering artifact of hand-driving `kick`**: a test that
-issued the write-kick before the read subtask had armed its EXCP made the IOHALT
-a no-op, after which the `halting` guard withheld a useful re-halt and stranded
-the WRITE — resolved by a test barrier that waits for the read to be armed
-(`ctcio_host_outstanding`) before the halt, modelling the MVS steady state
-(the executive runs `kick` only after the subtask has re-armed). `TSTCTCI`
-876→**909**; **50×/100× sequential clean** (mbt runs host tests sequentially). A
-rare host-thread wake artifact (macOS `pthread_cond_timedwait` under **extreme
-inter-process oversubscription** — many parallel copies, which mbt never runs)
-remains and is a stress-harness condition only, not the driver and not MVS.
+deterministic over real ECBs; the live 1000-ping was clean). **Discrepancy first:**
+the author's macOS/arm64 host showed 0/50 while a Linux host saw ~17/100 on the
+same commit — not luck but a platform difference: the race sleeps on macOS's
+scheduler and is exposed on Linux, deterministically reproducible under
+`taskset -c 0` (single core). mbt runs host tests **sequentially** (one process),
+so a per-run rate matters; "green on the author's box" is the non-proof this
+project rejects, so the fix was pinned on Linux (gdb-free, via `/proc` thread
+stacks) not assumed. **Root cause: the hand-driven wait loops omitted
+reset-before-WAIT.** The real executive clears `dev->ecb` before every WAIT
+(`nsfdev_poll_input`, ADR-0022); the test's `for (i<N && !flag) nsfthr_timed_wait
+(&dev->ecb,1)` loops did not, so once `dev->ecb` was posted (stale from a prior
+handoff) the timed wait returned **instantly every iteration** — the loop spun
+through its whole bound in microseconds without ever blocking and, on one core,
+**never yielded the CPU to the subtask** that had to set the awaited flag (both
+subtasks were parked on the shared thread-seam condvar futex; they recovered the
+instant the main thread actually blocked). Fixed by a `seq_wait(dev)` helper that
+resets `dev->ecb` before the timed wait (fixing the test to match the executive's
+own discipline — not hiding a driver bug). Two further host-only fixes, all in the
+sanctioned scope (`test/tstctci.c` + `src/nsfctcio_host.c`), `src/nsfctcib.c` and
+every driver path untouched: (a) a **data race on the host channel model** — the
+reader-thread `ctci_read` re-arm and the test-thread `ctcio_host_inject` /
+`ctci_halt_read` touched one `HOSTSCB` with no lock (TSan-confirmed); the shim now
+takes one mutex to model the serialisation the MVS channel subsystem provides
+(posts issued after the unlock, nesting strictly above the thread-seam lock);
+(b) a **halt-before-arm ordering artifact** — a test that hand-drove the
+write-kick before the read subtask had armed its EXCP made the IOHALT a no-op and
+the `halting` guard then stranded the WRITE; resolved by a barrier that waits for
+the read to be armed (`ctcio_host_outstanding`) before the halt. `TSTCTCI`
+876→**909**; verified on the Linux repro **0/1200 single-core** (`taskset -c 0`)
+and 0/200 multi-core, plus the full macOS suite, `-Wall -Wextra -Werror -pthread`,
+cross build + alias scan unchanged.
 **Follow-on for M3-1** (the first production locally-originated transmit path):
 the halt-before-arm interaction above is a potential real race on a
 multiprocessor once locally-originated sends exist (a send racing a read re-arm

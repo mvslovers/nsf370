@@ -78,6 +78,24 @@ static UINT build_read_block(UCHAR *blk, UINT blksize, const UCHAR *ip, UINT ipl
     return (n >= 2u) ? (n - 2u) : 0u;   /* the guest never receives the term */
 }
 
+/* Bounded wait on the device ECB for a hand-driven scenario, RESETTING it first.
+ * The real executive clears dev->ecb before every WAIT (nsfdev_poll_input does
+ * `dev->ecb = 0u`, the ADR-0022 reset-before-WAIT discipline). A hand-driven loop
+ * that omits the reset waits on an ALREADY-POSTED dev->ecb (stale from a prior
+ * handoff), so nsfthr_timed_wait returns instantly every iteration: the loop
+ * spins through its whole bound in microseconds without ever blocking and, on a
+ * single core, never yields the CPU to the subtask that must set the awaited flag
+ * (a livelock reproduced on Linux under `taskset -c 0`). Resetting makes the wait
+ * actually block until a FRESH post; the caller re-checks its completion flag at
+ * the loop top, and the timed wait bounds a post that raced the reset to one tick.
+ * The wait also provides the happens-before for the flag read (the seam mutex in
+ * nsfthr_post/nsfthr_timed_wait). */
+static void seq_wait(NETDEV *dev)
+{
+    dev->ecb = 0u;
+    nsfthr_timed_wait(&dev->ecb, 1u);
+}
+
 /* ---- EV_PACKET_RECEIVED capture handler ---- */
 #define RX_MAX  8
 static UINT   g_rx_count;
@@ -271,7 +289,7 @@ static void scenario_send_write(void)
     /* Barrier: wait until the read subtask has ARMED before the halt-kick, so the
      * halt hits an armed read (the MVS steady state; see scenario_lost_wake_reap). */
     for (i = 0u; i < 200u && !ctcio_host_outstanding(d->rscb); i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(ctcio_host_outstanding(d->rscb), "send: read armed before the local WRITE");
 
@@ -281,7 +299,7 @@ static void scenario_send_write(void)
      * runs. Bounded so a stuck pipeline fails a CHECK rather than hanging. */
     for (i = 0u; i < 200u && dev->ctr_out->value == 0; i++) {
         nsfdev_kick_output();               /* halt-park, then encode + WRITE */
-        nsfthr_timed_wait(&dev->ecb, 1u);   /* <= 0.1 s per spin */
+        seq_wait(dev);   /* <= 0.1 s per spin */
         dev->ecb = 0u;
         nsfdev_poll_input();                /* io->service parks the read / reaps */
     }
@@ -332,7 +350,7 @@ static void scenario_send_many(void)
      * subtask has armed before the burst (the MVS steady state; see
      * scenario_lost_wake_reap). Subsequent frames find the read already parked. */
     for (i = 0u; i < 200u && !ctcio_host_outstanding(d->rscb); i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(ctcio_host_outstanding(d->rscb), "many: read armed before the burst");
 
@@ -351,7 +369,7 @@ static void scenario_send_many(void)
          * the reap), so a "stuck after one" regression fails the CHECK, not hangs. */
         for (i = 0u; i < 200u && dev->ctr_out->value == n; i++) {
             nsfdev_kick_output();       /* halt-park (first frame) then WRITE */
-            nsfthr_timed_wait(&dev->ecb, 1u);
+            seq_wait(dev);
             dev->ecb = 0u;
             nsfdev_poll_input();        /* park the read / reap via wready */
         }
@@ -422,7 +440,7 @@ static void scenario_lost_wake_reap(void)
      * re-halt, stranding the WRITE (a scheduler-order artifact of hand-driving
      * kick, not a driver bug -- on the live target the read is always armed here). */
     for (i = 0u; i < 200u && !ctcio_host_outstanding(d->rscb); i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(ctcio_host_outstanding(d->rscb), "lostwake: read armed before the halt");
 
@@ -431,13 +449,13 @@ static void scenario_lost_wake_reap(void)
      * (wready set, dev->ecb posted) WITHOUT reaping it. */
     nsfdev_kick_output();                        /* IOHALT the armed read */
     for (i = 0u; i < 200u && d->rready == 0u; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);        /* wait for the purge (X'48') */
+        seq_wait(dev);        /* wait for the purge (X'48') */
     }
     dev->ecb = 0u;
     nsfdev_poll_input();                         /* service: park the read (rhold) */
     nsfdev_kick_output();                        /* now start the WRITE */
     for (i = 0u; i < 200u && d->wready == 0u; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(d->wready != 0u, "lostwake: WRITE completed and handed up");
 
@@ -586,7 +604,7 @@ static void scenario_read_hold_sequencing(void)
     blklen = build_read_block(blk, sizeof(blk), ip, 20u);
     ctcio_host_inject(d->rscb, blk, blklen);
     for (i = 0u; i < 200u && d->rready == 0u; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(d->rready != 0u, "seq: block handed up");
     dev->ecb = 0u;
@@ -610,7 +628,7 @@ static void scenario_read_hold_sequencing(void)
 
     /* WRITE completes and is reaped: NOW the read is released. */
     for (i = 0u; i < 200u && d->wready == 0u; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(d->wready != 0u, "seq: WRITE completed");
     dev->ecb = 0u;
@@ -626,7 +644,7 @@ static void scenario_read_hold_sequencing(void)
     blklen = build_read_block(blk2, sizeof(blk2), ip, 20u);
     ctcio_host_inject(d->rscb, blk2, blklen);
     for (i = 0u; i < 200u && d->rready == 0u; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(d->rready != 0u, "seq: second block handed up (handshake cycles)");
     dev->ecb = 0u;
@@ -668,7 +686,7 @@ static void scenario_local_write_halt(void)
 
     /* The read subtask arms an EXCP READ on the idle link; rhold stays clear. */
     for (i = 0u; i < 200u && ctcio_host_outstanding(d->rscb) == 0; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(ctcio_host_outstanding(d->rscb) != 0, "localwr: read armed on the idle link");
     CHECK(d->rhold == 0u, "localwr: read is armed (not parked)");
@@ -688,7 +706,7 @@ static void scenario_local_write_halt(void)
      * pipeline fails a CHECK rather than hanging. */
     for (i = 0u; i < 200u && dev->ctr_out->value == 0; i++) {
         nsfdev_kick_output();               /* halt on the first pass, then write */
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
         dev->ecb = 0u;
         nsfdev_poll_input();                /* service: park the read / reap write */
     }
@@ -746,7 +764,7 @@ static void scenario_halt_race(void)
     blklen = build_read_block(blk, sizeof(blk), ip, 20u);
     ctcio_host_inject(d->rscb, blk, blklen);
     for (i = 0u; i < 200u && d->rready == 0u; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(d->rready != 0u, "race: read completed");
     CHECK_EQ((long)d->rpost, (long)CTCI_POST_NORMAL, "race: completion is X'7F' (data won)");
@@ -765,7 +783,7 @@ static void scenario_halt_race(void)
     /* The WRITE still proceeds and is reaped. */
     for (i = 0u; i < 200u && dev->ctr_out->value == 0; i++) {
         nsfdev_kick_output();
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
         dev->ecb = 0u;
         nsfdev_poll_input();
     }
@@ -801,7 +819,7 @@ static void scenario_nonip_count(void)
     blklen = build_read_block(blk, sizeof(blk), ip, 20u);
     ctcio_host_inject(d->rscb, blk, blklen);
     for (i = 0u; i < 200u && d->rready == 0u; i++) {
-        nsfthr_timed_wait(&dev->ecb, 1u);
+        seq_wait(dev);
     }
     CHECK(d->rready != 0u, "nonip: block handed up");
     dev->ecb = 0u;
