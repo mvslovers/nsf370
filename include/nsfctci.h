@@ -68,6 +68,7 @@
 #include "nsfctcif.h"           /* CTCIHDR / CTCISEG / CTCI_TYPE_IPV4 (codec) */
 #include "nsfevtp.h"            /* NSFECB (the completion/handoff ECB words)  */
 #include "nsfthr.h"             /* NSFTHR (the I/O subtask handle)            */
+#include "nsfsts.h"             /* STSCTR (driver-private CTCI counters)      */
 
 /* Forward: the device abstraction types (DEVOPS/NETDEV), pulled by the bottom
  * half; declared opaquely here so a consumer that only wants the lifecycle need
@@ -84,8 +85,15 @@ struct devops;
 #define CTCI_BUF_MAX       0xFFFFu    /* CCW count-field width (hard cap)     */
 #define CTCI_MTU_MAX       9000u      /* Hercules discards frames above this  */
 
-/* Read subchannel post code for a normal channel-end/device-end completion. */
+/* Read completion post codes (ADR-0027; the post code, NOT the residual, is the
+ * discriminator -- Stage-0 probe test/mvs/tsthio.c). Three classes:
+ *   X'7F' normal channel-end/device-end -- a data completion; decode the block.
+ *   X'48' purged -- the outstanding EXCP was made available after a halt/purge
+ *         (GC26-3830-4 Fig 13; residual "does not apply"). Expected when WE
+ *         requested the halt to park the read; do NOT decode, count `rpurge`.
+ *   anything else -- a genuine device error; count `ierr`. */
 #define CTCI_POST_NORMAL   0x7Fu
+#define CTCI_POST_PURGED   0x48u
 
 /* Bounded waits (100 ms ticks). A subtask polls its stop flag on each timed wait,
  * so shutdown latency is at most one interval; also the MIH-on-idle window. */
@@ -152,10 +160,19 @@ typedef struct ctcidev {
                                        (executive-only; pair sequencing,
                                        ADR-0025 -- a WRITE SIO queues behind an
                                        outstanding blocking READ)              */
-    char    rsvd2;             /* 107                                          */
+    UCHAR   halting;           /* 107  IOHALT issued to park the READ for a
+                                       locally-originated WRITE, not yet
+                                       completed (executive-only; double-halt
+                                       guard + "our purge" tag, ADR-0027)      */
     UINT    wpost;             /* 108  write completion post code (wsub-set)    */
-} CTCIDEV;                       /* 112 bytes */
-NSF_SIZE_ASSERT(CTCIDEV, 112);
+    UINT    rucb;              /* 112  cached read-subchannel UCB address (the
+                                       IOHALT target; MVS init-time, ADR-0027;
+                                       0/unused on host)                       */
+    STSCTR *ctr_nonip;         /* 116  non-IPv4/malformed codec drops (expected
+                                       real-link traffic, NOT a device error)  */
+    STSCTR *ctr_rpurge;        /* 120  purged read completions (X'48')          */
+} CTCIDEV;                       /* 124 bytes */
+NSF_SIZE_ASSERT(CTCIDEV, 124);
 
 /* asm() external-symbol aliases (CLAUDE.md §3), all unique across the load
  * module. The top-half entries (NSFCI + verb) match their FUNHEAD names
@@ -163,9 +180,11 @@ NSF_SIZE_ASSERT(CTCIDEV, 112);
  *   top half (nsfctcio.asm / nsfctcio_host.c):
  *     ctci_scb_size NSFCISZ   ctci_open_sub NSFCIOPN   ctci_read NSFCIRD
  *     ctci_write NSFCIWR      ctci_status NSFCIST      ctci_close_sub NSFCICL
+ *     ctci_halt_read NSFCIHLT
  *   channel + SVC 99 seam (nsfctci.c / nsfctci_host.c):
  *     ctci_chan_alloc NSFCIALC   ctci_chan_unalloc NSFCIUNA
  *     ctci_alloc_unit NSFCIALU   ctci_free_ddn NSFCIFDN   svc99_call NSFCISVC
+ *     ctci_read_ucb NSFCIUCB
  *   bottom half (nsfctcib.c):
  *     ctci_reserve NSFCIRSV     ctci_devops NSFCIOPS
  */
@@ -194,6 +213,23 @@ void ctci_status(void *scb, UINT *postcode, UINT *residual) asm("NSFCIST");
  * SUBTASK, so it purges any EXCP that subtask still has outstanding. */
 int  ctci_close_sub(void *scb) asm("NSFCICL");
 
+/* Actively park the READ by halting its outstanding EXCP (IOHALT, SVC 33;
+ * ADR-0027). Issued ON THE EXECUTIVE TASK from the write-kick path when a
+ * locally-originated WRITE is pending, the READ is armed, and no inbound frame
+ * is in flight -- so the WRITE need not wait for unrelated inbound traffic to
+ * free the shared channel. The read subtask's single-ECB wait then completes
+ * with X'48' (purged) or, if a frame raced the halt, X'7F' with data -- EITHER
+ * parks the READ into the ADR-0025 rhold path, then the WRITE issues and
+ * returnecb re-arms. IOHALT is UCB-scoped, so it halts exactly the read
+ * subchannel regardless of which TCB started the EXCP (ADR-0027's reason to
+ * prefer it over a job-step PURGE). Executive-only caller, so the asm entry uses
+ * one static save area (concurrency-safe -- unlike the two-subtask OPEN/EXCP/
+ * CLOSE entries).
+ *   rscb -- the read subchannel control block (the host shim completes ITS
+ *           pending read with X'48'; unused on MVS).
+ *   rucb -- the cached read UCB (the SVC 33 target; unused on host). */
+void ctci_halt_read(void *rscb, UINT rucb) asm("NSFCIHLT");
+
 /* ==================== CHANNEL + SVC 99 seam (MVS) ======================== */
 
 /* Dynamically ALLOCATE the CUU pair (SVC 99): read = d->cuu, write = d->wcuu;
@@ -206,6 +242,17 @@ int  ctci_chan_alloc(CTCIDEV *d) asm("NSFCIALC");
 /* UNALLOCATE both CUUs (SVC 99 S99VRBUN). Idempotent. Executive-side (after the
  * subtasks have CLOSEd + joined). On the host, a no-op. */
 int  ctci_chan_unalloc(CTCIDEV *d) asm("NSFCIUNA");
+
+/* Chase the read subchannel's UCB address for the IOHALT target (ADR-0027):
+ * DCB+44 (DCBDEBAD) -> DEB+32 (DEBSUCBA), read byte-wise (no struct overlay on a
+ * control block NSF does not own -- ADR-0024, the Stage-0 probe's discipline),
+ * then sanity-check UCBNAME (UCB+13, 3 EBCDIC chars) against the device's own
+ * "%03X" CUU text before trusting the computed address. `rscb` must already be
+ * OPEN (OPEN sets DCBDEBAD). Returns 0 with *ucb_out set on success; non-zero
+ * (nothing stored) if the name check fails -- the caller emits an NSF2xxE and
+ * refuses to start the device, same policy as an allocation failure. On the host
+ * a success no-op (there is no real DCB/DEB/UCB; the host halt uses rscb). */
+int  ctci_read_ucb(const void *rscb, USHORT cuu, UINT *ucb_out) asm("NSFCIUCB");
 
 /* --- Low-level SVC 99 seam (libc370), also a direct proof path.
  * ctci_alloc_unit dynamically allocates the device named by UNIT `unit` (a

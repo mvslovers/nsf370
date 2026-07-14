@@ -206,9 +206,12 @@ static void ctci_decode_block(NETDEV *dev, CTCIDEV *d, const UCHAR *buf, UINT le
             ctr(dev->ctr_in);
         }
     }
-    /* Segments the codec dropped (non-IPv4, or a malformed tail) are inbound
-     * errors too. */
-    ctr_add(dev->ctr_ierr, dec.nonipv4 + dec.malformed);
+    /* Segments the codec dropped (non-IPv4, or a malformed tail) are EXPECTED on
+     * a real shared link (ARP, IPv6, other protocols) -- count them as `nonip`,
+     * NOT as ctr_ierr (ADR-0027 Stage A: ierr is genuine device errors + resource
+     * exhaustion only). The buf_alloc / buf_copyin / evt_post exhaustion drops
+     * above stay ctr_ierr (resource exhaustion). */
+    ctr_add(d->ctr_nonip, dec.nonipv4 + dec.malformed);
     if (dec.nonipv4 != 0u || dec.malformed != 0u) {
         TRC(DRIVER, "CTCI %04X rx drop nonip=%u bad=%u", (unsigned)d->cuu,
             (unsigned)dec.nonipv4, (unsigned)dec.malformed);
@@ -357,12 +360,23 @@ static void ctci_io_service(NETDEV *dev)
      * release decision belongs after them. The un-armed window is lossless
      * (Hercules buffers inbound, §9.3). */
     if (d->rready) {
-        if (d->rpost == CTCI_POST_NORMAL) {
+        if (d->rpost == CTCI_POST_NORMAL) {         /* X'7F': data -- decode */
             ctci_decode_block(dev, d, d->rbuf, d->rlen);
-        } else {
+        } else if (d->rpost == CTCI_POST_PURGED) {  /* X'48': purged read */
+            /* Purged completion (ADR-0027). Do NOT decode -- the residual "does
+             * not apply", there is no data. Count rpurge (expected when we halted
+             * to park the read for a WRITE). If halting is NOT set the purge is
+             * UNREQUESTED (operator purge, or a stray) -- trace it distinctly
+             * rather than silently treating it as ours. */
+            ctr(d->ctr_rpurge);
+            if (!d->halting) {
+                TRC(DRIVER, "CTCI %04X READ purged (X'48') UNREQUESTED",
+                    (unsigned)d->cuu);
+            }
+        } else {                                    /* genuine device error */
             ctr(dev->ctr_ierr);
-            TRC(DRIVER, "CTCI %04X READ post=%02X (not X'7F')", (unsigned)d->cuu,
-                (unsigned)(d->rpost & 0xFFu));
+            TRC(DRIVER, "CTCI %04X READ post=%02X (device error)",
+                (unsigned)d->cuu, (unsigned)(d->rpost & 0xFFu));
         }
         d->rready = 0u;                     /* consumed */
         d->rhold  = 1u;                     /* re-arm deferred to kick */
@@ -406,9 +420,31 @@ static void ctci_io_kick(NETDEV *dev)
     if (d == NULL || d->txbusy) {
         return;                             /* a WRITE is already outstanding */
     }
-    /* Drop-cases continue to the next queued frame (never strand the queue
-     * until the next wake), so falling out of the loop means the sendq is
-     * empty AND no WRITE was started. */
+
+    /* A WRITE issues cleanly only with the READ parked (rhold, ADR-0025): the
+     * pair shares one channel and a WRITE SIO under an armed READ queues at the
+     * IOS level until the next inbound frame completes that READ. When outbound
+     * work is waiting but the READ is still armed -- locally-originated traffic
+     * (a SENDTO, a TCP SYN/retransmit), with NO inbound frame coming to release
+     * it -- park it actively: IOHALT the outstanding READ (ADR-0027). Its wait
+     * then completes X'48' (purged) or, if a frame raced the halt, X'7F' with
+     * data; either routes through service -> rhold, and a later pass issues the
+     * WRITE. Guard against a double halt (one already requested, not yet
+     * completed). The un-armed window is lossless: Hercules buffers inbound with
+     * no READ outstanding (§9.3). */
+    if (!d->rhold) {
+        if (!Q_EMPTY(&dev->sendq) && !d->halting) {
+            d->halting = 1u;
+            ctci_halt_read(d->rscb, d->rucb);
+            TRC(DRIVER, "CTCI %04X IOHALT read to park a local WRITE",
+                (unsigned)d->cuu);
+        }
+        return;                             /* nothing to send until the read parks */
+    }
+
+    /* READ is parked. Start at most ONE WRITE from the sendq. Drop-cases continue
+     * to the next queued frame (never strand the queue until the next wake), so
+     * falling out of the loop means the sendq is empty AND no WRITE was started. */
     while ((qe = q_deq(&dev->sendq)) != NULL) {
         PBUF  *b = Q_ENTRY(qe, PBUF, q);
         UINT   iplen;
@@ -451,14 +487,15 @@ static void ctci_io_kick(NETDEV *dev)
         return;
     }
 
-    /* Outbound drained: re-arm the READ if service is holding one back. Every
-     * path that empties the pipeline ends in a pass that runs kick (write reap
-     * -> dev->ecb wake -> service -> kick; drop -> this same call), so a held
-     * read cannot be stranded. */
-    if (d->rhold) {
-        d->rhold = 0u;
-        nsfthr_post(&d->returnecb, 0u);     /* let the read subtask read again */
-    }
+    /* Outbound drained with the READ parked (this branch is reached only past
+     * the !rhold guard above, so rhold is set here). Release the read subtask to
+     * read again and clear the halt-in-progress flag -- the park is consumed.
+     * Every path that empties the pipeline ends in a pass that runs kick (write
+     * reap -> dev->ecb wake -> service -> kick; drop -> this same call), so a
+     * held read cannot be stranded. */
+    d->rhold   = 0u;
+    d->halting = 0u;
+    nsfthr_post(&d->returnecb, 0u);         /* let the read subtask read again */
 }
 
 /* Side-effect-free probe for the loop's WAIT-commit recheck (ADR-0025): work is
@@ -539,6 +576,14 @@ static int ctci_op_start(NETDEV *dev)
     if (d == NULL) {
         return -1;                          /* no storage / MTU cap: refuse to start */
     }
+    /* CTCI-private counters (driver-specific, so NOT in the generic NETDEV set an
+     * LCS/HOST device shares): nonip = expected non-IPv4/malformed codec drops
+     * (real-link traffic, not an error); rpurge = purged reads (X'48'), expected
+     * when we IOHALT to park the read for a locally-originated WRITE (ADR-0027).
+     * Registered per device at start so F NSF,STATS shows them (sts_render walks
+     * the whole registry). */
+    d->ctr_nonip  = sts_register(dev->name, "nonip");
+    d->ctr_rpurge = sts_register(dev->name, "rpurge");
     if (ctci_chan_alloc(d) != 0) {          /* SVC 99 allocate the CUU pair (MVS) */
         ctci_dev_release(d);
         return -1;
@@ -553,6 +598,14 @@ static int ctci_op_start(NETDEV *dev)
     }
     if (d->rsub == NULL || !(d->rstartecb & NSFECB_POSTED) || d->rstartrc != 0) {
         nsfmsg("NSF204E CTCI %04X READ SUBCHANNEL OPEN FAILED", (unsigned)d->cuu);
+        goto fail;
+    }
+
+    /* The read subchannel is OPEN (DCBDEBAD is set): chase + cache its UCB for
+     * the IOHALT active read-park (ADR-0027). A wrong pointer chase is caught by
+     * the UCBNAME check and refuses to start -- never an SVC 33 at a garbage
+     * address (ctci_read_ucb emits NSF207E). */
+    if (ctci_read_ucb(d->rscb, d->cuu, &d->rucb) != 0) {
         goto fail;
     }
 

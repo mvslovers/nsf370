@@ -167,3 +167,49 @@ int ctci_chan_unalloc(CTCIDEV *d)
     d->wddn[0] = '\0';
     return 0;
 }
+
+/* ---- read-subchannel UCB chase (IOHALT target; ADR-0027) ---------------- *
+ * DCB+44 (DCBDEBAD) -> DEB+32 (DEBSUCBA), byte-wise (no struct overlay on a
+ * control block NSF does not own -- ADR-0024, the Stage-0 probe's discipline),
+ * with a UCBNAME sanity check before an SVC ever fires at the computed address.
+ * Offsets pinned from the OS/VS2 Debugging Handbook (GC28-0709/0710) and read
+ * back from the running system by test/mvs/tsthio.c; the DCB in the scb sits at
+ * offset 0 (SCDCB), so rscb IS the DCB address. */
+
+/* A 3-byte 24-bit address field at base+off: the byte at off-1 in the enclosing
+ * fullword is always a flags/modifier byte (DCBIFLGS before DCBDEBA, DEBSDVM
+ * before DEBSUCBB), never part of the address. */
+static UINT ctci_addr24(const UCHAR *base, UINT off)
+{
+    return ((UINT)base[off] << 16) | ((UINT)base[off + 1] << 8) |
+           (UINT)base[off + 2];
+}
+
+int ctci_read_ucb(const void *rscb, USHORT cuu, UINT *ucb_out)
+{
+    const UCHAR *dcb = (const UCHAR *)rscb;
+    UINT         deb;
+    UINT         ucb;
+    const UCHAR *u;
+    char         want[5];
+
+    if (rscb == NULL || ucb_out == NULL) {
+        return 1;
+    }
+    deb = ctci_addr24(dcb, 45u);              /* DCB+44 DCBDEBAD (byte 44 = flags) */
+    ucb = ctci_addr24((const UCHAR *)deb, 33u); /* DEB+32 DEBSUCBA (byte 32 = mod) */
+
+    /* UCBNAME (UCB+13, 3 EBCDIC chars) must match the device's own "%03X" text --
+     * a wrong pointer chase is caught here as a clean refusal, never an SVC 33
+     * fired at garbage. */
+    u = (const UCHAR *)ucb;
+    nsf_snprintf(want, sizeof(want), "%03X", (unsigned)cuu);
+    if (u[13] != (UCHAR)want[0] || u[14] != (UCHAR)want[1] ||
+        u[15] != (UCHAR)want[2]) {
+        nsfmsg("NSF207E CTCI %04X UCB CHASE MISMATCH (DEB %06X UCB %06X)",
+               (unsigned)cuu, (unsigned)deb, (unsigned)ucb);
+        return 1;
+    }
+    *ucb_out = ucb;
+    return 0;
+}

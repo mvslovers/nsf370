@@ -232,8 +232,30 @@ NSFCICL  FUNHEAD ,                per-scb save area set below
          L     R13,4(,R13)        restore caller SA before FUNEXIT
          SLR   R15,R15            rc = 0
          FUNEXIT RC=(R15)
+*---------------------------------------------------------------------*
+*  ctci_halt_read(rscb, rucb)   IOHALT (SVC 33) the read subchannel    *
+*     so a locally-originated WRITE need not wait for inbound traffic  *
+*     to free the shared channel (ADR-0027).  R0 = rucb (the read UCB, *
+*     HALT target), R1 = X'00000001' (IOS HALT I/O, no OFFSET), SVC 33 *
+*     -- the exact invocation test/asm/tsthalt.asm proved live.       *
+*                                                                      *
+*  Issued ONLY on the executive task (from the write-kick path), so    *
+*  ONE static save area is concurrency-safe -- unlike the OPEN/EXCP/   *
+*  CLOSE entries, which two subtasks call at once and so need per-scb  *
+*  areas (the S238 lesson).  SVC 33 is a type-2 SVC; SAVE= sets the    *
+*  proper save-area linkage it expects (matching the Stage-0 probe).   *
+*  arg0 rscb is unused on MVS (the host shim uses it); void result.    *
+*---------------------------------------------------------------------*
+NSFCIHLT FUNHEAD SAVE=HLTSAVE,US=NO
+         L     R0,4(,R1)          R0 = rucb (arg1), HALT target
+         LA    R1,1(0)            R1 = X'00000001' (IOS HALT I/O)
+         SVC   33                 IOHALT the read subchannel
+         FUNEXIT
 *
          LTORG ,
+*  IOHALT save area (executive-only caller -> one static is safe).
+         DS    0D
+HLTSAVE  DC    18F'0'
 *---------------------------------------------------------------------*
 *  Read-only MODEL DCB (copied per subchannel).                       *
 *  DSORG=PS,MACRF=E (EXCP); DDNAME is a placeholder patched at open.  *
