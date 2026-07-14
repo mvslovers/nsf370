@@ -394,7 +394,57 @@ slot sweep); `-Wall -Wextra -Werror -pthread` clean; cross build
 in `cc370 -S` + a global header grep). **Not wired into the STC and NOT in the
 `NSF` load module** — sockets are unreachable, `S NSF` is byte-for-byte unchanged
 (no live socket feature claimed). Spec v1.24 §10.2/§10.5 + changelog. **M3-2
-(NSFREQ request transport + EZASOKET plumbing) next.** |
+done — NSFREQ request transport + fn dispatcher; NSFRQE FROZEN.** The Phase-1
+backbone the socket API rides on. **Transport** (`src/nsfreq.c`): an
+in-address-space request queue (the NSFXQ CS-safe handoff, so app subtasks on
+other TCBs enqueue lock-free) + the §5.3 `requestECB`. App side —
+`nsfreq_submit` = `xq_push` + `nsfthr_post(requestECB)` (a real SVC 2 POST, ONE
+call site → M5 swaps for cross-AS), then WAIT on the request's own ecb
+(`nsfreq_wait`/`nsfreq_call`). Executive side — `nsfreq_drain` **resets
+`requestECB` BEFORE draining, then double-checks (drain; dispatch; loop while
+non-empty)**; the loop's WAIT-gate rechecks `nsfreq_pending` before committing to
+WAIT (ADR-0022 reset-before-WAIT + double-check-drain — the #27 lost-request
+class, in PRODUCTION not just a test; drain terminates because a blocking app has
+≤1 outstanding request). **Wiring** (`src/nsfevt.c`): `evt_set_request(ecb,
+drain, pending)` mirrors `evt_set_operator`/`evt_set_devices` — `requestECB`
+joins the ECBLIST (between the device ECBs and the cibECB), the pending probe
+joins the WAIT gate, the drain runs each pass; inert (no ECBLIST/gate/behavior
+change) until `evt_set_request` is called, so the `NSF` load module is unaffected.
+**Dispatcher** — the COMPLETE frozen verb set: INITAPI/TERMAPI/SOCKET/BIND/
+GETSOCKNAME/CLOSE handled in NSFREQ; CONNECT/LISTEN/ACCEPT/SEND/SENDTO/RECV/
+RECVFROM/SHUTDOWN delegate to `soc_dispatch` (op completes/parks; real UDP M3-3,
+TCP M4); SELECT/SET|GETSOCKOPT/FCNTL/GETPEERNAME → `NSF_ENOSYS`; unknown fn →
+`NSF_EINVAL` (never a fall-through/crash). **App registry** — INITAPI token
+`(gen<<16)|idx` (→ `apptok`), RQ_SOCKET stamps `owner_ascb`, RQ_TERMAPI mass-
+teardown via new `soc_foreach` (`NSFSOFEA`) + `soc_destroy` (parked req →
+`NSF_ECONNABORTED`). **Contract change (the "decide now" moment):** `NSFRQE`
+`rsvd[2]` → **`apptok`(@56) + `rsvd`(@60)** — 64-byte core UNCHANGED
+(`NSF_SIZE_ASSERT` holds), so the freeze holds; a named use of reserved space, not
+a layout break. **NSFRQE FROZEN at M3-2** (changing it now needs an ADR). **A
+latent host-shim UAF fixed** (`src/nsfthr_host.c`, host-test only, MVS
+unaffected): `nsfthr_post` dereferenced the ECB a second time (via
+`nsfevt_plat_post`) after the first broadcast could release a waiter — fine for
+CTCI ECBs (persistent NETDEV storage) but a use-after-free once an app's STACK
+NSFRQE is freed the instant `nsfreq_call` returns (found via a SIGSEGV backtrace
+loop; fixed by holding the mutex across both derefs). Host **979→1052** (TSTREQ
+**73**: dispatch coverage incl. ENOSYS/unknown/EBADF/EPROTONOSUPPORT, TERMAPI mass
+teardown + leak gate, app-registry EMFILE, host pthread round-trip [blocked-not-
+spun, woke-exactly-once], lost-request stress); `-Wall -Wextra -Werror -pthread`
+clean. **Stability gate (#27):** round-trip + lost-request **200× sequential +
+100× single-core (`taskset -c 0`) on Linux, 0 failures** (the exposer macOS
+hides). Cross build (cc370/as370/ld370) links clean (29 modules); alias scan
+clean (`NSFRQ*`/`NSFSOFEA`/`NSFEVRQ` unique, statics ENTRY=NO); no runtime alloc
+after `mm_init_complete`. **VALIDATED LIVE on MVSCE:** the same-AS round-trip
+**TSTREQM CC 0 (batch + TSO), 30 PASS** — a cthread app subtask does INITAPI
+(tok `00010000`)→SOCKET (desc `00010000`)→CLOSE→TERMAPI over the real
+queue+`requestECB` (ecb_post SVC 2 / ecb_wait SVC 1 on a separate TCB), attach/
+detach on the executive, leak gate clean; focused regression **CC 0, 560 PASS**
+(TSTREQ/TSTSOC/TSTEVTM/TSTCTHR/TSTTHRW/TSTSTCM/TSTCKSUM/TSTIP/TSTICMP/TSTTMACC —
+no regression from the `nsfevt.c`/`nsfsoc.c` changes). **NO user-visible
+feature** (sockets unreachable until M3-3); `S NSF` not redeployed (the NSF module
+is functionally unchanged — the wiring is inert — and the STC machinery is
+regression-proven on MVS by TSTSTCM/TSTEVTM). Spec v1.25 §10.4/§10.5 + changelog.
+**M3-3 (UDP PROTOPS + NSFEZA EZASOKET plumbing) next.** |
 | **M4** | TCP (state machine, data path, rexmit) + EZASOKET (M4 set) + loss harness | telnet TCP echo, clean FIN, survives 5% loss; TIME_WAIT reclaim shown | ☐ Planned |
 | **M5** | Phase 2: `NSFS` subsystem + cross-memory + TCP hardening + docs | 2 address spaces share one stack; stress passes; docs complete | ☐ Planned |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
@@ -436,7 +486,7 @@ isolated so M0–M4 already deliver a usable in-process stack.
 | NSFTRC | Trace Facility | 7 | — |
 | NSFSTS | Statistics | 8 | — |
 | NSFDEV / NSFCTCI / NSFLCS / NSFHOST | Devices & drivers (NSFDEV table + DEVOPS + DEVIO seam + NSFHOST host driver, M1-2; CTCI top half `asm/nsfctcio.asm` (per-scb save areas) + SVC 99 seam `src/nsfctci.c` M1-3; codec `src/nsfctcif.c` + bottom half `src/nsfctcib.c` with the read/write **I/O subtasks** over the `nsfthr` seam (`src/nsfthr.c` / `src/nsfthr_host.c`) M1-4, ADR-0022/0023; host shims `src/nsfctcio_host.c`/`src/nsfctci_host.c`) | 9 | 200–299 |
-| NSFSOC / NSFREQ | Sockets / Request mgr — socket table + SOCKCB + `(gen<<16)\|id` descriptor (slot-owned generation) + `PROTOPS` dispatch + parked-request pattern + `soc_destroy` teardown checklist (`src/nsfsoc.c`, M3-1); the `NSFRQE` phase-boundary contract + `RQ_*`/`RQ_F_NONBLOCK`/`NSF_E*` (`include/nsfreq.h`, M3-1, **frozen at M3**). `soc_complete` app-ecb POST via `nsfthr_post` (same-AS SVC 2). NSFREQ transport = M3-2, UDP ops = M3-3 | 10 | 600–699 |
+| NSFSOC / NSFREQ | Sockets / Request mgr — socket table + SOCKCB + `(gen<<16)\|id` descriptor (slot-owned generation) + `PROTOPS` dispatch + parked-request pattern + `soc_destroy` teardown checklist + `soc_foreach` (`src/nsfsoc.c`, M3-1/M3-2); the `NSFRQE` phase-boundary contract + `RQ_*`/`RQ_F_NONBLOCK`/`NSF_E*` (`include/nsfreq.h`, **FROZEN at M3-2**; `apptok` named out of reserved). NSFREQ transport + fn dispatcher + app registry (`src/nsfreq.c`, M3-2): request queue (NSFXQ) + `requestECB` (wired via `evt_set_request`, reset-before-drain + double-check, ADR-0022), `nsfreq_submit`/`_wait`/`_call`/`_dispatch`/`_drain`/`_pending`/`_register_proto`. `soc_complete`/completion POST via `nsfthr_post` (same-AS SVC 2). UDP ops + NSFEZA = M3-3 | 10 | 600–699 |
 | NSFIP / NSFICM | IPv4 / ICMP — input validate/demux + output build/route + 16-entry routing table (`src/nsfip.c`, M2-2); ICMP echo responder in-place single-owner (`src/nsficmp.c`, M2-3); shared RFC 1071 checksum over a PBUF chain (`src/nsfcksum.c`, M2-1). ADR-0024; byte-wise big-endian, addresses UINT/octet-1-MSB | 11 | 300–399 |
 | NSFUDP | UDP | 12 | 400–499 |
 | NSFTCP | TCP | 13 | 500–599 |

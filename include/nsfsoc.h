@@ -117,6 +117,7 @@ NSF_SIZE_ASSERT(SOCKCB, 72);
  *   sock_lookup NSFSOLKP   soc_desc NSFSODSC   soc_create NSFSOCRE
  *   soc_destroy NSFSODST   soc_dispatch NSFSODIS  soc_park NSFSOPRK
  *   soc_complete NSFSOCPL  soc_count NSFSOCNT   soc_debug_inuse NSFSODBI
+ *   soc_foreach NSFSOFEA
  */
 
 /* Create the SOCKET pool (`count` SOCKCBs, 0 => NSFSOC_MAX_DEFAULT, capped at the
@@ -186,6 +187,13 @@ void     soc_destroy(SOCKCB *s) asm("NSFSODST");
 
 /* Number of sockets currently open (live table slots). */
 UINT     soc_count(void) asm("NSFSOCNT");
+
+/* Invoke `fn(s, arg)` for every live socket, in table order. The callback MAY
+ * soc_destroy the socket it is handed (iteration is by ascending slot index, so
+ * vacating the current slot never disturbs a slot not yet visited) -- this is
+ * how NSFREQ's RQ_TERMAPI tears down every socket of one app, and how the §5.4
+ * shutdown will abort all sockets. Executive-side, single-task (no locking). */
+void     soc_foreach(void (*fn)(SOCKCB *s, void *arg), void *arg) asm("NSFSOFEA");
 
 #if NSF_DEBUG
 /* Leak-gate diagnostic (host tests): SOCKET-pool objects currently in use, which

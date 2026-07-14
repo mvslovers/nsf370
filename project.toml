@@ -348,6 +348,35 @@ name = "TSTSOC"
 startup = "crt1"
 sources = ["test/tstsoc.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsftime.asm"]
 
+# -- M3-2 NSFREQ: the request transport + fn dispatcher --------------------
+# The Phase-1 backbone the socket API rides on: the request queue + requestECB
+# (app task -> executive), the reset-before-drain + double-check-drain transport
+# (ADR-0022), the complete frozen fn vocabulary, and enough handlers (INITAPI/
+# TERMAPI/SOCKET/BIND/GETSOCKNAME/CLOSE + delegated RECVFROM) to prove the
+# round-trip over a test-only dummy PROTOPS. Dual host+MVS: the portable
+# direct-call dispatcher/teardown tests run on both (cc370 fires the NSFRQE
+# SIZE_ASSERT); the pthread round-trip + lost-request stress are host-only
+# (#ifndef __MVS__). The MVS transport round-trip is TSTREQM. Needs the socket
+# layer (nsfsoc), the event loop (nsfevt + nsftmr + the plat/stim/xq/time seams)
+# and the thread seam (nsfthr -> host shim, which wakes via nsfevt_plat).
+[[test]]
+name = "TSTREQ"
+startup = "crt1"
+sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M3-2 NSFREQ on MVS: the same-AS transport round-trip ------------------
+# MVS-only (host = false): the executive main task runs evt_mainloop with the
+# request seam wired; a cthread APP SUBTASK does INITAPI->SOCKET->CLOSE->TERMAPI
+# over the REAL queue + requestECB (ecb_post SVC 2 / ecb_wait SVC 1 on a separate
+# TCB) -- what the host TSTREQ pthread round-trip stands in for. Proves the
+# transport on 3.8j; NO user-visible feature (UDP + EZASOKET are M3-3). Same MVS
+# source set as TSTREQ (nsfthr/nsfevt_plat/asm used as-is, no [host].replace).
+[[test]]
+name = "TSTREQM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstreqm.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M3-0a Stage 0: can problem state halt an outstanding CTCI READ? --------
 # MVS-only (host = false), standalone: NOT the M1-4b subtask/DEVOPS driver --
 # a raw single-task probe reusing the M1-3 primitives (ctci_alloc_unit/

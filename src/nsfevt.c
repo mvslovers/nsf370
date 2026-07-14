@@ -32,6 +32,9 @@ static int     (*g_devcollect)(NSFECB **, int); /* device ECBs -> ECBLIST (M1) *
 static void    (*g_devpoll)(void);      /* drain device doneqs (M1-2)         */
 static void    (*g_devkick)(void);      /* start device output (M1-2)         */
 static int     (*g_devpending)(void);   /* device work awaits service? (#21)  */
+static NSFECB   *g_reqecb;              /* request queue ready ECB (M3-2)     */
+static void    (*g_reqdrain)(void);     /* drain the request queue (M3-2)     */
+static int     (*g_reqpending)(void);   /* request awaits service? (M3-2)     */
 static int       g_stop;                /* orderly-stop flag                  */
 static UINT      g_ticks;               /* timer wakes serviced               */
 static UINT      g_drops;               /* evt_post pool-exhaustion drops     */
@@ -59,6 +62,9 @@ int nsfevt_init(void)
     g_devpoll    = NULL;
     g_devkick    = NULL;
     g_devpending = NULL;
+    g_reqecb     = NULL;                  /* no request path until evt_set_request */
+    g_reqdrain   = NULL;
+    g_reqpending = NULL;
     g_stop       = 0;
     g_ticks      = 0u;
     g_drops      = 0u;
@@ -130,6 +136,13 @@ void evt_set_devices(int  (*collect_ecbs)(NSFECB **, int),
     g_devpoll    = poll_input;
     g_devkick    = kick_output;
     g_devpending = work_pending;
+}
+
+void evt_set_request(NSFECB *ecb, void (*drain)(void), int (*pending)(void))
+{
+    g_reqecb     = ecb;
+    g_reqdrain   = drain;
+    g_reqpending = pending;
 }
 
 void nsfevt_wake(void)
@@ -213,12 +226,15 @@ void evt_mainloop(void)
     ecblist[necb++] = &g_handoffecb;
     ecblist[necb++] = &g_wakeecb;
     if (g_devcollect != NULL) {
-        /* Cap the device ECBs to the free slots, reserving room for the cib
-         * (if any) and the stop ECB below. */
-        int room = EVT_ECBLIST_MAX - necb - 2;
+        /* Cap the device ECBs to the free slots, reserving room for the request
+         * ECB, the cib (if any) and the stop ECB appended below. */
+        int room = EVT_ECBLIST_MAX - necb - 3;
         if (room > 0) {
             necb += g_devcollect(&ecblist[necb], room);
         }
+    }
+    if (g_reqecb != NULL) {             /* §5.3 requestECB (M3-2)              */
+        ecblist[necb++] = g_reqecb;
     }
     if (g_opecb != NULL) {
         ecblist[necb++] = g_opecb;
@@ -250,6 +266,7 @@ void evt_mainloop(void)
          *    reset-then-recheck the evq/xq terms give the loop's own queues. */
         if (Q_EMPTY(&g_evq) && g_xq.head == NULL
             && (g_devpending == NULL || g_devpending() == 0)
+            && (g_reqpending == NULL || g_reqpending() == 0)
             && g_stop == 0 && (g_stopecb & NSFECB_POSTED) == 0u) {
             nsfevt_plat_wait(ecblist, necb);
         }
@@ -264,6 +281,14 @@ void evt_mainloop(void)
         evt_drain_handoff();
         if (g_devpoll != NULL) {
             g_devpoll();                /* device doneqs -> EV_PACKET_RECEIVED  */
+        }
+
+        /* 2b. Drain the request queue (M3-2). The drain resets its own request
+         *     ECB before taking the queue and double-checks (ADR-0022), so it
+         *     owns the reset-before-WAIT discipline; the loop just invokes it
+         *     each pass, run-to-completion, like the operator drain. */
+        if (g_reqdrain != NULL) {
+            g_reqdrain();
         }
 
         /* 3. Dispatch up to the drain budget, then re-loop (so a flood cannot
