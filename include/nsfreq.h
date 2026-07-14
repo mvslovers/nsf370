@@ -21,13 +21,17 @@
  * even though Phase 1 uses `ubuf` only as a same-space pointer -- the layout must
  * not have to change when Phase 2 lands (spec 10.4).
  *
- * This header carries NO functions (the Request Manager NSFREQ -- the transport
- * that receives, validates and drives NSFRQEs -- is M3-2); it is pure layout +
- * the request/completion vocabulary, so it needs no asm() aliases (CLAUDE.md 3).
+ * NSFREQ (M3-2) is the Request Manager -- the Phase-1 transport (an
+ * in-address-space request queue + requestECB) plus the fn dispatcher that
+ * receives, validates and drives NSFRQEs through NSFSOC. Its manager API is
+ * declared at the end of this header (with 8-char asm() aliases, CLAUDE.md 3);
+ * the NSFRQE contract itself needs none (pure layout).
  */
 
 #include "nsf.h"
 #include "nsfque.h"             /* QELEM (queue linkage embedded in NSFRQE) */
+
+struct protops;                 /* fwd decl: nsfreq_register_proto (nsfsoc.h) */
 
 /* Request function codes (NSFRQE.fn). The M3 set is INITAPI/SOCKET/BIND/SENDTO/
  * RECVFROM/CLOSE/TERMAPI/GETSOCKNAME (spec 15.2); the remaining codes are defined
@@ -79,6 +83,7 @@ enum {
 #define NSF_EMFILE          24      /* socket table full (no free descriptor)   */
 #define NSF_EWOULDBLOCK     35      /* == EAGAIN: op would block, non-blocking   */
 #define NSF_EPROTONOSUPPORT 43      /* protocol not supported                   */
+#define NSF_ENOSYS          78      /* verb not implemented (M3-2 stub verbs)   */
 #define NSF_EOPNOTSUPP      45      /* operation not supported on this socket   */
 #define NSF_EAFNOSUPPORT    47      /* address family not supported             */
 #define NSF_ECONNABORTED    53      /* socket torn down under a parked request  */
@@ -113,12 +118,95 @@ typedef struct nsfrqe {
                                 /*          the <errno.h> `errno` macro          */
     UINT    ecb;                /*  4  @48  completion ECB (app WAITs on it)     */
     UINT    reqid;              /*  4  @52  trace correlation id                 */
-    UINT    rsvd[2];            /*  8  @56  reserved -> 64-byte frozen core      */
+    UINT    apptok;             /*  4  @56  app-instance token: RQ_INITAPI writes */
+                                /*          it (output); RQ_SOCKET / RQ_TERMAPI  */
+                                /*          carry it (input). Defined out of the */
+                                /*          @56 reserved word at M3-2 -- the     */
+                                /*          64-byte core is UNCHANGED, so the    */
+                                /*          M3 freeze holds (spec 10.4). In      */
+                                /*          Phase 2 the owner identity is        */
+                                /*          transport-supplied (caller ASCB ->   */
+                                /*          SOCKCB.owner_ascb); apptok maps to it */
+    UINT    rsvd;               /*  4  @60  reserved -> 64-byte frozen core      */
 } NSFRQE;                       /* 64 bytes */
 NSF_SIZE_ASSERT(NSFRQE, 64);
 
 /* Request eyecatcher and the pooled-object size (see the struct comment). */
 #define NSFRQE_EYE       "RQE "
 #define NSFRQE_OBJSIZE   96
+
+/* ==========================================================================
+ * NSFREQ -- the Request Manager (M3-2, spec 10.1 / 10.4).
+ *
+ * Phase-1 transport: an in-address-space request queue (the NSFXQ handoff, so
+ * app subtasks on other TCBs enqueue CS-safely) + a requestECB that the
+ * executive WAITs in its ECBLIST (spec 5.3). App tasks own their NSFRQE storage
+ * (same-space); NSF never allocates or copies it in Phase 1. Ownership across
+ * the round-trip: the app builds an NSFRQE and OWNS it, submits it (the request
+ * queue now references it), then WAITs on r->ecb; the executive/handler READ it
+ * and may complete it (soc_complete POSTs r->ecb); after that POST the app owns
+ * it again and the executive must not touch it. `ubuf` is a plain same-space
+ * pointer in Phase 1 (no copy). Phase 2 (M5) swaps ONLY the transport (SSI/SVC,
+ * cross-memory POST, keyed ubuf move) -- the NSFRQE format never changes.
+ *
+ * asm() external-symbol aliases (CLAUDE.md 3, "External symbols"): cc370 folds
+ * an external name to 8 chars, so every export pins a unique 8-char name, scheme
+ * NSFRQ*, clear of NSFRQE (a struct, no symbol):
+ *   nsfreq_init NSFRQINI   nsfreq_submit NSFRQSUB   nsfreq_wait NSFRQWT
+ *   nsfreq_call NSFRQCAL   nsfreq_dispatch NSFRQDSP nsfreq_drain NSFRQDRN
+ *   nsfreq_pending NSFRQPND nsfreq_ecb NSFRQECB
+ *   nsfreq_register_proto NSFRQRPT
+ * ========================================================================== */
+
+/* Reset the request transport (empty the queue, clear requestECB) and the app
+ * registry + protocol table. Safe at earliest init and idempotent; no pool
+ * (Phase 1 allocates nothing -- the app owns its NSFRQE). Call before any
+ * request is submitted or dispatched. */
+void     nsfreq_init(void) asm("NSFRQINI");
+
+/* Register the PROTOPS a socket of IP protocol `proto` gets at RQ_SOCKET
+ * (spec 10.2). M3-3 registers UDP (17); a test registers its dummy protocol.
+ * Returns 0 on success, non-zero if the small protocol table is full. */
+int      nsfreq_register_proto(UCHAR proto, struct protops *ops) asm("NSFRQRPT");
+
+/* The requestECB the executive adds to its ECBLIST (spec 5.3). Owned by NSFREQ;
+ * nsfreq_drain resets it before draining (reset-before-WAIT, ADR-0022). */
+UINT    *nsfreq_ecb(void) asm("NSFRQECB");
+
+/* APP SIDE (may run on another TCB). Submit an NSFRQE: enqueue it CS-safely and
+ * POST the requestECB via the thread seam (a real SVC 2 POST on MVS) so a
+ * WAITing executive wakes. ONE POST call site -> M5 swaps it for the cross-AS
+ * seam. The app then WAITs on r->ecb (nsfreq_wait); it must keep r alive and
+ * not touch it again until the wait returns. */
+void     nsfreq_submit(NSFRQE *r) asm("NSFRQSUB");
+
+/* APP SIDE. Block the calling task on r->ecb until the executive completes r. */
+void     nsfreq_wait(NSFRQE *r) asm("NSFRQWT");
+
+/* APP SIDE convenience: submit + wait (the whole blocking round-trip). */
+void     nsfreq_call(NSFRQE *r) asm("NSFRQCAL");
+
+/* EXECUTIVE SIDE. Drain the request queue and dispatch each request. Resets the
+ * requestECB BEFORE taking the queue, then double-checks (drain; dispatch; loop
+ * while the queue is non-empty) so a request enqueued in the reset window is
+ * never lost (ADR-0022; the exact class of the #27 flake and the spec 5.3 WAIT
+ * warning). Called once per loop pass by the executive (evt_set_request). */
+void     nsfreq_drain(void) asm("NSFRQDRN");
+
+/* EXECUTIVE SIDE. Side-effect-free probe: is a request queued? The loop rechecks
+ * it before committing to WAIT so a submit racing the ECB reset is serviced on
+ * the same pass, not parked (ADR-0025, mirroring nsfdev_work_pending). */
+int      nsfreq_pending(void) asm("NSFRQPND");
+
+/* EXECUTIVE SIDE. Dispatch ONE request by r->fn (spec 10.4 verb set). The
+ * protocol-independent verbs (INITAPI/TERMAPI/SOCKET/BIND/GETSOCKNAME/CLOSE) are
+ * handled here; the socket-protocol verbs (CONNECT/LISTEN/ACCEPT/SEND/SENDTO/
+ * RECV/RECVFROM/SHUTDOWN) delegate to soc_dispatch (the protocol op completes or
+ * parks r); the M3-2-unimplemented verbs (SELECT/SET|GETSOCKOPT/FCNTL/
+ * GETPEERNAME) complete r with NSF_ENOSYS; an unknown fn completes r with
+ * NSF_EINVAL. Every non-parked path completes r exactly once (the app always
+ * wakes); a parked request (soc_park) is completed later by a protocol callback
+ * or by soc_destroy. Exposed for the direct-call tests. */
+void     nsfreq_dispatch(NSFRQE *r) asm("NSFRQDSP");
 
 #endif /* NSFREQ_H */

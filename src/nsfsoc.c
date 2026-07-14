@@ -356,6 +356,23 @@ UINT soc_count(void)
     return n;
 }
 
+void soc_foreach(void (*fn)(SOCKCB *s, void *arg), void *arg)
+{
+    UINT i;
+
+    if (fn == NULL) {
+        return;
+    }
+    /* Ascending slot index: a callback that soc_destroys the current socket
+     * vacates slot i, which is never revisited, so a later slot is untouched. */
+    for (i = 0u; i < g_sockmax; i++) {
+        SOCKCB *s = g_socktab[i].sock;
+        if (s != NULL) {
+            fn(s, arg);
+        }
+    }
+}
+
 #if NSF_DEBUG
 UINT soc_debug_inuse(void)
 {

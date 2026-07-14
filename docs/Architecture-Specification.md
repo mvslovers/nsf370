@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.24 — Draft for implementation. Companion document to the frozen
+*Version 1.25 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1230,6 +1230,47 @@ cross-memory POST and MVCK/MVCSK for `ubuf` moves. Protocols and sockets
 never know which transport delivered it. Changing NSFRQE after M3
 therefore requires an ADR.
 
+**FROZEN at M3-2 (M3 exit gate).** M3-2 (NSFREQ) is the first real user of the
+contract; its transport round-trip and lost-request guard exercised the layout,
+so the **64-byte core is FROZEN**. One reserved word was named in the process:
+the `rsvd[2]` of the M3-1 draft is now `apptok` (@56, the app-instance token)
+plus one remaining reserved word (@60). This defines reserved space for its
+intended purpose — `sizeof(NSFRQE)` is unchanged (64), the `NSF_SIZE_ASSERT`
+still holds — so it is a forward-compatible refinement, not a layout break.
+
+**Transport (Phase 1, M3-2).** The Request Manager owns an in-address-space
+request queue (the NSFXQ CS-safe handoff, so app subtasks on other TCBs enqueue
+lock-free) and the §5.3 `requestECB`. The app builds an NSFRQE, `nsfreq_submit`s
+it (`xq_push` + a real SVC 2 POST of `requestECB` — one call site, so M5 swaps it
+for the cross-AS seam), then WAITs on the request's own `ecb`. The executive
+drains on `requestECB`: it **resets `requestECB` before draining, then
+double-checks (drain; dispatch; loop while the queue is non-empty)**, and the
+loop's WAIT-gate rechecks a side-effect-free `nsfreq_pending` probe before
+committing to WAIT — the reset-before-WAIT discipline (ADR-0022) that a lost
+request would otherwise slip through (the #27 class, and §5.3's own WAIT warning).
+The drain terminates because each *blocking* app has ≤1 outstanding request (it
+WAITs on its completion), bounding the producer fan-in.
+
+**fn dispatch (M3-2).** `nsfreq_dispatch` switches on the **complete frozen verb
+set**. The protocol-independent verbs (INITAPI/TERMAPI/SOCKET/BIND/GETSOCKNAME/
+CLOSE) are handled in NSFREQ; the socket-protocol verbs (CONNECT/LISTEN/ACCEPT/
+SEND/SENDTO/RECV/RECVFROM/SHUTDOWN) delegate to `soc_dispatch` (the protocol op
+completes or parks the request — real UDP is M3-3, TCP M4); the verbs not
+implemented in M3-2 (SELECT/SET|GETSOCKOPT/FCNTL/GETPEERNAME) complete with
+`NSF_ENOSYS`; an unknown fn completes with `NSF_EINVAL` — never a fall-through,
+never a crash. RQ_INITAPI registers an app instance (a token = `(gen<<16)|idx`
+returned in `apptok`), RQ_SOCKET stamps the new socket's `owner_ascb` with it,
+and RQ_TERMAPI mass-destroys every socket of that app through `soc_destroy` (a
+parked request → `NSF_ECONNABORTED`, §10.5) via `soc_foreach`, then frees the
+slot. In Phase 2 the owner identity is transport-supplied (the caller ASCB →
+`owner_ascb`); `apptok` maps to it.
+
+**Ownership across the round-trip (single owner, §3).** In Phase 1 the app owns
+the NSFRQE (its storage, same space) and WAITs on its `ecb`; the executive and
+the handler READ it and may complete it (`soc_complete` POSTs `ecb`); after that
+POST the app owns it again and the executive must not touch it. `ubuf` is a plain
+same-space pointer in Phase 1 (no copy). NSFREQ allocates nothing in Phase 1.
+
 ### 10.5 Lifetime
 
 SOCKCB: `mm_alloc` at RQ_SOCKET → live → teardown checklist (cancel
@@ -1880,6 +1921,58 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.25: M3-2 DONE — NSFREQ request transport + fn dispatcher; NSFRQE FROZEN.**
+The Phase-1 backbone the socket API rides on (§10.4): an in-address-space request
+queue (the NSFXQ CS-safe handoff) + the §5.3 `requestECB`, the reset-before-drain
++ double-check-drain transport (ADR-0022 — the #27 lost-request class in
+production, not just a test), the complete frozen fn vocabulary, and enough
+protocol-independent handlers to prove the round-trip. Deliverables:
+**`include/nsfreq.h`** gains the NSFREQ manager API (`nsfreq_init` /
+`nsfreq_register_proto` / `nsfreq_ecb` / `nsfreq_submit` / `nsfreq_wait` /
+`nsfreq_call` / `nsfreq_drain` / `nsfreq_pending` / `nsfreq_dispatch`, unique
+`NSFRQ*` aliases) and the `NSF_ENOSYS` errno; `rsvd[2]` → **`apptok` (@56) +
+`rsvd` (@60)** — the 64-byte core is unchanged, so the freeze holds.
+**`src/nsfreq.c`** — the transport (app side: `xq_push` + `nsfthr_post` of
+`requestECB`, one POST call site → M5; executive side: reset the ECB, drain the
+xq, dispatch, loop while non-empty), the dispatcher (protocol-independent
+INITAPI/TERMAPI/SOCKET/BIND/GETSOCKNAME/CLOSE handled here; CONNECT/LISTEN/ACCEPT/
+SEND/SENDTO/RECV/RECVFROM/SHUTDOWN delegated to `soc_dispatch`; SELECT/SET|
+GETSOCKOPT/FCNTL/GETPEERNAME → `NSF_ENOSYS`; unknown fn → `NSF_EINVAL`, never a
+fall-through), and the app registry (INITAPI token `(gen<<16)|idx`; RQ_SOCKET
+stamps `owner_ascb`; RQ_TERMAPI mass-teardown via `soc_foreach` + `soc_destroy`).
+**`src/nsfevt.c` / `include/nsfevt.h`** — `evt_set_request(ecb,drain,pending)`
+(mirroring `evt_set_operator`/`evt_set_devices`): `requestECB` joins the ECBLIST
+between the device ECBs and the cibECB, the pending probe joins the WAIT gate, and
+the drain runs each pass. **`src/nsfsoc.c`** — `soc_foreach` (`NSFSOFEA`) for the
+TERMAPI sweep (ascending slot index, so a callback that destroys the current
+socket is safe). **A latent host-shim use-after-free fixed** (`src/nsfthr_host.c`,
+host test only): `nsfthr_post` dereferenced the ECB a second time (via
+`nsfevt_plat_post`) *after* the first broadcast could release a waiter — harmless
+for the CTCI ECBs (persistent NETDEV storage) but a UAF once an app's *stack*
+NSFRQE is freed the instant `nsfreq_call` returns; fixed by holding the mutex
+across both dereferences. MVS is unaffected (`nsfthr_post` is a single `ecb_post`
+SVC 2). **Ownership** (§10.4): the app owns its NSFRQE across the round-trip; NSF
+allocates nothing in Phase 1; `ubuf` is a same-space pointer. **NSFRQE FROZEN at
+the M3 exit gate** — changing it now needs an ADR. Host suite **979→1052**
+(TSTREQ **73**: dispatch coverage incl. ENOSYS/unknown-fn/EBADF/EPROTONOSUPPORT,
+TERMAPI mass teardown + leak gate, app-registry EMFILE, and the host pthread
+round-trip [blocked-not-spun, woke-exactly-once] + the lost-request stress);
+`-Wall -Wextra -Werror -pthread` clean. **Stability gate (#27 standard):** the
+threaded round-trip + lost-request tests **200× sequential + 100× single-core
+(`taskset -c 0`) on Linux, 0 failures**. Cross build (cc370/as370/ld370) links
+clean (29 test modules); alias scan clean (10 new `NSFRQ*`/`NSFSOFEA`/`NSFEVRQ`
+exports unique, statics `ENTRY=NO`); no runtime allocation after
+`mm_init_complete()`; size asserts hold (NSFRQE unchanged at 64). **On-MVS
+(MVSCE):** the same-AS transport round-trip **TSTREQM CC 0 (batch + TSO), 30
+PASS** — a cthread app subtask does INITAPI→SOCKET→CLOSE→TERMAPI over the real
+queue + `requestECB` (ecb_post SVC 2 / ecb_wait SVC 1 on a separate TCB), leak
+gate clean; focused regression **CC 0, 560 PASS** (TSTREQ/TSTSOC/TSTEVTM/TSTCTHR/
+TSTTHRW/TSTSTCM/TSTCKSUM/TSTIP/TSTICMP/TSTTMACC — the loop/thread/socket code the
+`nsfevt.c`/`nsfsoc.c` changes touch, no regression). **NO user-visible feature**
+— NSFREQ is not wired into the `NSF` load module (`evt_set_request` is never
+called by `nsfmain.c`, so the loop change is inert there); sockets stay
+unreachable until M3-3 (UDP + NSFEZA). **M3-3 (UDP PROTOPS + NSFEZA) next.**
 
 **v1.24: M3-1 DONE — NSFSOC socket object model + the NSFRQE frozen contract.**
 The protocol-independent socket machinery, host-tested end to end over a

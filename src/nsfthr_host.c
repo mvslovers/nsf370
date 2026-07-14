@@ -44,9 +44,19 @@ void nsfthr_post(NSFECB *ecb, UINT code)
     pthread_mutex_lock(&g_mtx);
     *ecb |= NSFECB_POSTED | (code & 0x3FFFFFFFu);
     pthread_cond_broadcast(&g_cv);
-    pthread_mutex_unlock(&g_mtx);
-    /* Also wake the executive's separate WAIT condvar (essential for dev->ecb). */
+    /* Also wake the executive's separate WAIT condvar (essential for dev->ecb
+     * and the M3-2 requestECB). Do this WHILE STILL HOLDING g_mtx: the broadcast
+     * above may release an nsfthr_wait()er, and that waiter's ECB can be transient
+     * storage -- an app's NSFRQE lives on its stack and is freed the instant
+     * nsfreq_call() returns. Holding g_mtx keeps the waiter blocked re-acquiring
+     * it until AFTER this second dereference, so nsfevt_plat_post() can never
+     * touch freed storage. (The CTCI code never hit this: dev->ecb / returnecb
+     * live in persistent NETDEV storage. On MVS nsfthr_post is a single ecb_post
+     * SVC 2 -- one dereference -- so the hazard is host-shim-only.) Lock order is
+     * always g_mtx -> plat mutex; nothing takes them the other way, so no
+     * deadlock. */
     nsfevt_plat_post(ecb);
+    pthread_mutex_unlock(&g_mtx);
 }
 
 void nsfthr_wait(NSFECB *ecb)

@@ -65,6 +65,7 @@ typedef void (*EVHANDLER)(EVT *ev);
  *   nsfevt_alloc NSFEVAL   nsfevt_ticks NSFEVTK   nsfevt_drops NSFEVDRP
  *   nsfevt_inuse NSFEVIU   evt_set_operator NSFEVOPR
  *   evt_set_devices NSFEVDEV   nsfevt_wake NSFEVWK
+ *   evt_set_request NSFEVRQ
  */
 
 /* Create the EVT pool and reset the loop state (event queue, handoff stack,
@@ -116,6 +117,17 @@ void evt_set_devices(int  (*collect_ecbs)(NSFECB **list, int max),
                      void (*poll_input)(void),
                      void (*kick_output)(void),
                      int  (*work_pending)(void)) asm("NSFEVDEV");
+
+/* Register the request seam (M3-2, NSFREQ): `ecb` is the §5.3 requestECB the
+ * loop adds to its ECBLIST (between the device ECBs and the cibECB); `drain` is
+ * called every loop pass to consume queued NSFRQEs (it resets the requestECB
+ * before draining and double-checks, ADR-0022); `pending` is a side-effect-free
+ * probe the loop rechecks before committing to WAIT, so a request submitted in
+ * the ECB-reset race is serviced on the same pass, not parked (ADR-0025,
+ * mirroring the device work_pending probe). Pass (NULL, NULL, NULL) for no
+ * request path (the foundation/device tests; the M0-8 STC before sockets). */
+void evt_set_request(NSFECB *ecb, void (*drain)(void),
+                     int (*pending)(void)) asm("NSFEVRQ");
 
 /* Wake a WAITing loop so it makes one more pass (running the device output kick
  * and operator/timer steps). Used when executive work is queued from outside a
