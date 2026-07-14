@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.22 — Draft for implementation. Companion document to the frozen
+*Version 1.23 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -938,6 +938,27 @@ appendage alternative.
 > before WAITing, so a completion racing the executive's ECB reset is serviced
 > the same pass (§5.3).
 
+> **Correction (ADR-0027, M3-0b, live).** ADR-0025's "a WRITE originating while the
+> READ is armed still queues — HIO or an attention protocol is the follow-on" is now
+> resolved: the write-kick **actively parks the READ**. When a locally-originated
+> WRITE is queued, the READ is armed, and no inbound frame is in flight, `kick`
+> issues **IOHALT (SVC 33)** against the read subchannel's UCB (chased DCB+44
+> `DCBDEBAD` → DEB+32 `DEBSUCBA` and cached at init, with a UCBNAME check against the
+> device's own `%03X` CUU text; a mismatch refuses to start, `NSF207E`). The read
+> subtask's single-ECB wait then completes with **X'48'** (purged) or, if a frame
+> raced, **X'7F'** with data — either routes into the same `rhold` path, the WRITE
+> issues with the READ parked, and `returnecb` re-arms. IOHALT is a new *trigger*
+> into the ADR-0025 machinery, not a new completion model; ADR-0022/0023 ownership is
+> unchanged. **Read completions have three classes:** X'7F' data (decode), X'48'
+> purged (park, do not decode, count `rpurge`; an *unrequested* X'48' is traced
+> distinctly), anything else (a genuine device error, count `ierr`). So `ierr` counts
+> genuine device errors + resource exhaustion only; the driver adds two per-device
+> counters — `nonip` (non-IPv4/malformed codec drops, expected on a real link) and
+> `rpurge` (purged reads). The receive→reply path is unaffected (its READ is parked
+> by the RECEIVE, so `kick` never halts — `rpurge` stays 0 under sustained ping). The
+> un-armed window stays lossless (Hercules buffers inbound, "Inbound flow control"
+> below).
+
 - **Top half (HLASM, mainline):** two DCBs (`DSORG=PS,MACRF=E`, `IOBAD=`), one
   per subchannel, opened `INPUT` / `OUTPUT`; `CENDA=` is deliberately omitted.
   Single unchained CCWs: READ `X'02'` with the **`SLI` flag** (an inbound block
@@ -1848,6 +1869,58 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.23: M3-0b DONE — IOHALT active read-park for locally-originated writes
+(ADR-0027); M3-0 COMPLETE.** The generalization of ADR-0025 pair sequencing:
+where pair sequencing parks the READ *passively* (an inbound frame completes it,
+`rhold` holds the re-arm behind the write pipeline — perfect for M2 receive→reply
+but useless for a WRITE that originates with no inbound frame coming), M3-0b parks
+it *actively*. When a locally-originated WRITE is queued, the READ is armed, and no
+inbound frame is in flight, the write-kick path issues **IOHALT (SVC 33)** against
+the read subchannel's UCB; the read subtask's single-ECB wait then completes with
+**X'48'** (purged) or, if a frame raced the halt, **X'7F'** with data — *either*
+routes into the existing `rhold` path, the WRITE issues with the READ parked, and
+`returnecb` re-arms afterwards. IOHALT is a new **trigger** into ADR-0025's
+machinery, not a new completion model; ownership (ADR-0023) and the single-ECB
+raw-IOB-ECB wait (ADR-0022) are unchanged. **Read completions now have three
+classes** (§9.3): X'7F' data (decode), X'48' purged (park, don't decode), anything
+else (a genuine device error). **Counter split** (the standing `ierr` conflation
+from live M2 observation): `ierr` = genuine device errors + resource exhaustion
+only; a new CTCI-private **`nonip`** counts non-IPv4/malformed codec drops (expected
+real-link traffic, not an error); a new CTCI-private **`rpurge`** counts purged
+reads (X'48'; an *unrequested* X'48' is traced distinctly). The read UCB is chased
+once at device init (DCB+44 `DCBDEBAD` → DEB+32 `DEBSUCBA`, byte-wise, with a
+UCBNAME sanity check against the device's own `%03X` CUU text) and cached; a
+mismatch refuses to start the device (`NSF207E`), same policy as an allocation
+failure. Deliverables: `asm/nsfctcio.asm` gains `ctci_halt_read` (`NSFCIHLT`); a
+type-2 SVC needs a proper save-area linkage, so it uses `FUNHEAD SAVE=<static>`
+(concurrency-safe because kick is the only, executive-task, caller — unlike the
+two-subtask OPEN/EXCP/CLOSE entries that need per-scb areas) — the S0C1 that fell
+out of a first attempt was a **column-72 continuation** merge (over-long comments
+dropped the `SVC 33` itself; CLAUDE.md §3 quirk, re-pinned). `src/nsfctci.c` gains
+`ctci_read_ucb` (`NSFCIUCB`, MVS) + a host stub; `src/nsfctcib.c` restructures the
+kick state machine (issue IOHALT when the read is armed with outbound work; start
+the WRITE only with the READ parked; `halting` double-halt guard) and splits the
+counters in `service`/`decode`; host shim `ctci_halt_read` completes the pending
+read X'48'. `CTCIDEV` 112→**124 B** (`+rucb +ctr_nonip +ctr_rpurge`; `halting`
+reuses the old `rsvd2` byte). Host suite **875→906** (TSTCTCI +31: locally-
+originated halt-park, halt/data race, counter-split classes; existing pure-send
+scenarios updated to drive halt→park→write); `-Wall -Wextra -Werror -pthread`
+clean; cross build (cc370/as370/ld370) + alias scan clean (new `NSFCIHLT`,
+`NSFCIUCB`, unique). **VALIDATED LIVE on MVSCE** (real 0500/0501 pair). *Gate part
+1 — locally-originated:* `test-mvs` TSTCTCM CC 0 (batch + TSO); on a truly idle
+link (`in_delta=0`) the crafted ICMP echo reached the wire with **`out=1
+rpurge=1 ierr=0`** — the IOHALT parked the read, no inbound frame needed (old code
+would stall until the next inbound frame). *Gate part 2 — regression:* `S NSF` →
+device up (UCB chased clean, no `NSF207E`); host 1000-ping → **1000/1000, 0 %
+loss, unimodal** RTT min/avg/max = 0.516/0.898/1.608 ms; `LNK1 in 1019 == out
+1019`, every drop counter 0, and **`rpurge 0`** across the whole run (receive→reply
+parks the read via the RECEIVE, so kick never halts — the halt fires only for
+locally-originated writes, as designed); `F NSF,STATS` shows the new `nonip`/
+`rpurge` counters; `P NSF` → NSF830I→NSF011I→IEF404I same-second, no dump. **M3-0
+COMPLETE** (the ADR-0025 M3+ locally-originated follow-on is discharged). Spec §9.3
+(active park, three completion classes) + ADR-0027; `CTCIDEV` 124 B. **M3-1
+(sockets + NSFRQE) next.**
 
 **v1.22: Toolchain-hygiene pass, issue #25 CLOSED — two pre-existing on-MVS
 `test-mvs` failures fixed; M3 preamble baseline.** Found while validating v1.21

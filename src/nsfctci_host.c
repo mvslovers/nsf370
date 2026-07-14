@@ -29,3 +29,17 @@ int ctci_chan_unalloc(CTCIDEV *d)
     (void)d;
     return 0;
 }
+
+/* No real DCB/DEB/UCB on the host: the host halt (ctci_halt_read in
+ * nsfctcio_host.c) completes the pending read via rscb directly and never uses a
+ * UCB address. Return success with a dummy non-zero handle so ctci_op_start's
+ * "UCB acquired" path is exercised identically on both worlds. */
+int ctci_read_ucb(const void *rscb, USHORT cuu, UINT *ucb_out)
+{
+    (void)rscb;
+    (void)cuu;
+    if (ucb_out != NULL) {
+        *ucb_out = 1u;                   /* opaque, never dereferenced on host */
+    }
+    return 0;
+}

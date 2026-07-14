@@ -162,6 +162,26 @@ int ctci_close_sub(void *scb)
     return 0;
 }
 
+/* Host analog of the MVS IOHALT (asm ctci_halt_read): actively park the read by
+ * completing its outstanding EXCP with post X'48' (purged) and NO data -- exactly
+ * as IOS reclassifies a halted read (ADR-0027). If NO read is outstanding (a
+ * frame already completed it -- the halt/data race), this is a harmless no-op and
+ * the data completion flows normally, which is precisely the race the driver must
+ * tolerate. rucb models the MVS UCB target and is unused here; the halt reaches
+ * the read purely through rscb. */
+void ctci_halt_read(void *rscb, UINT rucb)
+{
+    HOSTSCB *h = (HOSTSCB *)rscb;
+
+    (void)rucb;
+    if (h->outstanding) {
+        h->outstanding = 0;
+        h->post        = (UINT)CTCI_POST_PURGED;   /* X'48' -- purged           */
+        h->residual    = h->pend_len;              /* no data transferred       */
+        nsfthr_post((NSFECB *)h->pend_ecb, 0u);    /* wake the read subtask     */
+    }
+}
+
 /* ---- test hooks (host only) ---------------------------------------------- */
 
 /* A frame "arrives" at the read subchannel: complete an outstanding READ at

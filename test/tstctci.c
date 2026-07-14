@@ -267,14 +267,16 @@ static void scenario_send_write(void)
     (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
 
     CHECK(dev_send(dev, b) == 0, "send: dev_send queued the frame");
-    nsfdev_kick_output();               /* io->kick encodes + hands to write_sub */
 
-    /* The write subtask EXCPs the WRITE (shim captures) and POSTs dev->ecb; wait
-     * for it, then reap via service. Bounded so a stuck write cannot hang. */
+    /* Locally-originated WRITE on an idle link: the first kick halt-parks the
+     * armed read (ADR-0027), a later kick issues the WRITE, and service reaps it.
+     * Pump kick+poll_input each spin so the whole halt->park->write->reap sequence
+     * runs. Bounded so a stuck pipeline fails a CHECK rather than hanging. */
     for (i = 0u; i < 200u && dev->ctr_out->value == 0; i++) {
+        nsfdev_kick_output();               /* halt-park, then encode + WRITE */
         nsfthr_timed_wait(&dev->ecb, 1u);   /* <= 0.1 s per spin */
         dev->ecb = 0u;
-        nsfdev_poll_input();                /* io->service reaps the WRITE */
+        nsfdev_poll_input();                /* io->service parks the read / reaps */
     }
 
     CHECK_EQ((long)dev->ctr_out->value, 1, "send: ctr_out counted the transmit");
@@ -326,17 +328,20 @@ static void scenario_send_many(void)
         ip[9] = (UCHAR)n;               /* vary a byte per frame */
         (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
         CHECK(dev_send(dev, b) == 0, "many: dev_send queued");
-        nsfdev_kick_output();           /* start this WRITE */
 
-        /* Complete THIS write before the next, so a "stuck after one" regression
-         * leaves txbusy set and fails the CHECK below rather than hanging. */
-        for (i = 0u; i < 200u && d->txbusy; i++) {
+        /* Complete THIS write before the next. The first frame halt-parks the
+         * armed read; subsequent frames find the read already parked and write
+         * directly. ctr_out advancing to n+1 is the unambiguous completion signal
+         * (txbusy is 0 both before the WRITE starts, during the halt, and after
+         * the reap), so a "stuck after one" regression fails the CHECK, not hangs. */
+        for (i = 0u; i < 200u && dev->ctr_out->value == n; i++) {
+            nsfdev_kick_output();       /* halt-park (first frame) then WRITE */
             nsfthr_timed_wait(&dev->ecb, 1u);
             dev->ecb = 0u;
-            nsfdev_poll_input();        /* reap via wready */
-            nsfdev_kick_output();
+            nsfdev_poll_input();        /* park the read / reap via wready */
         }
-        CHECK(d->txbusy == 0u, "many: WRITE completed (not stuck)");
+        CHECK_EQ((long)dev->ctr_out->value, (long)(n + 1u),
+                 "many: WRITE completed (not stuck)");
     }
 
     CHECK_EQ((long)dev->ctr_out->value, (long)N, "many: every WRITE transmitted");
@@ -394,10 +399,17 @@ static void scenario_lost_wake_reap(void)
     CHECK(b != NULL, "lostwake: buf_alloc");
     (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
     CHECK(dev_send(dev, b) == 0, "lostwake: dev_send queued");
-    nsfdev_kick_output();                        /* start the WRITE */
 
-    /* Wait for the subtask's completion handover (wready set, dev->ecb posted)
-     * WITHOUT servicing it. */
+    /* Idle link: the first kick halt-parks the armed read (ADR-0027). Drive the
+     * park (service it), then start the WRITE, then wait for the WRITE to complete
+     * (wready set, dev->ecb posted) WITHOUT reaping it. */
+    nsfdev_kick_output();                        /* IOHALT the armed read */
+    for (i = 0u; i < 200u && d->rready == 0u; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);        /* wait for the purge (X'48') */
+    }
+    dev->ecb = 0u;
+    nsfdev_poll_input();                         /* service: park the read (rhold) */
+    nsfdev_kick_output();                        /* now start the WRITE */
     for (i = 0u; i < 200u && d->wready == 0u; i++) {
         nsfthr_timed_wait(&dev->ecb, 1u);
     }
@@ -604,6 +616,177 @@ static void scenario_read_hold_sequencing(void)
     CHECK_EQ((long)g_rx_count, 2, "seq: both packets dispatched at cleanup");
     CHECK(dev_shutdown(dev) == 0, "seq: dev_shutdown");
 }
+
+/* ---- scenario 9: locally-originated WRITE on an idle link -> IOHALT park ----
+ * The M3-0b path (ADR-0027). The link is inbound-idle: the read subtask has an
+ * EXCP READ outstanding and rhold is clear. A locally-originated frame is queued
+ * with NO inbound frame ever injected -- so the WRITE can only reach the wire if
+ * the kick actively parked the read by halting it (the host halt hook completes
+ * the outstanding read X'48'). Asserts: the WRITE transmits promptly, exactly one
+ * purged read is counted (rpurge), the purge did NOT count ierr, nothing inbound
+ * was decoded, and the PBUF was freed. Pair sequencing alone would have stalled
+ * this WRITE until the next inbound frame -- there is none here. */
+static void scenario_local_write_halt(void)
+{
+    UCHAR        ip[28];
+    NETDEV      *dev;
+    CTCIDEV     *d;
+    PBUF        *b;
+    const UCHAR *cap;
+    UINT         caplen = 0;
+    UINT         i;
+
+    dev = fresh_dev("CTCI8", 0x0510);
+    CHECK(dev_start(dev) == 0, "localwr: dev_start");
+    d = (CTCIDEV *)dev->priv;
+
+    /* The read subtask arms an EXCP READ on the idle link; rhold stays clear. */
+    for (i = 0u; i < 200u && ctcio_host_outstanding(d->rscb) == 0; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(ctcio_host_outstanding(d->rscb) != 0, "localwr: read armed on the idle link");
+    CHECK(d->rhold == 0u, "localwr: read is armed (not parked)");
+
+    memset(ip, 0, sizeof(ip));
+    ip[0] = 0x45;
+    ip[3] = 28;
+    b = buf_alloc((USHORT)sizeof(ip));
+    CHECK(b != NULL, "localwr: buf_alloc");
+    (void)buf_copyin(b, ip, (USHORT)sizeof(ip));
+    CHECK(dev_send(dev, b) == 0, "localwr: dev_send queued the local frame");
+
+    /* Pump by hand. The FIRST kick must IOHALT the armed read (no inbound frame
+     * to release it); the read parks X'48' -> service (rpurge, rhold) -> a later
+     * kick issues the WRITE -> reap. NO ctcio_host_inject is ever called: if
+     * ctr_out reaches 1, the halt is what unblocked it. Bounded so a stuck
+     * pipeline fails a CHECK rather than hanging. */
+    for (i = 0u; i < 200u && dev->ctr_out->value == 0; i++) {
+        nsfdev_kick_output();               /* halt on the first pass, then write */
+        nsfthr_timed_wait(&dev->ecb, 1u);
+        dev->ecb = 0u;
+        nsfdev_poll_input();                /* service: park the read / reap write */
+    }
+
+    CHECK_EQ((long)dev->ctr_out->value, 1, "localwr: the local WRITE transmitted");
+    CHECK_EQ((long)d->ctr_rpurge->value, 1, "localwr: exactly one purged read (rpurge)");
+    CHECK_EQ((long)dev->ctr_ierr->value, 0, "localwr: the purge did NOT count ierr");
+    CHECK_EQ((long)dev->ctr_in->value, 0, "localwr: no inbound frame decoded");
+    CHECK(d->txpbuf == NULL, "localwr: the WRITE PBUF was freed on completion");
+
+    cap = ctcio_host_captured(d->wscb, &caplen);
+    CHECK(caplen > 0u && cap[8] == 0x45,
+          "localwr: the captured WRITE carries the local IP frame");
+
+    CHECK(dev_shutdown(dev) == 0, "localwr: dev_shutdown");
+}
+
+/* ---- scenario 10: the halt races an inbound frame that WINS ----
+ * ADR-0027: after a halt is requested, the read subtask's wait may complete with
+ * X'7F' + data (an inbound frame raced the SVC) instead of X'48'. The driver must
+ * accept either. Modeled by injecting data so the read completes with data BEFORE
+ * kick services it, then running kick (whose halt finds no outstanding read -- a
+ * harmless no-op) before poll_input. The data must decode normally, no rpurge is
+ * counted, and the WRITE still proceeds afterwards. */
+static void scenario_halt_race(void)
+{
+    static UCHAR blk[64];
+    UCHAR    ip[20];
+    UCHAR    out[28];
+    UINT     blklen;
+    NETDEV  *dev;
+    CTCIDEV *d;
+    PBUF    *b;
+    UINT     i;
+
+    dev = fresh_dev("CTCI9", 0x0512);
+    CHECK(dev_start(dev) == 0, "race: dev_start");
+    d = (CTCIDEV *)dev->priv;
+
+    evt_register(EV_PACKET_RECEIVED, h_rx);
+    g_rx_count = 0; g_rx_stop_at = 99u; g_rx_devok = 1; g_rx_dev = dev;
+
+    /* Queue a local WRITE. */
+    memset(out, 0, sizeof(out));
+    out[0] = 0x45;
+    out[3] = 28;
+    b = buf_alloc((USHORT)sizeof(out));
+    CHECK(b != NULL, "race: buf_alloc");
+    (void)buf_copyin(b, out, (USHORT)sizeof(out));
+    CHECK(dev_send(dev, b) == 0, "race: local WRITE queued");
+
+    /* Inbound data completes the read with X'7F' (host shim: outstanding -> 0)
+     * BEFORE any halt. */
+    make_ip(ip, 0x99);
+    blklen = build_read_block(blk, sizeof(blk), ip, 20u);
+    ctcio_host_inject(d->rscb, blk, blklen);
+    for (i = 0u; i < 200u && d->rready == 0u; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(d->rready != 0u, "race: read completed");
+    CHECK_EQ((long)d->rpost, (long)CTCI_POST_NORMAL, "race: completion is X'7F' (data won)");
+
+    /* kick BEFORE service (rhold still clear): it requests the halt, which finds
+     * no outstanding read -- a no-op, the data already completed the read. */
+    nsfdev_kick_output();
+    CHECK(d->halting != 0u, "race: a halt was requested");
+    CHECK(ctcio_host_outstanding(d->rscb) == 0, "race: no read was purged (data had it)");
+
+    dev->ecb = 0u;
+    nsfdev_poll_input();                    /* service decodes the raced data */
+    CHECK_EQ((long)dev->ctr_in->value, 1, "race: the raced frame decoded normally");
+    CHECK_EQ((long)d->ctr_rpurge->value, 0, "race: no purge counted (data won the race)");
+
+    /* The WRITE still proceeds and is reaped. */
+    for (i = 0u; i < 200u && dev->ctr_out->value == 0; i++) {
+        nsfdev_kick_output();
+        nsfthr_timed_wait(&dev->ecb, 1u);
+        dev->ecb = 0u;
+        nsfdev_poll_input();
+    }
+    CHECK_EQ((long)dev->ctr_out->value, 1, "race: the WRITE proceeded after the race");
+    CHECK_EQ((long)dev->ctr_ierr->value, 0, "race: no device error counted");
+
+    nsfevt_stop();
+    evt_mainloop();                         /* dispatch the RX event (frees the PBUF) */
+    CHECK_EQ((long)g_rx_count, 1, "race: the raced packet was delivered");
+    CHECK(dev_shutdown(dev) == 0, "race: dev_shutdown");
+}
+
+/* ---- scenario 11: codec drops count nonip, not ierr (Stage A split) ----
+ * A received block whose one segment is NOT IPv4 is expected real-link traffic
+ * (ARP, IPv6, ...), not a device error: it must count `nonip`, and leave `ierr`
+ * untouched. (The genuine-device-error -> ierr path is scenario 3; the purge ->
+ * rpurge path is scenario 9.) */
+static void scenario_nonip_count(void)
+{
+    static UCHAR blk[64];
+    UCHAR    ip[20];
+    UINT     blklen;
+    NETDEV  *dev;
+    CTCIDEV *d;
+    UINT     i;
+
+    dev = fresh_dev("CTCIA", 0x0514);
+    CHECK(dev_start(dev) == 0, "nonip: dev_start");
+    d = (CTCIDEV *)dev->priv;
+
+    make_ip(ip, 0x00);
+    ip[0] = 0x60;                           /* version 6 -> codec drops as non-IPv4 */
+    blklen = build_read_block(blk, sizeof(blk), ip, 20u);
+    ctcio_host_inject(d->rscb, blk, blklen);
+    for (i = 0u; i < 200u && d->rready == 0u; i++) {
+        nsfthr_timed_wait(&dev->ecb, 1u);
+    }
+    CHECK(d->rready != 0u, "nonip: block handed up");
+    dev->ecb = 0u;
+    nsfdev_poll_input();                     /* service decodes -> nonip drop */
+
+    CHECK_EQ((long)d->ctr_nonip->value, 1, "nonip: non-IPv4 segment counted nonip");
+    CHECK_EQ((long)dev->ctr_ierr->value, 0, "nonip: non-IPv4 did NOT count ierr");
+    CHECK_EQ((long)dev->ctr_in->value, 0, "nonip: nothing delivered up");
+
+    CHECK(dev_shutdown(dev) == 0, "nonip: dev_shutdown");
+}
 #endif /* !__MVS__ */
 
 int main(void)
@@ -630,6 +813,9 @@ int main(void)
     scenario_lost_wake_reap();
     scenario_loop_pending_probe();
     scenario_read_hold_sequencing();
+    scenario_local_write_halt();
+    scenario_halt_race();
+    scenario_nonip_count();
 
     /* Leak gate: every per-packet pool AND the CTCI device storage back to
      * baseline after all scenarios have joined their subtasks and shut down. */

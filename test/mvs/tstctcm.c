@@ -218,7 +218,13 @@ static int drive_until(NETDEV *dev, STSCTR *ctr, UINT goal, ECB *stopecb,
         return 0;
     }
     for (i = 0u; i < max_iter; i++) {
-        nsfdev_poll_input();                    /* io->service: decode / reap */
+        nsfdev_poll_input();                    /* io->service: decode / reap / park */
+        nsfdev_kick_output();                   /* io->kick (§5.3 step 5): IOHALT the
+                                                 * armed read to park it for a local
+                                                 * WRITE (ADR-0027), then start the
+                                                 * WRITE once parked. Called every
+                                                 * pass -- the deferred WRITE needs a
+                                                 * kick AFTER the read parks. */
         if (ctr->value >= goal) {
             return 1;
         }
@@ -264,18 +270,53 @@ static int run_device_probe(void)
     printf("device up: DD %s/%s (read subtask %08X, write subtask %08X)\n",
            d->rddn, d->wddn, (unsigned)d->rsub, (unsigned)d->wsub);
 
-    /* --- crafted WRITE: dev_send an ICMP echo; the write subtask EXCPs it and
-     * POSTs dev->ecb; the mini MULTI-ECB loop reaps it. --- */
-    iplen = build_icmp_echo(ip);
-    b = buf_alloc((USHORT)iplen);
-    CHECK(b != NULL, "buf_alloc for the crafted frame");
-    (void)buf_copyin(b, ip, (USHORT)iplen);
-    CHECK(dev_send(dev, b) == 0, "dev_send queued the crafted ICMP echo");
-    nsfdev_kick_output();               /* io->kick encodes + hands to write_sub */
-    CHECK(drive_until(dev, dev->ctr_out, 1u, &stopecb, 30u, 10u),
-          "crafted WRITE transmitted via the write subtask (ctr_out rose)");
-    printf("WRITE ctr_out=%u (crafted ICMP echo id 0xABCD -> see host tcpdump)\n",
-           (unsigned)dev->ctr_out->value);
+    /* --- M3-0b locally-originated gate (ADR-0027): dev_send an ICMP echo while
+     * the link is inbound-idle (the ping phase starts only below). Under the OLD
+     * code this WRITE would STALL at the IOS level behind the armed blocking READ
+     * until the next inbound frame; M3-0b's kick IOHALTs the READ to park it, so
+     * the WRITE reaches the wire promptly. The write subtask EXCPs it and POSTs
+     * dev->ecb; the mini MULTI-ECB loop reaps it. --- */
+    {
+        UINT in_before = dev->ctr_in ? dev->ctr_in->value : 0u;
+        UINT in_after;
+        UINT rp;
+
+        iplen = build_icmp_echo(ip);
+        b = buf_alloc((USHORT)iplen);
+        CHECK(b != NULL, "buf_alloc for the crafted frame");
+        (void)buf_copyin(b, ip, (USHORT)iplen);
+        CHECK(dev_send(dev, b) == 0, "dev_send queued the crafted ICMP echo");
+        nsfdev_kick_output();           /* io->kick: IOHALT the armed read (idle) */
+        CHECK(drive_until(dev, dev->ctr_out, 1u, &stopecb, 30u, 10u),
+              "crafted WRITE reached the wire (ctr_out rose; OLD code would stall)");
+
+        in_after = dev->ctr_in ? dev->ctr_in->value : 0u;
+        rp       = d->ctr_rpurge ? d->ctr_rpurge->value : 0u;
+        printf("STATS after crafted WRITE: out=%u rpurge=%u ierr=%u nonip=%u"
+               " in_delta=%u\n",
+               (unsigned)dev->ctr_out->value, (unsigned)rp,
+               (unsigned)dev->ctr_ierr->value,
+               (unsigned)(d->ctr_nonip ? d->ctr_nonip->value : 0u),
+               (unsigned)(in_after - in_before));
+        if (in_after == in_before) {
+            /* No inbound frame raced the halt, so the IOHALT is the ONLY thing
+             * that could have released the READ -> it must have fired (rpurge),
+             * and it must NOT have counted ierr (the counter split). This is the
+             * clean idle-link gate. */
+            CHECK(rp >= 1u, "IOHALT parked the read for the local WRITE (rpurge)");
+            CHECK_EQ((long)dev->ctr_ierr->value, 0L,
+                     "the purge did not count ierr (counter split)");
+        } else {
+            /* An inbound frame raced the halt and completed the READ with data
+             * (a valid ADR-0027 outcome); the WRITE still reached the wire. Under
+             * a heavy inbound flood the undispatched EV_PACKET_RECEIVED events
+             * (this probe registers no handler) can exhaust the EVT pool -> ierr,
+             * a test artifact, so ierr is not asserted here. The clean rpurge=1 /
+             * ierr=0 case is pinned by the host suite + the idle branch above. */
+            printf("(inbound raced the halt: in_delta=%u; WRITE still sent)\n",
+                   (unsigned)(in_after - in_before));
+        }
+    }
 
     /* --- inbound READ: host pings of the guest HOME arrive; each completes the
      * read subtask's EXCP READ and POSTs dev->ecb, waking the MULTI-ECB WAIT. The
