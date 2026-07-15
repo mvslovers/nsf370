@@ -724,13 +724,16 @@ static void scenario_local_write_halt(void)
     CHECK(dev_shutdown(dev) == 0, "localwr: dev_shutdown");
 }
 
-/* ---- scenario 10: the halt races an inbound frame that WINS ----
- * ADR-0027: after a halt is requested, the read subtask's wait may complete with
- * X'7F' + data (an inbound frame raced the SVC) instead of X'48'. The driver must
- * accept either. Modeled by injecting data so the read completes with data BEFORE
- * kick services it, then running kick (whose halt finds no outstanding read -- a
- * harmless no-op) before poll_input. The data must decode normally, no rpurge is
- * counted, and the WRITE still proceeds afterwards. */
+/* ---- scenario 10: an inbound frame completes the read before it can be parked --
+ * ADR-0027/0030: a local WRITE is queued, but an inbound frame completes the READ
+ * with X'7F' + data before the executive parks it. Modeled by injecting data so
+ * the read completes (rready set, rarmed cleared) BEFORE kick runs. With the
+ * rarmed guard (ADR-0030) kick does NOT request a halt -- there is no armed read
+ * to purge, and issuing a no-op halt would be pointless; the data's own
+ * completion sets rhold in service and the WRITE proceeds. The data must decode
+ * normally, no rpurge is counted, and the WRITE still goes out afterwards. (The
+ * halt-IS-requested path, where the read is still armed at kick time, is covered
+ * by scenario_local_write_halt / scenario_send_write.) */
 static void scenario_halt_race(void)
 {
     static UCHAR blk[64];
@@ -769,10 +772,12 @@ static void scenario_halt_race(void)
     CHECK(d->rready != 0u, "race: read completed");
     CHECK_EQ((long)d->rpost, (long)CTCI_POST_NORMAL, "race: completion is X'7F' (data won)");
 
-    /* kick BEFORE service (rhold still clear): it requests the halt, which finds
-     * no outstanding read -- a no-op, the data already completed the read. */
+    /* kick BEFORE service (rhold still clear): the read already completed
+     * (rarmed=0), so the rarmed guard (ADR-0030) withholds the halt -- no
+     * pointless no-op SVC. The data's own completion will drive the WRITE. */
     nsfdev_kick_output();
-    CHECK(d->halting != 0u, "race: a halt was requested");
+    CHECK(d->rarmed == 0u, "race: read is no longer armed (data completed it)");
+    CHECK(d->halting == 0u, "race: no halt requested -- data already completed the read");
     CHECK(ctcio_host_outstanding(d->rscb) == 0, "race: no read was purged (data had it)");
 
     dev->ecb = 0u;

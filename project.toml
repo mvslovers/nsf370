@@ -473,6 +473,18 @@ name = "NSF"
 startup = "crt1"
 sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M3-5 the NSFECHO UDP echo sample (the M3 exit-gate demonstration) ---------
+# The first user-visible NSF program: a UDP echo server over the EZASOKET C API
+# (samples/nsfecho.c). MVS-target only (like NSF -- no host [[test]]; the API
+# underneath is already host-tested by TSTEZA). It carries the whole Phase-1
+# stack in one load module, so the source list mirrors TSTEZAM's (the M3-4 live
+# gate) with samples/nsfecho.c in place of the test main. Deployed into
+# NSF.LINKLIB (make deploy) and run via jcl/NSFECHO.jcl (PARM = UDP port).
+[[module]]
+name = "NSFECHO"
+startup = "crt1"
+sources = ["samples/nsfecho.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB
 # default, so the STC PROC's STEPLIB (jcl/NSFPROC.jcl) references a stable DSN.

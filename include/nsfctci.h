@@ -106,7 +106,7 @@ struct devops;
  * shutdown). Holds the two subchannel control blocks, the two I/O buffers, the
  * two subtask handles, and the handoff ECBs/slots. Every cross-task field notes
  * its access discipline: each is written by exactly one side per phase, handed
- * over by a POST, so there is no concurrent access and no lock (§3). 108 bytes
+ * over by a POST, so there is no concurrent access and no lock (§3). 128 bytes
  * on the S/370 target. */
 #define CTCI_S_DOWN   0              /* allocated, not opened                  */
 #define CTCI_S_UP     1              /* both subchannels opened                */
@@ -171,8 +171,16 @@ typedef struct ctcidev {
     STSCTR *ctr_nonip;         /* 116  non-IPv4/malformed codec drops (expected
                                        real-link traffic, NOT a device error)  */
     STSCTR *ctr_rpurge;        /* 120  purged read completions (X'48')          */
-} CTCIDEV;                       /* 124 bytes */
-NSF_SIZE_ASSERT(CTCIDEV, 124);
+    UCHAR   rarmed;            /* 124  a READ EXCP is provably OUTSTANDING (set
+                                       by read_sub after ctci_read, cleared
+                                       after the completion; read_sub is the
+                                       sole writer, executive read-only). kick
+                                       IOHALTs to park the read ONLY when this
+                                       is set -- else the halt would hit no
+                                       outstanding read and stall the WRITE
+                                       (issue #28, ADR-0030).                   */
+} CTCIDEV;                       /* 128 bytes (rarmed + 3 pad) */
+NSF_SIZE_ASSERT(CTCIDEV, 128);
 
 /* asm() external-symbol aliases (CLAUDE.md §3), all unique across the load
  * module. The top-half entries (NSFCI + verb) match their FUNHEAD names
