@@ -64,15 +64,96 @@ blank-padded. S (descriptor) = halfword binary. ERRNO = fullword binary
 (valid only when RETCODE negative). RETCODE = signed fullword binary
 (0 ok / -1 error; SOCKET: >=0 = descriptor).
 
+### 2.1 EZASOH03 backend plist (the facade ABI NSF implements — M3-4)
+
+The `CALL 'EZASOKET'` HLL interface above (ERRNO/RETCODE last) is a
+SEPARATE surface from the **EZASOH03 backend plist** the EZASMI macro
+actually builds and NSF's veneer (`asm/ezasoh03.asm`) consumes. Pinned from
+Shelby's `EZASOH03.txt` / ADR-0029, EZASOH03 is invoked
+`L R15,=V(EZASOH03); BALR R14,R15` with `R1` -> a plist of A() slots:
+
+```
++0   A(4-char EBCDIC function code)
++4   A(ERRNO)     +8  A(RETCODE)      (absent for TERM: +4 is a work area)
++12.. A(function-specific parameters), in the CALL 'EZASOKET' order
+      (SOC-FUNCTION, ERRNO, RETCODE dropped)
+```
+
+`R15` is ALWAYS 0 on return; real errors live in RETCODE/ERRNO. The
+function-specific slots per code implemented in M3-4:
+
+| Code | Verb | +12.. slots | Notes |
+|---|---|---|---|
+| `INIT` | INITAPI | A(MAXSOC), A(IDENT 16B), A(SUBTASK 8B), A(MAXSNO) | IDENT = TCPNAME CL8 + ADSNAME CL8 |
+| `SOCK` | SOCKET | A(AF), A(SOCTYPE), A(PROTO) | all fullword; RETCODE = descriptor |
+| `BIND` | BIND | A(S halfword), A(NAME) | NAME = sockaddr_in (16B) |
+| `SNDT` | **SENDTO** | A(S), A(FLAGS), A(NBYTE), A(BUF), A(NAME) | NEW code (see below) |
+| `RCVF` | **RECVFROM** | A(S), A(FLAGS), A(NBYTE), A(BUF), A(NAME) | NEW code; NAME returns the sender |
+| `CLOS` | CLOSE | A(S halfword) | |
+| `GETS` | GETSOCKNAME | A(S halfword), A(NAME) | NAME returned |
+| `TERM` | TERMAPI | (none) | no ERRNO/RETCODE |
+
+**New codes SNDT / RCVF.** Shelby's macro derives `&FUNC` from the first 4
+characters of the verb, so SENDTO -> `SEND` and RECVFROM -> `RECV` collide
+with the TCP verbs. UDP is a new NSF capability with no EZASMI TYPE, so NSF
+pins two NEW 4-char codes — **`SNDT`** (SENDTO) and **`RCVF`** (RECVFROM) —
+and ships the companion macro `maclib/nsfezasm.mac` (`NSFEZASM
+TYPE=SENDTO|RECVFROM`) rather than editing Shelby's shipped macro
+(ADR-0029). To reconcile with Shelby's actual macro at the M6 relink audit.
+
+**Veneer form.** `EZASOH03` is a THIN veneer that hands its R1 plist to the
+C decoder `nsf_ezasoh03`; all decode/marshalling is portable, host-tested C.
+It uses the cc370 C prologue (`PDPPRLG`), the proven pattern libc370's dyn75
+socket entries use to call C from a hand-written asm entry — NOT `FUNHEAD`,
+which never sets the DSANAB the C callee's prologue reads and would corrupt
+the save chain (the issue-#8 S0C6 class). See `asm/ezasoh03.asm`.
+
 ## 3. ERRNO policy (NSF)
 
 NSF returns the classic Table 67 numbers (BSD-derived, verified identical
 with the X'75' ecosystem). Functions a backend does not support return
 RETCODE=-1, ERRNO=45 (EOPNOTSUPP), R15=0. Stale/closed socket numbers
-return ERRNO=9 (EBADF). Extended (10xxx) codes are facade-level interface
-errors (Table 68); NSF uses them where the semantic matches (e.g. 10108
-"first call not INITAPI/TAKESOCKET" family) — exact subset to be fixed
-during M3-4 implementation and recorded here.
+return ERRNO=9 (EBADF).
+
+**ENOSYS -> EOPNOTSUPP correction (M3-4).** M3-2 completed the not-yet-
+implemented stub verbs (SELECT/SET|GETSOCKOPT/FCNTL/GETPEERNAME) with
+`NSF_ENOSYS = 78`. Table 67 has **no ENOSYS**, and **78 is EDEADLK** — so
+that value was wrong. M3-4 replaces it with **EOPNOTSUPP (45)**, the classic
+"operation not supported" value (ADR-0029), deletes `NSF_ENOSYS`, and pins a
+tombstone in `include/nsfreq.h` so 78 is never reused. All other `NSF_E*`
+values in `nsfreq.h` are verified correct against Table 67.
+
+**Extended (10xxx) codes.** NSF emits **none** in M3-4 (the facade-level
+IUCV/interface diagnostics in Table 68 have no analog in the Phase-1 same-AS
+transport). The subset NSF will emit — e.g. the 10108/10200 "first call not
+INITAPI" family — is an M6-audit item, recorded here when it lands.
+
+**ERRNO thread-safety (fenced, not silenced).** In v1 the last-errno is a
+module-global (`nsf_lasterrno()`, the BSD idiom) and the per-application
+registration + socket-number mapping table are module-global too: **one
+INITAPI per address space**, and a concurrent second app subtask reading
+errno between another's call and store can observe the wrong value. This is
+invisible to the single-subtask M3-4 tests. IBM's per-subtask model (MF=,
+caller-cleared task storage, per-task errno) is deferred to a later
+milestone; documented here rather than left implicit (ADR-0029).
+
+### 3.1 NSF status of the M3-4 function set
+
+| Function | Code | NSF status |
+|---|---|---|
+| INITAPI | INIT | Implemented (host); MAXSOC clamped to the pool limit (64), MAXSNO = clamped-1 |
+| SOCKET | SOCK | Implemented; 0-based halfword number returned in RETCODE; implicit INITAPI |
+| BIND | BIND | Implemented |
+| SENDTO | SNDT | Implemented (UDP) |
+| RECVFROM | RCVF | Implemented (UDP); `NSF_MSG_DONTWAIT` (0x40) = non-blocking (M4 FCNTL bridge) |
+| CLOSE | CLOS | Implemented; clears the mapping entry -> later use = EBADF |
+| GETSOCKNAME | GETS | Implemented |
+| TERMAPI | TERM | Implemented; closes all sockets of the app, then drops the registration |
+
+Host-proven (`test/host/tsteza.c`, 64 assertions). On-MVS proof is pending
+Mike's live run of `TSTEZAM` (C API over the real CTCI/IP/UDP stack) and
+`TSTEZAH` (the EZASOH03 asm-veneer seam) — do not mark MVS-proven here until
+those come back CC 0.
 
 ## 4. Appendix D Table 67 — System Error Return Codes (complete)
 

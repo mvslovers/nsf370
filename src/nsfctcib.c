@@ -432,6 +432,19 @@ static void ctci_io_kick(NETDEV *dev)
      * WRITE. Guard against a double halt (one already requested, not yet
      * completed). The un-armed window is lossless: Hercules buffers inbound with
      * no READ outstanding (§9.3). */
+    /* #28 (IOHALT with no outstanding READ -- live once M3-4 exposes app sends):
+     * !rhold does NOT strictly prove a READ is armed. kick sets rhold=0 only when
+     * the sendq drains (below), so a send arriving before the read subtask
+     * re-issues its EXCP could re-enter here with rhold=0 and no READ yet
+     * outstanding. That IOHALT is HARMLESS: Hercules ctc_halt_or_clear()
+     * (hyperion/ctc_ctci.c) acts ONLY if pCTCBLK->fReadWaiting -- a flag set
+     * strictly around the read thread's timed_wait_condition and cleared right
+     * after, both under EventLock. With no read waiting the halt exit is a pure
+     * no-op (lock/unlock/return): no abend, no state change, the next READ arms
+     * clean. So the worst case is a wasted SVC 33, not a fault -- no explicit
+     * "read outstanding" guard is needed for correctness. Fenced, not silenced;
+     * confirm live via a locally-originated send on a truly idle link (TSTEZAM
+     * scenario 2 / TSTUDPM). */
     if (!d->rhold) {
         if (!Q_EMPTY(&dev->sendq) && !d->halting) {
             d->halting = 1u;

@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.26 — Draft for implementation. Companion document to the frozen
+*Version 1.27 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1257,7 +1257,8 @@ CLOSE) are handled in NSFREQ; the socket-protocol verbs (CONNECT/LISTEN/ACCEPT/
 SEND/SENDTO/RECV/RECVFROM/SHUTDOWN) delegate to `soc_dispatch` (the protocol op
 completes or parks the request — real UDP is M3-3, TCP M4); the verbs not
 implemented in M3-2 (SELECT/SET|GETSOCKOPT/FCNTL/GETPEERNAME) complete with
-`NSF_ENOSYS`; an unknown fn completes with `NSF_EINVAL` — never a fall-through,
+`NSF_EOPNOTSUPP` (M3-4 correction: Table 67 has no ENOSYS, 78 is EDEADLK —
+ADR-0029); an unknown fn completes with `NSF_EINVAL` — never a fall-through,
 never a crash. RQ_INITAPI registers an app instance (a token = `(gen<<16)|idx`
 returned in `apptok`), RQ_SOCKET stamps the new socket's `owner_ascb` with it,
 and RQ_TERMAPI mass-destroys every socket of that app through `soc_destroy` (a
@@ -1698,6 +1699,23 @@ dotted-decimal edge cases): TSTCFG 111/111.
 - Translate each call into an NSFRQE, submit it, WAIT, and map completion
   back into IBM return conventions.
 
+**M3-4 implementation (NSFEZA core + two facades — ADR-0029).** A thin,
+surface-neutral CORE (`src/nsfeza.c`) does exactly the above; each facade
+only marshals its calling convention into it. The M3-4 set ships:
+- the **C API** in its own `@@NS*` alias namespace (`nsf_socket` etc.,
+  `include/nsfeza.h`), disjoint from libc370's dyn75 `@@75*` so both link
+  side by side (the M6 relink-only path re-points `@@75*` at this core);
+- the **EZASOH03 facade** (`asm/ezasoh03.asm`) — a thin veneer that hands
+  its plist to the C decoder `nsf_ezasoh03`; it uses the cc370 C prologue
+  (`PDPPRLG`, the proven dyn75 pattern), not `FUNHEAD`, so the asm->C call
+  does not corrupt the save chain (issue-#8 class);
+- the companion macro `maclib/nsfezasm.mac` adding the UDP verbs SENDTO/
+  RECVFROM (new codes SNDT/RCVF) EZASMI has no TYPE for.
+Socket numbers are the halfword, 0-based IBM descriptors, mapped onto the
+internal `(gen<<16)|id` via a per-application table; MAXSOC is clamped to
+the SOCKET pool limit (64) and MAXSNO reports the clamped reality. Details
+and the full EZASOH03 plist ABI live in `docs/ezasoket-conformance.md`.
+
 ### 15.2 Function Coverage by Milestone
 
 | Milestone | Functions |
@@ -1993,6 +2011,41 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.27: M3-4 — NSFEZA: the EZASOKET API layer (host + cross-link; live gate
+pending).** The application-visible socket API, a surface-neutral core with two
+facades (ADR-0029). Deliverables: the **C API** (`src/nsfeza.c` /
+`include/nsfeza.h`) in the `@@NS*` alias namespace — `nsf_initapi`/`nsf_socket`/
+`nsf_bind`/`nsf_sendto`/`nsf_recvfrom`/`nsf_close`/`nsf_getsockname`/
+`nsf_termapi` plus `nsf_lasterrno` and the EZASOH03 plist decoder
+`nsf_ezasoh03` — each building an NSFRQE, `nsfreq_call`ing it and mapping
+RETCODE/ERRNO; **halfword 0-based socket numbers** on a per-application mapping
+table onto the internal `(gen<<16)|id`, MAXSOC clamped to the pool limit (64),
+MAXSNO = clamped-1, implicit INITAPI, EBADF-after-CLOSE, TERMAPI mass teardown;
+a `sockaddr_in` read/written byte-wise (network order) so host and target
+agree. The **EZASOH03 facade** (`asm/ezasoh03.asm`) — a thin veneer over the C
+decoder using the cc370 C prologue **PDPPRLG** (the proven dyn75 socket-entry
+pattern for calling C from asm), **not FUNHEAD** (which never sets the DSANAB
+the C callee reads — the issue-#8 save-chain corruption). The companion macro
+`maclib/nsfezasm.mac` adds the UDP verbs SENDTO/RECVFROM (new EZASOH03 codes
+**SNDT/RCVF**, since Shelby's first-4-char scheme collides SEND/RECV).
+**Errno correction:** the M3-2 stub verbs completed with `NSF_ENOSYS = 78`, but
+Table 67 has no ENOSYS and 78 is EDEADLK — replaced with `NSF_EOPNOTSUPP` (45),
+`NSF_ENOSYS` deleted (tombstoned). **#28** (IOHALT with no outstanding READ,
+now reachable via app sends) is FENCED with Hercules source evidence
+(`ctc_halt_or_clear` no-ops unless `fReadWaiting`) documented at the IOHALT call
+site — pending Mike's on-MVS confirmation. Host **1197→1261** (TSTEZA 64:
+mapping table / clamp / exhaustion / implicit init / EBADF / non-blocking
+RECVFROM / blocking round-trip with peer / TERMAPI leak gate / RETCODE-ERRNO
+per function / the decoder incl. unsupported→EOPNOTSUPP + R15=0); `-Werror`
+clean; 11 unique `@@NS*` aliases, no collisions; full cc370/as370/ld370
+cross-build of all 34 test modules (incl. the EZASOH03 asm↔C boundary) links
+clean. **On-MVS gate PENDING:** `TSTEZAM` (C API over the real CTCI/IP/UDP
+stack) + `TSTEZAH` (the asm-veneer seam: two consecutive calls × two subtasks,
+Mike's predicted-failure probe) — NOT marked MVS-proven until CC 0 comes back.
+The `NSF` load-module source list is unchanged (NSFEZA links into the
+application, like nsfreq.c's app side). See ADR-0029 (amended) +
+`docs/ezasoket-conformance.md`. §15.1 updated.
 
 **v1.26: M3-3 — NSFUDP: datagram in/out, port demux, checksum; sockets reachable
 end to end.** UDP is the end-to-end proof of the socket/request path (§12): a

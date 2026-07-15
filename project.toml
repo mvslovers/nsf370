@@ -404,6 +404,49 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M3-4 NSFEZA (EZASOKET API): the C API + the EZASOH03 plist decoder -------
+# Host-only (mvs = false): the @@NS* C-API functions submit + WAIT, so this uses
+# the TSTREQ round-trip harness -- an executive thread runs evt_mainloop, the
+# main thread issues API calls, a dummy UDP-shaped PROTOPS at proto 17 completes
+# them. Covers 0-based numbering, MAXSOC clamp/MAXSNO, exhaustion (EMFILE),
+# implicit INITAPI, EBADF-after-CLOSE + double-CLOSE, non-blocking RECVFROM
+# (EWOULDBLOCK), a blocking RECVFROM round-trip with the peer, TERMAPI mass
+# teardown + leak gate, RETCODE/ERRNO mapping, and the EZASOH03 decoder
+# (per-code happy path + unsupported/unknown -> EOPNOTSUPP, R15 always 0). The
+# MVS full-stack proof is TSTEZAM; the asm veneer is TSTEZAH. Same source set as
+# TSTREQ + src/nsfeza.c.
+[[test]]
+name = "TSTEZA"
+startup = "crt1"
+mvs = false
+sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M3-4 NSFEZA on MVS: the EZASOKET C API over the full stack (live gate) ---
+# MVS-only (host = false): TSTUDPM's live scenario rewritten against the @@NS*
+# C API -- a cthread APP SUBTASK does nsf_initapi -> nsf_socket -> nsf_bind ->
+# nsf_sendto -> nsf_recvfrom -> nsf_close -> nsf_termapi over CTCI (0500/0501) +
+# IP + ICMP + UDP + the request path, exactly as a relinked C app would. Built +
+# run with -DNSFCTCI_CUU=0x0500 etc. Same source set as TSTUDPM + src/nsfeza.c.
+[[test]]
+name = "TSTEZAM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstezam.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M3-4 EZASOH03 asm veneer Stage-0 probe: the asm -> C linkage seam --------
+# MVS-only (host = false): proves asm/ezasoh03.asm (the thin EZASOH03 veneer)
+# calls the C decoder correctly under the exact conditions a corrupt save chain
+# would betray -- two consecutive calls + two concurrent cthread subtasks
+# (issue-#8 class, host-invisible). Phase A hammers the unknown-code path (no
+# executive); Phase B drives INIT/SOCK/BIND/GETS/CLOS/TERM through the veneer
+# over a dummy protocol + the executive. Links src/nsfeza.c + asm/ezasoh03.asm
+# on top of the TSTREQM request harness.
+[[test]]
+name = "TSTEZAH"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstezah.c", "asm/ezasoh03.asm", "src/nsfeza.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M3-0a Stage 0: can problem state halt an outstanding CTCI READ? --------
 # MVS-only (host = false), standalone: NOT the M1-4b subtask/DEVOPS driver --
 # a raw single-task probe reusing the M1-3 primitives (ctci_alloc_unit/
