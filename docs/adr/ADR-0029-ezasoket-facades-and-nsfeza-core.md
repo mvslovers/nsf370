@@ -189,3 +189,38 @@ for HTTPD/mvsMF, and it is an M6 deliverable gated on the audit.
   (BSD-derived set); all eight M3-4 call formats verified; extended code
   10110 "LOAD of EZASOH03 failed" pins **EZASOH03 as IBM's own module
   name** — the facade replaces the IBM-designated seam.
+
+## Amendment (M3-4 implementation)
+
+Implementation forced three deltas, recorded here (not silently):
+
+1. **Veneer form: PDPPRLG, not FUNHEAD.** The decision above ("thin facades
+   over one core; the facade marshals to the C core") left the EZASOH03
+   entry's prologue open. It must CALL a cc370 C function
+   (`nsf_ezasoh03`/`@@NSOH03`), and the cc370 C prologue
+   (`maclib/pdpprlg.macro`) allocates the callee's DSA from the caller's
+   **DSANAB at `76(R13)`** — so the entry must present a valid cc370 DSA.
+   `FUNHEAD` never sets DSANAB; a C call after it reads a garbage NAB and
+   corrupts the save chain (the issue-#8 S0C6-on-the-next-call class). The
+   PROVEN pattern in this ecosystem is `PDPPRLG`: libc370's VSAM exit stubs
+   (`src/clib/@@vsopen.c` — the `EODAD`/`LERAD`/`SYNAD` routines written in
+   file-scope `__asm__`) are EZASOH03's analog — HAND-WRITTEN asm, entered by
+   a non-C caller (the VSAM access method, as EZASOH03 is entered by the
+   EZASMI macro), calling C via `PDPPRLG` + `L R15,=V(@@VSXEOF)` + `BALR`.
+   NSF's veneer follows them. (Verified: `pdpprlg.macro` reads/stores the NAB
+   at `76(,13)`; `mvsmacs.macro`'s `FUNHEAD` never references offset 76.)
+   `PDPPRLG` also yields a
+   per-invocation DSA off each caller's C stack — concurrency-safe for the
+   app subtasks that enter EZASOH03, with no static save area and no
+   GETMAIN. (The M3-4 caller is always in C context — a relinked C app, or
+   the cthread test drivers; a pure-asm EZASMI caller with no C environment
+   is an M6 relink-audit concern and hooks in at the veneer without touching
+   the decoder.)
+2. **New UDP codes SNDT / RCVF** (conformance doc §2.1): Shelby's
+   first-4-char `&FUNC` scheme collides SENDTO→SEND, RECVFROM→RECV, so NSF
+   pins two new EZASOH03 codes and ships `maclib/nsfezasm.mac` rather than
+   editing Shelby's macro.
+3. **Stub-verb ERRNO: ENOSYS → EOPNOTSUPP.** M3-2's `NSF_ENOSYS = 78` was
+   wrong (Table 67 has no ENOSYS; 78 is EDEADLK). The stub verbs now
+   complete with `NSF_EOPNOTSUPP` (45); `NSF_ENOSYS` is deleted and
+   tombstoned in `include/nsfreq.h`.

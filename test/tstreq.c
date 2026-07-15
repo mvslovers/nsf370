@@ -5,7 +5,7 @@
  *
  *   PORTABLE (host + MVS) -- direct-call dispatcher tests, no threads, no loop:
  *     - dispatch: every implemented verb reaches its handler; a delegated verb
- *       reaches the protocol op; an unimplemented verb -> ENOSYS; an unknown fn
+ *       reaches the protocol op; an unimplemented verb -> EOPNOTSUPP; an unknown fn
  *       -> a clean EINVAL (no fall-through, no crash); bad descriptor -> EBADF;
  *       bad app token -> EINVAL; unknown proto -> EPROTONOSUPPORT.
  *     - TERMAPI mass teardown: an app with N sockets (one with a parked RECV) ->
@@ -242,16 +242,16 @@ static void test_dispatch(void)
     CHECK_EQ((long)r.errno_, (long)NSF_EWOULDBLOCK, "non-blocking RECV empty -> EWOULDBLOCK");
     CHECK(s->pend_recv == NULL, "non-blocking RECV did not park");
 
-    /* unimplemented verbs -> ENOSYS */
+    /* unimplemented verbs -> EOPNOTSUPP (ADR-0029: no ENOSYS; 78 is EDEADLK) */
     rqe_init(&r, RQ_SELECT, 0u, 0u);
     nsfreq_dispatch(&r);
-    CHECK_EQ((long)r.errno_, (long)NSF_ENOSYS, "RQ_SELECT -> ENOSYS");
+    CHECK_EQ((long)r.errno_, (long)NSF_EOPNOTSUPP, "RQ_SELECT -> EOPNOTSUPP");
     rqe_init(&r, RQ_SETSOCKOPT, desc, 0u);
     nsfreq_dispatch(&r);
-    CHECK_EQ((long)r.errno_, (long)NSF_ENOSYS, "RQ_SETSOCKOPT -> ENOSYS");
+    CHECK_EQ((long)r.errno_, (long)NSF_EOPNOTSUPP, "RQ_SETSOCKOPT -> EOPNOTSUPP");
     rqe_init(&r, RQ_FCNTL, desc, 0u);
     nsfreq_dispatch(&r);
-    CHECK_EQ((long)r.errno_, (long)NSF_ENOSYS, "RQ_FCNTL -> ENOSYS");
+    CHECK_EQ((long)r.errno_, (long)NSF_EOPNOTSUPP, "RQ_FCNTL -> EOPNOTSUPP");
 
     /* unknown fn -> a clean EINVAL (no fall-through) */
     rqe_init(&r, 4242u, 0u, 0u);
@@ -451,7 +451,7 @@ static void *producer(void *arg)
     /* Fire the whole batch WITHOUT waiting between submits, to maximise the
      * chance a push lands in the executive's requestECB-reset window. */
     for (i = 0; i < STRESS_PERPROD; i++) {
-        rqe_init(&r[i], RQ_SELECT, 0u, 0u);    /* immediate ENOSYS: no alloc/sock */
+        rqe_init(&r[i], RQ_SELECT, 0u, 0u);    /* immediate EOPNOTSUPP: no alloc/sock */
         nsfreq_submit(&r[i]);
     }
     for (i = 0; i < STRESS_PERPROD; i++) {
@@ -461,7 +461,7 @@ static void *producer(void *arg)
             (void)__sync_fetch_and_add(&g_lost, 1L);
         } else {
             (void)__sync_fetch_and_add(&g_done, 1L);
-            if (r[i].errno_ != NSF_ENOSYS) {
+            if (r[i].errno_ != NSF_EOPNOTSUPP) {
                 (void)__sync_fetch_and_add(&g_badret, 1L);
             }
         }
@@ -494,7 +494,7 @@ static void test_lost_request(void)
            g_done, g_lost, g_badret, STRESS_TOTAL);
     CHECK_EQ(g_lost, 0L, "lost-request guard: ZERO requests lost");
     CHECK_EQ(g_done, (long)STRESS_TOTAL, "lost-request guard: every request dispatched");
-    CHECK_EQ(g_badret, 0L, "lost-request guard: every request got its ENOSYS completion");
+    CHECK_EQ(g_badret, 0L, "lost-request guard: every request got its EOPNOTSUPP completion");
     CHECK_EQ((long)nsfevt_inuse(), 0L, "lost-request guard: EVT pool at baseline");
 }
 #endif /* !__MVS__ */

@@ -432,6 +432,23 @@ static void ctci_io_kick(NETDEV *dev)
      * WRITE. Guard against a double halt (one already requested, not yet
      * completed). The un-armed window is lossless: Hercules buffers inbound with
      * no READ outstanding (§9.3). */
+    /* #28 (IOHALT with no outstanding READ -- OPEN, a narrow stall corner):
+     * !rhold does NOT strictly prove a READ is armed. kick sets rhold=0 only when
+     * the sendq drains (below), so a send arriving in the tiny window between the
+     * returnecb POST and the read subtask re-issuing its EXCP re-enters here with
+     * rhold=0 and NO READ outstanding. NO ABEND -- Hercules ctc_halt_or_clear()
+     * (hyperion/ctc_ctci.c) acts only if pCTCBLK->fReadWaiting, so the halt exit
+     * is a pure no-op when no read waits. BUT it is NOT harmless on the guest
+     * side: with no read to purge there is no X'48' completion, so `service`
+     * never sets rhold=1 (it is set ONLY on a read completion), the freshly-armed
+     * read blocks on the idle link (no inbound), and this WRITE STALLS until the
+     * next inbound frame -- the pre-#21 stall class ADR-0025 removed, reintroduced
+     * for this one send. No live run has hit it (a burst keeps sendq full -> no
+     * drain -> no race; a spaced send lets the read re-arm first), so the window
+     * is narrow -- but "narrow" is not "harmless". The real fix is a `rarmed`
+     * guard (only IOHALT when a read EXCP is provably outstanding; with none the
+     * channel is free -> issue the WRITE directly, no park) -- deferred to a
+     * dedicated PR with its own live validation (issue #28). */
     if (!d->rhold) {
         if (!Q_EMPTY(&dev->sendq) && !d->halting) {
             d->halting = 1u;
