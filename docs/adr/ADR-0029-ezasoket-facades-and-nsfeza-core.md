@@ -1,6 +1,8 @@
 # ADR-0029 — Socket API layering: thin facades over one surface-neutral NSFEZA core
 
-**Status:** Proposed (2026-07-15). Introduced with M3-4 (NSFEZA). **Relates to:**
+**Status:** Accepted (2026-07-15); amended same day after extraction of
+SC31-7187-03 (Appendix D + §5.4) into `docs/ezasoket-conformance.md`.
+Introduced with M3-4 (NSFEZA). **Relates to:**
 §15 (EZASOKET API), §15.2 (M6 completeness audit), ADR-0028 (M3-3 seams),
 the frozen NSFRQE contract (§14, frozen at M3), RQ_INITAPI registration (M3-2).
 
@@ -76,40 +78,51 @@ TERMAPI, GETSOCKNAME.
 
 ### Descriptor model: halfword API numbers mapped onto generation descriptors
 
-GG24-2561 fixes the API-visible socket descriptor as a **halfword**
-(`pic 9(4) Binary`), range 1–1023 on MVS 3.8 (Shelby's limit; z/OS MAXSOC goes
-to 65535). Our internal descriptor is a fullword `(gen<<16)|id` with a
-generation counter — it cannot be surfaced. Therefore NSFEZA keeps a
-**per-application mapping table** (socket number → internal descriptor),
-anchored at the INITAPI registration (RQ_INITAPI, M3-2):
+SC31-7187-03 (§5.4.16/§5.4.31, verified) fixes the API-visible socket
+descriptor as a **halfword** (`pic 9(4) Binary`), **numbered from 0**
+("If you have 50 sockets, they are numbered from 0 to 49"); MAXSOC is
+**min 50 / max 2000, defaulting to 50** if less is requested, and MAXSNO
+returns the highest assignable number. (Shelby's MVS 3.8 port uses 1–1023 —
+an ecosystem deviation, recorded in the conformance doc.) Our internal
+descriptor is a fullword `(gen<<16)|id` with a generation counter — it
+cannot be surfaced. Therefore NSFEZA keeps a **per-application mapping
+table** (socket number → internal descriptor), anchored at the INITAPI
+registration (RQ_INITAPI, M3-2):
 
-- CLOSE clears the entry → any later use of that number draws **EBADF** at the
-  facade; the gen-check in the core still catches internal reuse. Stale-handle
-  protection is preserved end to end.
+- Socket numbers are **0-based** per IBM; the mapping table is sized by the
+  clamped MAXSOC.
+- CLOSE clears the entry → any later use of that number draws **EBADF (9)**
+  at the facade; the gen-check in the core still catches internal reuse.
+  Stale-handle protection is preserved end to end.
 - `RQ_SOCKET` **auto-registers** the application when no INITAPI preceded it
-  (implicit INITAPI — IBM behavior; Shelby triggers it on SOCKET, SELECT,
-  GETHOSTBY*).
+  (implicit INITAPI — IBM behavior; SC31-7187 lists GETCLIENTID, GETHOSTID,
+  GETHOSTNAME, GETIBMOPT, SELECT, SELECTEX, SOCKET, TAKESOCKET as implicit
+  triggers; Shelby implements SOCKET, SELECT, GETHOSTBY*).
 - MAXSOC is accepted and **clamped** against the pool limit (SOCKET pool
-  default 64); no over-promising.
+  default 64); MAXSNO reports the clamped reality, no over-promising.
+- **TERMAPI takes no ERRNO/RETCODE** (`CALL 'EZASOKET' USING SOC-FUNCTION.`
+  only) — the "ERRNO/RETCODE last" rule holds for every other M3-4 function.
 
-### ERRNO policy and the known ecosystem divergence
+### ERRNO policy — the suspected ecosystem divergence is RESOLVED
 
-§15 mandates **IBM EZASOKET ERRNO values** (not Unix `errno.h` where they
-differ). Pinned finding: `EZASOH03.txt` line 314 hardcodes
-`LA R4,61 … hECONNREFUSED` — 61 is the **BSD** ECONNREFUSED, and the `h`
-prefix reads as "host". If that generalizes, the existing X'75' ecosystem
-already diverges from IBM values today, and an application testing
-`errno == 61` would break on an IBM-conformant NSF. This is a real
-relink-compatibility conflict:
+§15 mandates **IBM EZASOKET ERRNO values**. The original suspicion — that
+`EZASOH03.txt` line 314 (`LA R4,61 … hECONNREFUSED`, BSD value 61) meant the
+X'75' ecosystem diverges from IBM — **dissolved on extraction of
+SC31-7187-03 Appendix D**: IBM Table 67 itself lists `ECONNREFUSED = 61`.
+IBM's V3R2 socket error numbers ARE the BSD-derived set (EBADF=9, EMFILE=24,
+EWOULDBLOCK=35, EOPNOTSUPP=45, EADDRINUSE=48, ECONNRESET=54,
+ECONNREFUSED=61, …). §15, Shelby's backend, and the `@@75` ecosystem agree;
+there is no relink-compatibility conflict.
 
-- NSFEZA core maps to **IBM values** (the §15 contract).
-- The divergence is recorded in **`docs/ezasoket-conformance.md`**, which M3-4
-  creates (it is the M6 acceptance artifact per §15.2). Until SC31-7187
-  Appendix B is extracted, entries are marked *ecosystem-verified, IBM
-  cross-check pending* — never guessed.
-- Whether the `@@75`/dyn75-compat facade needs a BSD-value ERRNO mapping is an
-  **M6 audit question**, answered by what HTTPD/mvsMF actually test, not
-  decided here.
+- NSFEZA core maps to the **classic Table 67 values**. Unsupported functions
+  return RETCODE=-1, ERRNO=45 (EOPNOTSUPP), R15=0.
+- Table 67 also carries **OE aliases** (EBADF=113, EINVAL=121, E2BIG=145
+  beside 9/22/7) — OpenEdition errno values merged into the same table. NSF
+  returns the classic (low) values; the aliases are recorded in the
+  conformance doc for the M6 audit only.
+- The full Table 67 (224 rows) and Table 68 (sockets extended, 10xxx,
+  137 rows) live in **`docs/ezasoket-conformance.md`** (created with this
+  amendment; the M6 acceptance artifact per §15.2).
 
 ### dyn75 succession plan (direction, not M3-4 scope)
 
@@ -171,5 +184,8 @@ for HTTPD/mvsMF, and it is an M6 deliverable gated on the audit.
   lists.
 - WAVV 2006 (dinomasters.com/coolstuff/2006EZA.pdf) — facade architecture,
   EZASMI ≠ EZASOKET, INITAPI/TERMAPI macro-only.
-- SC31-7187-03 Appendix B — ERRNO table; extraction pending (blocker for the
-  complete conformance doc, not for this ADR).
+- SC31-7187-03 Appendix D + §5.4 — extracted into
+  `docs/ezasoket-conformance.md`: Table 67 confirms ECONNREFUSED=61
+  (BSD-derived set); all eight M3-4 call formats verified; extended code
+  10110 "LOAD of EZASOH03 failed" pins **EZASOH03 as IBM's own module
+  name** — the facade replaces the IBM-designated seam.
