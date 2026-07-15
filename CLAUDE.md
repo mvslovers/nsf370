@@ -530,8 +530,37 @@ keep):** the first run S0C4'd because an inline comment reaching **column 72**
 on the veneer's `LR 11,1` line made as370 swallow the next `LA 1,88(,13)`
 (CLAUDE.md 3 — invisible to the host build AND a clean cc370/as370/ld370 link;
 only the live dump showed it). Fixed by keeping instruction-line comments short.
-Spec v1.27, ADR-0029 amended, conformance doc §2.1/§3. **M4 (TCP + EZASOKET M4
-set) next.** |
+Spec v1.27, ADR-0029 amended, conformance doc §2.1/§3. **M3-5 done (host +
+cross-link + live gate green) — NSFECHO UDP echo sample + host client + issue
+#28 closed (ADR-0030); the M3 exit gate.** The first user-visible NSF program:
+`samples/nsfecho.c` (its own `[[module]]` NSFECHO carrying the Phase-1 stack —
+bring up CTCI+IP+UDP, `nsf_initapi`/`socket`/`bind`, a **blocking**
+`nsf_recvfrom`→`nsf_sendto` echo loop on an ATTACHed subtask, raw-byte `QUIT`
+sentinel per spec 15.3, shutdown leak gate + stat dump; PARM = port via
+EBCDIC-aware `atoi(argv[1])`, device hardcoded via named constants since
+`[build].cflags` is global) + `samples/host/echo_client.py` (stdlib,
+echo/sizes/kill9/quit/gate, each PASS/FAIL + exit code) + `jcl/NSFECHO.jcl`.
+**The sample reproduced #28 at scale and it was NOT harmless** (my earlier fence
+was wrong): on an idle link a locally-originated echo reply was held in the CTCI
+write path until the next inbound frame (wire-proven 2 s stall; `echo`+`ping`
+1000/1000; `rpurge` 39/300). Root cause: `kick` IOHALT-parked the read on
+`!rhold`, which doesn't prove a READ is armed — a send in the arming window
+halted an un-armed read (Hercules no-ops it), no X'48', `rhold` never re-set,
+WRITE stalled. **Fixed (ADR-0030, folded into this PR at Mike's direction): the
+`rarmed` guard** — `read_sub` sets `CTCIDEV.rarmed` after `ctci_read` (cleared
+after the completion; sole writer, executive read-only) + POSTs `dev->ecb` after
+arming; `kick` IOHALTs only when `rarmed`. `CTCIDEV` 124→128 B; TSTCTCI scenario
+10 updated (the fix correctly withholds the no-op halt when data already
+completed the read — the halt-IS-requested path stays covered by
+`scenario_local_write_halt`/`scenario_send_write`). Host **1261→1262**, `-Werror`
+clean; NSF+NSFECHO+33 test modules cross-link clean at 128 B; alias scan clean
+(NSFECHO exports only `main`, helpers static). **VALIDATED LIVE on MVSCE** (real
+0500/0501): idle-link `echo` **1000/1000** (no ping — was 21/1000 before), full
+`gate` green, `echoed=2434 send_fail=0`, **`rpurge` 39/300→2391/2434 (98%)**,
+`ierr=0`, leak clean, **CC 0**, no dump; M2 ping regression **1000/1000 unimodal**
+(0.560/0.922/1.865 ms) — receive path unaffected. Spec v1.28 (§9.3 + M3 exit
+gate + changelog) + ADR-0030. **M3 exit gate GREEN — awaiting Mike's countersign
+of the live gate before marking M3 COMPLETE. M4 (TCP + EZASOKET M4 set) next.** |
 | **M4** | TCP (state machine, data path, rexmit) + EZASOKET (M4 set) + loss harness | telnet TCP echo, clean FIN, survives 5% loss; TIME_WAIT reclaim shown | ☐ Planned |
 | **M5** | Phase 2: `NSFS` subsystem + cross-memory + TCP hardening + docs | 2 address spaces share one stack; stress passes; docs complete | ☐ Planned |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |

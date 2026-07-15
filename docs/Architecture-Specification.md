@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.27 — Draft for implementation. Companion document to the frozen
+*Version 1.28 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -958,6 +958,18 @@ appendage alternative.
 > by the RECEIVE, so `kick` never halts — `rpurge` stays 0 under sustained ping). The
 > un-armed window stays lossless (Hercules buffers inbound, "Inbound flow control"
 > below).
+>
+> **Correction (ADR-0030, M3-5, live — closes issue #28).** ADR-0027 halted on
+> `!rhold`, which does not prove a READ is armed: a locally-originated send in the
+> window between `kick`'s `returnecb` POST and `read_sub` re-issuing its EXCP halted
+> an un-armed read (a Hercules no-op), so no X'48' arrived, `rhold` never re-set, and
+> the WRITE stalled until the next inbound frame. The M3-5 UDP echo workload hit this
+> reliably on an idle link. **Fixed by the `rarmed` guard:** `read_sub` sets
+> `CTCIDEV.rarmed` after `ctci_read` (cleared after the completion; sole writer,
+> executive read-only) and POSTs `dev->ecb` right after arming; `kick` IOHALTs only
+> when `rarmed`, so a windowed send parks + issues on the next pass — never a stall.
+> `CTCIDEV` 124 → 128 B. Proven live: idle-link echo 1000/1000, `rpurge` ≈ echoed
+> (39/300 → 2391/2434), M2 ping regression 1000/1000 unimodal.
 
 - **Top half (HLASM, mainline):** two DCBs (`DSORG=PS,MACRF=E`, `IOBAD=`), one
   per subchannel, opened `INPUT` / `OUTPUT`; `CENDA=` is deliberately omitted.
@@ -1958,7 +1970,12 @@ afterwards (v1.21). **M2 COMPLETE.**
 | M3-5 | UDP echo server sample (MVS) + host-side test client | S |
 
 **Exit gate:** UDP echo via EZASOKET API works from host; kill -9 of the
-client and socket close paths leak nothing (leak gate).
+client and socket close paths leak nothing (leak gate). **Met (M3-5):**
+`samples/nsfecho.c` + `samples/host/echo_client.py`; live gate green on MVSCE
+(idle-link echo 1000/1000, sizes/kill9/quit pass, server CC 0, leak clean) —
+after closing issue #28 (the idle-link CTCI write stall) with the `rarmed` guard
+(ADR-0030). Awaiting maintainer countersign of the live gate before "M3
+COMPLETE".
 
 ### M4 — TCP
 
@@ -2011,6 +2028,31 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.28: M3-5 — UDP echo sample (NSFECHO) + host client; issue #28 closed
+(ADR-0030). M3 exit gate GREEN.** The first user-visible NSF program: a UDP echo
+server on the EZASOKET C API, its own load module (`samples/nsfecho.c`, carrying
+the Phase-1 stack), plus a stdlib-only host test client (`samples/host/
+echo_client.py`, scenarios echo/sizes/kill9/quit/gate) and `jcl/NSFECHO.jcl`.
+The sample is API documentation as much as a program: blocking `nsf_recvfrom` →
+`nsf_sendto` echo loop, a raw-byte `QUIT` sentinel (spec 15.3 binary
+transparency), a shutdown leak gate + stat dump. Running the echo workload at
+scale **reproduced the open issue #28** — a locally-originated reply on an idle
+CTCI link was held in the write path until the next inbound frame (wire-proven:
+a 2 s stall, released only by the next request; `echo`+`ping` passed 1000/1000;
+`rpurge` 39/300). Root cause: `kick` IOHALT-parked the read on `!rhold`, which
+does not prove a READ is armed — a send in the arming window halted an un-armed
+read (a Hercules no-op), so no purge, `rhold` never re-set, WRITE stalled.
+**Fixed (ADR-0030):** the `rarmed` guard — `read_sub` tracks a provably-armed
+READ (set after `ctci_read`, cleared after the completion) and POSTs `dev->ecb`
+after arming; `kick` IOHALTs only when `rarmed`, so a windowed send parks +
+issues on the next pass, never a stall. `CTCIDEV` 124 → 128 B (§9.3). **Live gate
+(MVSCE, real 0500/0501):** idle-link `echo` **1000/1000** (no ping), full `gate`
+green, `echoed=2434 send_fail=0`, `rpurge` 39/300 → **2391/2434**, `ierr=0`, leak
+clean, **CC 0**, no dump; M2 ping regression **1000/1000 unimodal**
+(0.560/0.922/1.865 ms). Host **1261 → 1262** (TSTCTCI scenario 10 updated);
+NSF + NSFECHO + 33 test modules cross-link clean; alias scan clean. §9.3 +
+ADR-0030 + M3 exit-gate status.
 
 **v1.27: M3-4 — NSFEZA: the EZASOKET API layer (host + cross-link; live gate
 pending).** The application-visible socket API, a surface-neutral core with two

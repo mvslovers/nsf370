@@ -32,9 +32,11 @@
  * the read re-arm is sequenced BEHIND the write pipeline: service only marks the
  * release (rhold); kick posts returnecb once nothing is queued or outstanding.
  * The un-armed window is lossless (Hercules buffers inbound, §9.3). A WRITE that
- * originates while the READ is already armed (M3+ locally-originated traffic,
- * not the M2 reply pattern) still hits the queueing -- the documented follow-on
- * is HIO or an attention-driven protocol, ADR-0025.
+ * originates while the READ is already armed (M3+ locally-originated traffic, not
+ * the M2 reply pattern) is handled by actively parking the read: kick IOHALTs the
+ * armed READ (ADR-0027) so the WRITE issues, gated on the read being provably
+ * outstanding (d->rarmed) so the halt never hits an un-armed read and stalls
+ * (issue #28, ADR-0030).
  *
  * OWNERSHIP (§3, single-owner PBUFs). Inbound: the decoder copies each IPv4
  * segment into a fresh PBUF (EV_PACKET_RECEIVED); the read buffer is never handed
@@ -265,9 +267,17 @@ static int read_sub(void *arg)
 
         d->recb = 0u;
         ctci_read(d->rscb, d->rbuf, d->bufsize, &d->recb);  /* one READ */
+        d->rarmed = 1u;                     /* the READ EXCP is now outstanding */
+        /* Wake the executive now that a READ is provably armed: if it has a
+         * locally-originated WRITE queued (which arrived while the read was
+         * re-arming), this is the pass on which it can IOHALT-park the read and
+         * issue the WRITE -- closing the #28 stall window (ADR-0030). Harmless
+         * when there is no outbound work (one no-op executive pass). */
+        nsfthr_post(&dev->ecb, 0u);
         if (!wait_or_stop(d, &d->recb)) {
             break;                          /* stop while a READ is outstanding */
         }
+        d->rarmed = 0u;                     /* completion in hand: no READ armed */
         ctci_status(d->rscb, &post, &res);
         d->rpost = post;
         d->rlen  = (res <= d->bufsize) ? (d->bufsize - res) : 0u;
@@ -432,25 +442,21 @@ static void ctci_io_kick(NETDEV *dev)
      * WRITE. Guard against a double halt (one already requested, not yet
      * completed). The un-armed window is lossless: Hercules buffers inbound with
      * no READ outstanding (§9.3). */
-    /* #28 (IOHALT with no outstanding READ -- OPEN, a narrow stall corner):
-     * !rhold does NOT strictly prove a READ is armed. kick sets rhold=0 only when
-     * the sendq drains (below), so a send arriving in the tiny window between the
-     * returnecb POST and the read subtask re-issuing its EXCP re-enters here with
-     * rhold=0 and NO READ outstanding. NO ABEND -- Hercules ctc_halt_or_clear()
-     * (hyperion/ctc_ctci.c) acts only if pCTCBLK->fReadWaiting, so the halt exit
-     * is a pure no-op when no read waits. BUT it is NOT harmless on the guest
-     * side: with no read to purge there is no X'48' completion, so `service`
-     * never sets rhold=1 (it is set ONLY on a read completion), the freshly-armed
-     * read blocks on the idle link (no inbound), and this WRITE STALLS until the
-     * next inbound frame -- the pre-#21 stall class ADR-0025 removed, reintroduced
-     * for this one send. No live run has hit it (a burst keeps sendq full -> no
-     * drain -> no race; a spaced send lets the read re-arm first), so the window
-     * is narrow -- but "narrow" is not "harmless". The real fix is a `rarmed`
-     * guard (only IOHALT when a read EXCP is provably outstanding; with none the
-     * channel is free -> issue the WRITE directly, no park) -- deferred to a
-     * dedicated PR with its own live validation (issue #28). */
+    /* IOHALT the read to park it ONLY when a READ EXCP is provably outstanding
+     * (d->rarmed, set by read_sub after ctci_read). `!rhold` alone does NOT
+     * prove an armed read: kick clears rhold when the sendq drains (below) and
+     * posts returnecb, but read_sub re-issues its EXCP a moment later -- a send
+     * arriving in that window re-enters here with rhold=0 and NO read armed.
+     * Halting then is a pure no-op (Hercules ctc_halt_or_clear() acts only if
+     * fReadWaiting), so no X'48' arrives, `service` never sets rhold, and the
+     * WRITE would STALL until the next inbound frame (issue #28 -- the pre-#21
+     * stall class, reproduced live by the UDP echo workload). The `rarmed`
+     * guard closes it: when the read is not yet armed we do nothing this pass;
+     * read_sub POSTs dev->ecb immediately after it arms, re-running kick with
+     * rarmed set, so the WRITE parks + issues on the very next pass with at most
+     * a scheduling delay -- never a stall (ADR-0030). */
     if (!d->rhold) {
-        if (!Q_EMPTY(&dev->sendq) && !d->halting) {
+        if (!Q_EMPTY(&dev->sendq) && !d->halting && d->rarmed) {
             d->halting = 1u;
             ctci_halt_read(d->rscb, d->rucb);
             TRC(DRIVER, "CTCI %04X IOHALT read to park a local WRITE",
