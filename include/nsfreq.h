@@ -92,7 +92,11 @@ enum {
 #define NSF_ENOBUFS         55      /* buffer/pool exhaustion (drop, not abend)  */
 #define NSF_ESHUTDOWN       58      /* stack is shutting down                   */
 #define NSF_EHOSTUNREACH    65      /* no route to the datagram's destination   */
-#define NSF_ENOSYS          78      /* verb not implemented (M3-2 stub verbs)   */
+/* NO NSF_ENOSYS: M3-2 used 78 for the not-implemented stub verbs (SELECT/
+ * SET|GETSOCKOPT/FCNTL/GETPEERNAME), but IBM Table 67 has no ENOSYS and 78 is
+ * EDEADLK (docs/ezasoket-conformance.md 4). Per ADR-0029 the stub verbs now
+ * complete with NSF_EOPNOTSUPP (45) -- the classic "operation not supported"
+ * value the M6 relink audit expects. Do NOT reintroduce 78 as ENOSYS. */
 
 /* EZASOKET RETCODE convention: 0 (or a byte count) on success, -1 on error with
  * errno_ set (spec 15.1). */
@@ -207,7 +211,7 @@ int      nsfreq_pending(void) asm("NSFRQPND");
  * handled here; the socket-protocol verbs (CONNECT/LISTEN/ACCEPT/SEND/SENDTO/
  * RECV/RECVFROM/SHUTDOWN) delegate to soc_dispatch (the protocol op completes or
  * parks r); the M3-2-unimplemented verbs (SELECT/SET|GETSOCKOPT/FCNTL/
- * GETPEERNAME) complete r with NSF_ENOSYS; an unknown fn completes r with
+ * GETPEERNAME) complete r with NSF_EOPNOTSUPP; an unknown fn completes r with
  * NSF_EINVAL. Every non-parked path completes r exactly once (the app always
  * wakes); a parked request (soc_park) is completed later by a protocol callback
  * or by soc_destroy. Exposed for the direct-call tests. */

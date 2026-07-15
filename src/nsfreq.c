@@ -77,7 +77,7 @@ static void req_stats_init(void)
     }
     req_recv  = sts_register("NSFREQ", "recv");     /* requests dispatched      */
     req_bad   = sts_register("NSFREQ", "badfn");    /* unknown fn (EINVAL)      */
-    req_nosys = sts_register("NSFREQ", "nosys");    /* stub verb (ENOSYS)       */
+    req_nosys = sts_register("NSFREQ", "nosys");    /* stub verb (EOPNOTSUPP)   */
     req_stats_ready = 1;
 }
 
@@ -360,14 +360,17 @@ void nsfreq_dispatch(NSFRQE *r)
     case RQ_RECVFROM:
     case RQ_SHUTDOWN:    do_delegate(r);     break;
 
-    /* -- frozen but not implemented in M3-2: complete cleanly, never crash -- */
+    /* -- frozen but not implemented in M3-2: complete cleanly, never crash.
+     *    ERRNO is NSF_EOPNOTSUPP (45) -- IBM Table 67 has no ENOSYS and 78 is
+     *    EDEADLK, so the classic "operation not supported" value is correct
+     *    (ADR-0029; the M3-4 errno correction). -- */
     case RQ_SELECT:
     case RQ_SETSOCKOPT:
     case RQ_GETSOCKOPT:
     case RQ_FCNTL:
     case RQ_GETPEERNAME:
         reqc(req_nosys);
-        soc_complete(r, NSF_RETERR, NSF_ENOSYS);
+        soc_complete(r, NSF_RETERR, NSF_EOPNOTSUPP);
         break;
 
     /* -- unknown fn: clean error, never a fall-through -- */
