@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.25 — Draft for implementation. Companion document to the frozen
+*Version 1.26 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1319,6 +1319,15 @@ void  nsfip_input(NETDEV *dev, PBUF *b);        /* takes ownership */
 int   nsfip_output(PBUF *b, UINT src, UINT dst,
                    UCHAR proto, UCHAR ttl);      /* takes ownership */
 
+/* transport demux seam (M3-3): a transport registers its inbound handler by IP
+ * protocol number; nsfip_input consults the table before the noproto fallback.
+ * Idempotent-replace, NOT reset by nsfip_init (handler wiring is static). Keeps
+ * NSFIP free of any direct symbol dependency on NSFUDP/NSFTCP so the NSF module
+ * links without them (they are unreachable until EZASOKET). ICMP stays a direct
+ * case (always linked). UDP registers at M3-3, TCP at M4. See §12.4 / ADR-0028. */
+int   nsfip_register_proto(UCHAR proto,
+                           void (*fn)(NETDEV*, PBUF*, const IPHDR*));
+
 /* ICMP */
 void  nsficmp_input(NETDEV *dev, PBUF *b, const IPHDR *ip);
 void  nsficmp_send_error(const PBUF *orig, UCHAR type, UCHAR code);
@@ -1337,9 +1346,10 @@ callers is wired in v1:
   included, since neither has a real implementation yet) now also calls
   `nsficmp_send_error`. This is accurate for v1: there genuinely is no listener
   for that protocol number on this host.
-- **Port unreachable (type 3, code 3) — infrastructure-only.** No caller exists
-  until UDP/TCP can report a closed port (M4); wiring one now would be dead
-  code with nothing to trigger it.
+- **Port unreachable (type 3, code 3) — LIVE at M3-3.** `nsfudp_input` calls
+  `nsficmp_send_error(orig, 3, 3)` for a datagram matching no bound pcb (over the
+  untrimmed datagram, then frees `orig` — send_error does not take ownership).
+  This is its first live trigger; TCP (M4) will add closed-port RST/unreachable.
 - **Time exceeded (type 11) — infrastructure-only, and stays that way through
   v1.** `ttlexp` never increments (§11.1: NSF is a host, not a router, so TTL
   expiry is never NSF's to report) — there is deliberately no send path for it.
@@ -1441,6 +1451,68 @@ Demux: linear scan of the bound-pcb list (≤32 default) matching
 - UDPPCB lifetime: created at bind time, destroyed in `soc_destroy` via
   `detach` callback. No timers, no state machine — UDP is the end-to-end
   proof of the socket/request path (M3) precisely because it is trivial.
+
+### 12.4 M3-3 realization (`src/nsfudp.c`, `include/nsfudp.h`)
+
+The transport that makes sockets reachable end to end. It plugs into two seams:
+the SOCKET PROTOPS vtable (`nsfudp_protops()`, registered with NSFREQ via
+`nsfreq_register_proto(17, …)`) and the IP transport-demux seam
+(`nsfip_register_proto(17, nsfudp_input)`, registered by `nsfudp_init`). Both
+registrations are the caller's/init's to make; NSFUDP takes no upward dependency
+on NSFREQ. `UDPPCB` is 20 B (`NSF_SIZE_ASSERT`), pool objsize 64 "for growth";
+the bound-pcb list is bounded (≤32) and scanned linearly (a specific `laddr`
+beats INADDR_ANY). Aliases: `nsfudp_reserve NSFURSV` / `nsfudp_init NSFUINIT` /
+`nsfudp_input NSFUIN` / `nsfudp_protops NSFUOPS` / `nsfudp_debug_inuse NSFUDBI`
+(the PROTOPS callbacks are `static`, reached through the vtable, so no aliases).
+
+**Checksum — pseudo-header via a SEED, not an overlay (ADR-0028).** The shared
+`in_cksum` is refactored into `in_cksum_partial(chain, off, len, seed)` (unfolded
+accumulator) + `in_cksum_fold(sum)`, with `in_cksum ≡ fold(partial(…, 0))` so the
+M2 RFC-1071 vectors are byte-identical. UDP sums the 12-byte IPv4 pseudo-header
+(over a stack buffer wrapped in a throwaway PBUF — the ONE routine, no
+duplication) into a seed and threads it into the datagram sum. This works
+*because* the pseudo-header is a whole number of 16-bit words (12 B = 6, even),
+so the transport region still opens on a HIGH byte — the `taken` word parity
+(relative to `off`) is identical seeded or standalone. The overlay alternative
+(prepend the pseudo-header into headroom) was rejected: an INBOUND PBUF has no
+headroom (received at `start`), so it works only for output; the seed is
+symmetric. **RFC 768 zero-checksum, both directions:** a computed 0x0000 is
+transmitted as 0xFFFF (all-ones one's-complement equivalent — a wire 0x0000 would
+mean "no checksum"); a *received* 0x0000 means the sender computed none and is
+accepted without verification. A non-zero checksum that fails → drop + count.
+
+**IP demux seam.** `nsfip_register_proto(proto, fn)` (idempotent-replace; not
+reset by `nsfip_init`, since handler wiring is static, not per-config) routes an
+inbound protocol number to a transport handler `void fn(NETDEV*, PBUF*, const
+IPHDR*)`. `nsfip_input` consults it before the noproto fallback; an *unregistered*
+protocol still draws protocol-unreachable (code 2). ICMP stays a hardcoded case
+(IP-intrinsic, always linked). Registration — not an explicit `case
+nsfudp_input()` — is REQUIRED, not stylistic: `nsfip.c` is in the production `NSF`
+load module but `nsfudp.c` is not (UDP is unreachable until EZASOKET/M3-4), so a
+direct call would be an unresolved external at the NSF link. TCP (M4) joins the
+same way with zero `nsfip.c` change.
+
+**Data flow, single owner.** *Input* (`nsfudp_input`, takes ownership): validate
+length + checksum, demux to a pcb; NO pcb → `nsficmp_send_error(orig, 3, 3)`
+(port unreachable — the first live trigger of M2-4's dormant path) computed over
+the UNTRIMMED datagram (headers present to quote), then free `orig` (send_error
+does not take ownership); a matched datagram is trimmed to its payload, an 8-byte
+**address record** `UDPADDR {UINT addr; USHORT port; USHORT len}` is prepended
+(the internal `udp_input`↔RECVFROM contract; native layout, never on the wire),
+and it is handed to a parked RECV (completed immediately) or enqueued on
+`sock->rxq` (bounded — full → drop + count). *RQ_RECVFROM*: dequeue, copy the
+payload into `r->ubuf` up to `r->ulen`, fill the peer in `p1`/`p2`, free the PBUF,
+complete with the byte count; **datagram truncation** — an oversized datagram is
+copied up to `ulen` and the remainder DISCARDED (BSD recvfrom without MSG_TRUNC),
+not kept for the next read. *RQ_SENDTO*: `p1`/`p2` = dest addr/port; route for the
+MTU bound (datagram > MTU−28 → EMSGSIZE, no fragmentation, §11.3) and source
+selection (`laddr`, else the outgoing device HOME), allocate a PBUF with UDP+IP
+headroom, copy the payload, build+checksum the UDP header, `nsfip_output()`
+(which then owns it). A locally-originated SENDTO is the first production exercise
+of the ADR-0027 IOHALT read-park. New provisional errnos (values only — the
+NSFRQE layout freeze is unaffected): `NSF_EADDRINUSE` 48, `NSF_EMSGSIZE` 40,
+`NSF_EHOSTUNREACH` 65, `NSF_EDESTADDRREQ` 39. **Statistics** (component `NSFUDP`,
+range 400–499): `in, out, noport, badlen, badcksum, rxfull, binds`.
 
 ---
 
@@ -1921,6 +1993,74 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.26: M3-3 — NSFUDP: datagram in/out, port demux, checksum; sockets reachable
+end to end.** UDP is the end-to-end proof of the socket/request path (§12): a
+bound socket receives (demux → rxq / parked RECV) and sends (SENDTO →
+`nsfip_output`), no timers, no state machine. Deliverables:
+**`src/nsfcksum.c` / `include/nsfcksum.h`** — the shared checksum is split into
+`in_cksum_partial(chain,off,len,seed)` + `in_cksum_fold(sum)` (aliases
+`NSFCKPAR`/`NSFCKFLD`), with `in_cksum ≡ fold(partial(…,0))` so the M2 RFC-1071
+vectors are byte-identical; the UDP pseudo-header is threaded in as a SEED, not
+overlaid — the input path has no headroom to overlay (ADR-0028). RFC 768
+zero-checksum handled BOTH directions (computed 0 → transmit 0xFFFF; received 0 →
+accept unverified). **`include/nsfip.h` / `src/nsfip.c`** — `nsfip_register_proto`
+(`NSFIPRGP`), a small idempotent-replace demux table consulted before the noproto
+fallback; ICMP stays a direct case. Registration (not an explicit `case`) is
+REQUIRED so the `NSF` module links without `nsfudp.c` (§12.4 / ADR-0028). **New
+`include/nsfudp.h` / `src/nsfudp.c`** — `UDPPCB` (20 B, `NSF_SIZE_ASSERT`, pool
+objsize 64), the bound-pcb list (≤32, specific `laddr` beats INADDR_ANY),
+bind/ephemeral/EADDRINUSE, `nsfudp_input` (validate → checksum → demux → rxq /
+parked RECV; no pcb → ICMP port unreachable over the untrimmed datagram, then free
+— the first live trigger of M2-4's dormant path), RQ_SENDTO (route for MTU/src,
+build+checksum, `nsfip_output`; datagram > MTU−28 → EMSGSIZE), RQ_RECVFROM (copy
+to `ubuf` up to `ulen`, peer in `p1`/`p2`, **datagram truncation** — remainder
+discarded), the `UDPADDR` (8 B) rxq address record, the real UDP PROTOPS, and the
+init/reserve/protops accessors (`NSFURSV`/`NSFUINIT`/`NSFUIN`/`NSFUOPS`).
+**`include/nsfreq.h`** — four provisional errno *values* added (`NSF_EADDRINUSE`
+48, `NSF_EMSGSIZE` 40, `NSF_EHOSTUNREACH` 65, `NSF_EDESTADDRREQ` 39); the frozen
+NSFRQE LAYOUT is untouched. **Ownership (§3):** every input/send path frees the
+PBUF or hands it to exactly one next owner — never both, never neither; the
+port-unreachable path does not double-free (send_error reads only). **Host suite
+1052→1197** (TSTUDP **142**: the literal 0x9371 output vector + zero→0xFFFF +
+input-checksum accept/reject; bind/demux exact/ANY/specific-beats-ANY/EADDRINUSE/
+ephemeral; input→rxq→RECVFROM + peer, parked-RECV-completed-on-arrival, rxq full
+drop, oversized truncation; port unreachable with the quoted header + free-once;
+SENDTO wire framing byte-asserted; the soc_destroy lifetime leak gate; TSTCKSUM
+10→13: the pseudo-header seed vector). A host-only threaded round-trip over the
+NSFHOST loopback (a SENDTO looping back to complete a *parked* RECVFROM) exercises
+the datagram wakeup path; it is lock-stepped to one datagram in flight (the
+bounded queues DROP under overload by design, §3, so a bursting sender would
+strand a parked RECV — a startup barrier fixes the sender-races-BIND ordering,
+which is correct UDP behaviour, not a stack bug). `-Wall -Wextra -Werror -pthread`
+clean. **Cross build** (cc370/as370/ld370) links clean — the `NSF` module (with
+the refactored `nsfip.c`) and all 31 test modules; **alias scan clean** (`NSFCKPAR`
+/`NSFCKFLD`/`NSFIPRGP`/`NSFURSV`/`NSFUINIT`/`NSFUIN`/`NSFUOPS`/`NSFUDBI` each
+unique, statics `ENTRY=NO`); no runtime allocation after `mm_init_complete()`;
+size asserts hold (`UDPPCB` 20, `UDPADDR` 8). Spec §12.4/§11.2 + ADR-0028. NSFUDP
+is NOT wired into the `NSF` load module (sockets stay unreachable until EZASOKET,
+the M3-2 precedent), so `S NSF` is functionally unchanged. **Stability (#27):** the
+threaded loopback round-trip **200× sequential + 100× single-core (`taskset -c 0`)
+on Linux, 0 failures, 0 hangs** (+ 500× macOS); the one bring-up hang was a test
+ordering bug (sender racing the receiver's BIND → correct port-unreachable → a
+stranded parked RECV), fixed with a startup barrier — not a stack defect.
+**VALIDATED LIVE on MVSCE** (`test/mvs/tstudpm.c`, the full stack over the real
+0500/0501 pair, `-DNSFCTCI_CUU`, a cthread app subtask driving the request path):
+TSTUDPM **CC 0 batch + TSO**, all three scenarios proven — (1) **RECEIVE**: host
+`nc -u 192.168.200.1 7777` → RECVFROM completes (`rc=2`, peer
+`192.168.200.2:<ephemeral>` correct); (2) **LOCALLY-ORIGINATED SEND**: SENDTO
+`rc=8` / `NSFUDP out 1`, the datagram **byte-perfect in host `tcpdump`** on an idle
+link (`192.168.200.1.7777 > 192.168.200.2.9`, UDP len 16, **non-zero checksum
+`0xA129`** — the pseudo-header seed proven big-endian on the target, payload
+`"UDP-hi!\n"`), sent PROMPTLY at device-up (the ADR-0027 IOHALT read-park in
+production, no issue-#28 abend, no dump); (3) **PORT UNREACHABLE**: host UDP to
+unbound ports → `NSFUDP noport` + `NSFICM errsent` + **ICMP port-unreachable in
+`tcpdump` quoting the original datagram**. The **1000-ping ICMP regression against
+the redeployed `NSF`** (the refactored `nsfip.c`) stays **1000/1000, 0 % loss,
+unimodal 0.554/0.876/1.735 ms**, all IP/ICMP drops 0. `TSTCKSUM`/`TSTIP`/`TSTICMP`/
+`TSTREQM`/`TSTUDPM` **CC 0 on MVS** (the 0x9371 seed vector proven big-endian on
+S/370; M2/M3-2 regression clean). **M3-3 COMPLETE. M3-4 (EZASOKET / NSFEZA)
+next.**
 
 **v1.25: M3-2 DONE — NSFREQ request transport + fn dispatcher; NSFRQE FROZEN.**
 The Phase-1 backbone the socket API rides on (§10.4): an in-address-space request

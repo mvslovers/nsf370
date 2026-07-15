@@ -9,12 +9,19 @@
  * is paired correctly. Every byte is read individually and placed in the high or
  * low half of its word by parity, so the routine is byte-order-correct on the
  * little-endian test host as well as on big-endian S/370 (see the header).
+ *
+ * SEED / FOLD split (M3-3, ADR-0028). The accumulation is factored into
+ * in_cksum_partial (seed in, unfolded 32-bit partial out) + in_cksum_fold (the
+ * end-around carry + complement). in_cksum is the M2 routine expressed as
+ * fold(partial(..., 0)), so its result is unchanged; the pseudo-header seed of a
+ * UDP/TCP checksum is just a partial sum threaded into `seed`. There is no
+ * second checksum routine -- the ONE `taken`-parity loop lives here.
  */
 #include "nsfcksum.h"
 
-USHORT in_cksum(const PBUF *chain, USHORT off, USHORT len)
+UINT in_cksum_partial(const PBUF *chain, USHORT off, USHORT len, UINT seed)
 {
-    UINT        sum     = 0u;   /* running one's-complement sum (folded at end) */
+    UINT        sum     = seed; /* running one's-complement sum (folded by caller)*/
     UINT        skipped = 0u;   /* bytes of the leading `off` still to skip     */
     UINT        taken   = 0u;   /* bytes summed so far == word-parity index     */
     const PBUF *p;
@@ -50,10 +57,19 @@ USHORT in_cksum(const PBUF *chain, USHORT off, USHORT len)
             taken++;
         }
     }
+    return sum;
+}
 
+USHORT in_cksum_fold(UINT sum)
+{
     /* Fold the carries out of the top half (end-around carry) and complement. */
     while ((sum >> 16) != 0u) {
         sum = (sum & 0xFFFFu) + (sum >> 16);
     }
     return (USHORT)(~sum & 0xFFFFu);
+}
+
+USHORT in_cksum(const PBUF *chain, USHORT off, USHORT len)
+{
+    return in_cksum_fold(in_cksum_partial(chain, off, len, 0u));
 }

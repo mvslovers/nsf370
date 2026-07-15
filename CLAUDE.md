@@ -444,7 +444,46 @@ no regression from the `nsfevt.c`/`nsfsoc.c` changes). **NO user-visible
 feature** (sockets unreachable until M3-3); `S NSF` not redeployed (the NSF module
 is functionally unchanged — the wiring is inert — and the STC machinery is
 regression-proven on MVS by TSTSTCM/TSTEVTM). Spec v1.25 §10.4/§10.5 + changelog.
-**M3-3 (UDP PROTOPS + NSFEZA EZASOKET plumbing) next.** |
+**M3-3 done (host + cross-link; live gate pending) — NSFUDP: datagram in/out,
+port demux, checksum; sockets reachable end to end.** `src/nsfudp.c` +
+`include/nsfudp.h` (`UDPPCB` 20 B/objsize 64; bind/ephemeral/EADDRINUSE; demux
+specific-laddr-beats-ANY; `nsfudp_input`→rxq/parked-RECV; RQ_SENDTO→`nsfip_output`;
+RQ_RECVFROM copy+peer+**datagram-truncation**; `UDPADDR` 8 B rxq record; real
+PROTOPS; `nsfudp_reserve`/`_init`/`_protops`). **Checksum decision (ADR-0028):**
+pseudo-header via a SEED — `in_cksum` split into `in_cksum_partial`+`in_cksum_fold`
+(`in_cksum ≡ fold(partial(…,0))`, M2 vectors byte-identical), NOT an overlay (the
+input PBUF has no headroom); RFC 768 zero-cksum BOTH ways (out 0→0xFFFF, in 0→
+accept). **IP demux seam (ADR-0028):** `nsfip_register_proto` — REQUIRED (not an
+explicit `case`) so `nsfip.c` links into the `NSF` module without `nsfudp.c` (UDP
+unreachable until EZASOKET); ICMP stays direct. **Port unreachable** = M2-4's
+first live trigger (`nsficmp_send_error(orig,3,3)` over the untrimmed datagram,
+then free — no double-free). New provisional errnos (`NSF_EADDRINUSE`/`EMSGSIZE`/
+`EHOSTUNREACH`/`EDESTADDRREQ`) — values only, NSFRQE layout freeze intact. Host
+**1052→1197** (TSTUDP 142: literal 0x9371 output vector + zero→0xFFFF + input
+accept/reject; bind/demux all cases; input→rxq→RECVFROM + parked-RECV-on-arrival +
+rxq-full-drop + oversized-truncate; port-unreach quoted+free-once; SENDTO byte-
+asserted framing; soc_destroy leak gate; TSTCKSUM 10→13 seed vector). Host-only
+threaded loopback round-trip (a SENDTO completing a *parked* RECVFROM) — lock-
+stepped to 1 datagram in flight + a sender-waits-for-BIND barrier (a bursting or
+early sender legitimately overruns the §3 bounded queues / draws port-unreachable
+— correct behaviour, not a stack bug); **500× sequential macOS clean** (Linux
+single-core **on Linux, 0 failures/0 hangs**). `-Wall -Wextra -Werror -pthread`
+clean; cross build (`NSF` module + 31 test modules) links clean; alias scan clean;
+no runtime alloc after seal; `UDPPCB`/`UDPADDR` size asserts hold. NSFUDP NOT in
+the `NSF` module (M3-2 precedent). Spec v1.26 §12.4/§11.2 + ADR-0028 + changelog.
+**VALIDATED LIVE on MVSCE** (`test/mvs/tstudpm.c`, full stack over the real
+0500/0501 pair, `-DNSFCTCI_CUU`, cthread app subtask on the request path): TSTUDPM
+**CC 0 batch+TSO**, all three scenarios — RECEIVE (`nc -u` → RECVFROM rc=2, peer
+`192.168.200.2:<eph>` correct); LOCAL SEND (SENDTO rc=8 / out 1, **byte-perfect in
+`tcpdump`**: `.1.7777 > .2.9`, UDP len 16, non-zero cksum `0xA129` [pseudo-header
+seed on the target], payload `"UDP-hi!\n"`, sent promptly at device-up — the
+ADR-0027 IOHALT read-park, **no #28 abend, no dump**); PORT UNREACH (unbound port →
+`noport`+`errsent`+**ICMP port-unreachable in `tcpdump` quoting the original**).
+**1000-ping ICMP regression on the redeployed `NSF`** (refactored `nsfip.c`) still
+**1000/1000 0 % loss unimodal 0.554/0.876/1.735 ms**, all drops 0. `TSTCKSUM`/
+`TSTIP`/`TSTICMP`/`TSTREQM`/`TSTUDPM` **CC 0 on MVS** (0x9371 seed vector big-endian
+on S/370; M2/M3-2 regression clean). **M3-3 COMPLETE. M3-4 (EZASOKET / NSFEZA)
+next.** |
 | **M4** | TCP (state machine, data path, rexmit) + EZASOKET (M4 set) + loss harness | telnet TCP echo, clean FIN, survives 5% loss; TIME_WAIT reclaim shown | ☐ Planned |
 | **M5** | Phase 2: `NSFS` subsystem + cross-memory + TCP hardening + docs | 2 address spaces share one stack; stress passes; docs complete | ☐ Planned |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
@@ -486,9 +525,9 @@ isolated so M0–M4 already deliver a usable in-process stack.
 | NSFTRC | Trace Facility | 7 | — |
 | NSFSTS | Statistics | 8 | — |
 | NSFDEV / NSFCTCI / NSFLCS / NSFHOST | Devices & drivers (NSFDEV table + DEVOPS + DEVIO seam + NSFHOST host driver, M1-2; CTCI top half `asm/nsfctcio.asm` (per-scb save areas) + SVC 99 seam `src/nsfctci.c` M1-3; codec `src/nsfctcif.c` + bottom half `src/nsfctcib.c` with the read/write **I/O subtasks** over the `nsfthr` seam (`src/nsfthr.c` / `src/nsfthr_host.c`) M1-4, ADR-0022/0023; host shims `src/nsfctcio_host.c`/`src/nsfctci_host.c`) | 9 | 200–299 |
-| NSFSOC / NSFREQ | Sockets / Request mgr — socket table + SOCKCB + `(gen<<16)\|id` descriptor (slot-owned generation) + `PROTOPS` dispatch + parked-request pattern + `soc_destroy` teardown checklist + `soc_foreach` (`src/nsfsoc.c`, M3-1/M3-2); the `NSFRQE` phase-boundary contract + `RQ_*`/`RQ_F_NONBLOCK`/`NSF_E*` (`include/nsfreq.h`, **FROZEN at M3-2**; `apptok` named out of reserved). NSFREQ transport + fn dispatcher + app registry (`src/nsfreq.c`, M3-2): request queue (NSFXQ) + `requestECB` (wired via `evt_set_request`, reset-before-drain + double-check, ADR-0022), `nsfreq_submit`/`_wait`/`_call`/`_dispatch`/`_drain`/`_pending`/`_register_proto`. `soc_complete`/completion POST via `nsfthr_post` (same-AS SVC 2). UDP ops + NSFEZA = M3-3 | 10 | 600–699 |
+| NSFSOC / NSFREQ | Sockets / Request mgr — socket table + SOCKCB + `(gen<<16)\|id` descriptor (slot-owned generation) + `PROTOPS` dispatch + parked-request pattern + `soc_destroy` teardown checklist + `soc_foreach` (`src/nsfsoc.c`, M3-1/M3-2); the `NSFRQE` phase-boundary contract + `RQ_*`/`RQ_F_NONBLOCK`/`NSF_E*` (`include/nsfreq.h`, **FROZEN at M3-2**; `apptok` named out of reserved). NSFREQ transport + fn dispatcher + app registry (`src/nsfreq.c`, M3-2): request queue (NSFXQ) + `requestECB` (wired via `evt_set_request`, reset-before-drain + double-check, ADR-0022), `nsfreq_submit`/`_wait`/`_call`/`_dispatch`/`_drain`/`_pending`/`_register_proto`. `soc_complete`/completion POST via `nsfthr_post` (same-AS SVC 2). UDP ops (M3-3, `src/nsfudp.c`) register the UDP PROTOPS via `nsfreq_register_proto(17,…)`; NSFEZA = M3-4 | 10 | 600–699 |
 | NSFIP / NSFICM | IPv4 / ICMP — input validate/demux + output build/route + 16-entry routing table (`src/nsfip.c`, M2-2); ICMP echo responder in-place single-owner (`src/nsficmp.c`, M2-3); shared RFC 1071 checksum over a PBUF chain (`src/nsfcksum.c`, M2-1). ADR-0024; byte-wise big-endian, addresses UINT/octet-1-MSB | 11 | 300–399 |
-| NSFUDP | UDP | 12 | 400–499 |
+| NSFUDP | UDP — UDPPCB + bind/demux (specific laddr beats ANY) + `nsfudp_input` (checksum-verify, RFC 768 zero-cksum both ways, port-unreachable trigger) + RQ_SENDTO/RQ_RECVFROM + `UDPADDR` rxq record + real PROTOPS + `nsfudp_reserve`/`_init`/`_protops` (`src/nsfudp.c`, M3-3, ADR-0028). Pseudo-header via `in_cksum_partial`/`_fold` seed (no overlay); IP demux via `nsfip_register_proto` (keeps NSFUDP out of the NSF module). NSFEZA = M3-4 | 12 | 400–499 |
 | NSFTCP | TCP | 13 | 500–599 |
 | NSFCFG | Configuration | 14 | 700–799 |
 | NSFEZA | EZASOKET API | 15 | 600–699 |

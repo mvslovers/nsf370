@@ -377,6 +377,33 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstreqm.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M3-3 UDP (NSFUDP): datagram in/out, port demux, checksum ---------------
+# Drives the full inbound/outbound UDP path over the M3-2 request path (build an
+# NSFRQE, nsfreq_dispatch it) + a capture DEVOPS (deterministic, loop not
+# running) for the functional coverage, and the NSFHOST loopback + a running
+# event loop for the host-only (#ifndef __MVS__) threaded round-trip (a datagram
+# completing a parked RECVFROM). Dual host+MVS: the direct-call functional tests
+# and the UDPPCB/UDPADDR SIZE_ASSERTs run on cc370 too (the threaded part is
+# host-only). The MVS full-stack live gate is test/mvs/tstudpm.c.
+[[test]]
+name = "TSTUDP"
+startup = "crt1"
+sources = ["test/tstudp.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M3-3 UDP on MVS: the full stack over the real CTCI pair (live gate) ------
+# MVS-only (host = false): stands up CTCI (0500/0501) + IP + ICMP + UDP + the
+# request path, with a cthread APP SUBTASK (the TSTREQM pattern) doing INITAPI ->
+# SOCKET -> BIND -> RECVFROM / SENDTO over the real 3088 wire. This is where UDP
+# becomes real: host `nc -u` -> RECVFROM; a locally-originated SENDTO exercises
+# ADR-0027's IOHALT read-park in production (watch issue #28); a datagram to an
+# unbound port draws ICMP port unreachable. Same MVS source set as the CTCI STC
+# path + nsfudp/nsfreq/nsfsoc. Built + run with -DNSFCTCI_CUU=0x0500 etc.
+[[test]]
+name = "TSTUDPM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M3-0a Stage 0: can problem state halt an outstanding CTCI READ? --------
 # MVS-only (host = false), standalone: NOT the M1-4b subtask/DEVOPS driver --
 # a raw single-task probe reusing the M1-3 primitives (ctci_alloc_unit/

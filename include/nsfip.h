@@ -55,6 +55,13 @@ typedef struct iphdr {
 } IPHDR;
 NSF_SIZE_ASSERT(IPHDR, 20);
 
+/* Transport demux handler (spec 11.1). A registered handler receives an inbound
+ * datagram of its IP protocol number, exactly as nsficmp_input does: it TAKES
+ * OWNERSHIP of `b` (frees it or hands it on), and `ip` aliases the IP header at
+ * b->data so it need not re-parse it. UDP (M3-3) and TCP (M4) register through
+ * this seam. */
+typedef void (*NSFIP_PROTO_FN)(NETDEV *dev, PBUF *b, const IPHDR *ip);
+
 /* asm() external-symbol aliases (CLAUDE.md §3). cc370 folds an external to 8
  * chars after upcasing and '_'->'@', so e.g. nsfip_input and nsfip_init would
  * BOTH fold to NSFIP@IN and ld370 would silently keep one -- a wrong-function
@@ -62,7 +69,7 @@ NSF_SIZE_ASSERT(IPHDR, 20);
  * name (scheme NSFIP*), clear of the codec's NSFCK* and NSFDEV's NSFD*:
  *   nsfip_input NSFIPIN    nsfip_output NSFIPOUT   nsfip_init NSFIPINI
  *   nsfip_config NSFIPCFG  nsfip_route_add NSFIPRTA  nsfip_local_add NSFIPLCA
- *   nsfip_is_local NSFIPISL  nsfip_route NSFIPRT
+ *   nsfip_is_local NSFIPISL  nsfip_route NSFIPRT   nsfip_register_proto NSFIPRGP
  */
 
 /* Reset the routing table and local-address list to empty, and (once per
@@ -100,10 +107,26 @@ int     nsfip_is_local(UINT ip) asm("NSFIPISL");
  * (M6). */
 NETDEV *nsfip_route(UINT dst, UINT *nexthop) asm("NSFIPRT");
 
+/* Register `fn` as the demux handler for inbound datagrams of IP protocol
+ * `proto` (spec 11.1). Idempotent-replace (a second call for the same proto
+ * swaps the handler), so it is order-independent w.r.t. nsfip_init/nsfip_config
+ * (which do NOT touch the handler table -- handler wiring is static, not
+ * per-config). This is the clean seam that keeps NSFIP free of any direct
+ * symbol dependency on NSFUDP/NSFTCP: nsfip.c is in the production NSF load
+ * module, nsfudp.c/nsftcp.c are not (transports are unreachable until EZASOKET),
+ * so an explicit `case nsfudp_input()` would be an unresolved external at the
+ * NSF link -- registration avoids that (the evt_set_* decoupling pattern). ICMP
+ * stays a hardcoded case: it is IP-intrinsic serviceability and nsficmp.c is
+ * always linked into the module. Returns 0, or non-zero if the small handler
+ * table is full. NSF_(register) M3-3. */
+int     nsfip_register_proto(UCHAR proto, NSFIP_PROTO_FN fn) asm("NSFIPRGP");
+
 /* Inbound: validate the IP header (version 4, IHL, length, checksum), drop and
  * count fragments / not-for-us / malformed packets (spec 11.7), and demux by
- * protocol to the transport. TAKES OWNERSHIP of b: it is freed here or handed to
- * exactly one transport. Called from the EV_PACKET_RECEIVED handler. */
+ * protocol to the transport (ICMP direct; UDP/TCP via nsfip_register_proto; an
+ * unregistered protocol -> noproto + protocol-unreachable, spec 11.2). TAKES
+ * OWNERSHIP of b: it is freed here or handed to exactly one transport. Called
+ * from the EV_PACKET_RECEIVED handler. */
 void    nsfip_input(NETDEV *dev, PBUF *b) asm("NSFIPIN");
 
 /* Outbound: prepend and fill the IP header into b's headroom (monotonic id,
