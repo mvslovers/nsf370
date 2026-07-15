@@ -496,9 +496,10 @@ INITAPI, EBADF-after-CLOSE, TERMAPI mass teardown; `sockaddr_in` read/written
 **EZASOH03 facade** (`asm/ezasoh03.asm`) — a THIN veneer that hands its R1 plist
 to `@@NSOH03`; **PDPPRLG not FUNHEAD** (Mike suggested FUNHEAD, but primary
 source — the cc370 C prologue reads the caller's DSANAB@76(R13), FUNHEAD never
-sets it → save-chain corruption/issue-#8; libc370 dyn75 `@@75sock.s`, the exact
-analog, uses PDPPRLG; gives a per-invocation DSA, concurrency-safe, no static
-save area). Companion macro `maclib/nsfezasm.mac` adds SENDTO/RECVFROM (new
+sets it → save-chain corruption/issue-#8; the analog is libc370's HAND-WRITTEN
+asm VSAM exit stubs `src/clib/@@vsopen.c` EODAD/LERAD/SYNAD — PDPPRLG +
+`L R15,=V(@@VSXEOF)` + BALR; gives a per-invocation DSA, concurrency-safe, no
+static save area). Companion macro `maclib/nsfezasm.mac` adds SENDTO/RECVFROM (new
 codes **SNDT/RCVF**; Shelby's first-4-char scheme collides SEND/RECV). **Errno
 fix:** `NSF_ENOSYS 78` was wrong (Table 67 has no ENOSYS; 78 is EDEADLK) →
 stub verbs now `NSF_EOPNOTSUPP` (45), `NSF_ENOSYS` deleted+tombstoned. **#28**

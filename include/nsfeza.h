@@ -89,7 +89,18 @@ typedef struct nsf_sockaddr_in {
 /* Reset NSFEZA module state (drop the registration + empty the mapping table).
  * Idempotent; call at application startup (and between test scenarios). Does NOT
  * touch NSFSOC/NSFREQ -- those have their own soc_init/nsfreq_init. */
-void nsfeza_init(void) asm("@@NSEZAI");
+/* '@' is a letter in the HLASM/EBCDIC national character set (the @@75* /
+ * @@NS* convention) but NOT a valid ELF symbol character for GNU as (the
+ * Linux host build breaks; macOS Mach-O happens to accept it). The @@NS*
+ * aliases therefore bind on the MVS target only; the host build links the
+ * plain C names, which is all the host suite needs (pure C->C). */
+#ifdef __MVS__
+#define NSFEZA_ALIAS(n) asm(n)
+#else
+#define NSFEZA_ALIAS(n)
+#endif
+
+void nsfeza_init(void) NSFEZA_ALIAS("@@NSEZAI");
 
 /* INITAPI: register this application with the stack. maxsoc is accepted and
  * CLAMPED to the pool limit (NSFEZA_MAXSOC); *maxsno (if non-NULL) returns the
@@ -98,50 +109,50 @@ void nsfeza_init(void) asm("@@NSEZAI");
  * Returns 0 on success, -1 on error. Passing maxsoc <= 0 requests the default
  * (the full pool). */
 INT nsf_initapi(INT maxsoc, const char *tcpname, const char *adsname,
-                const char *subtask, INT *maxsno) asm("@@NSINIT");
+                const char *subtask, INT *maxsno) NSFEZA_ALIAS("@@NSINIT");
 
 /* SOCKET: create a socket. af = NSF_AF_INET (2); type = NSF_SOCK_STREAM/DGRAM;
  * proto = 0 selects the default (dgram->UDP 17, stream->TCP 6). Returns the
  * 0-based socket number (>= 0) on success, -1 on error. AUTO-REGISTERS the
  * application (implicit INITAPI with defaults) when no INITAPI preceded it
  * (SC31-7187-03; ADR-0029). */
-INT nsf_socket(INT af, INT type, INT proto) asm("@@NSSOCK");
+INT nsf_socket(INT af, INT type, INT proto) NSFEZA_ALIAS("@@NSSOCK");
 
 /* BIND: assign the local name. name is a sockaddr_in; namelen its length
  * (>= 16). Returns 0 on success, -1 on error. */
-INT nsf_bind(INT s, const NSF_SOCKADDR_IN *name, INT namelen) asm("@@NSBIND");
+INT nsf_bind(INT s, const NSF_SOCKADDR_IN *name, INT namelen) NSFEZA_ALIAS("@@NSBIND");
 
 /* SENDTO: send a datagram to name. flags may carry NSF_MSG_DONTWAIT. Returns the
  * byte count sent on success, -1 on error. */
 INT nsf_sendto(INT s, const void *buf, INT len, INT flags,
-               const NSF_SOCKADDR_IN *name, INT namelen) asm("@@NSSNDT");
+               const NSF_SOCKADDR_IN *name, INT namelen) NSFEZA_ALIAS("@@NSSNDT");
 
 /* RECVFROM: receive a datagram. On success *name (if non-NULL) gets the sender
  * address and *namelen is set to 16. flags may carry NSF_MSG_DONTWAIT (return -1
  * / EWOULDBLOCK when no datagram is queued). Returns the byte count on success,
  * -1 on error. */
 INT nsf_recvfrom(INT s, void *buf, INT len, INT flags,
-                 NSF_SOCKADDR_IN *name, INT *namelen) asm("@@NSRCVF");
+                 NSF_SOCKADDR_IN *name, INT *namelen) NSFEZA_ALIAS("@@NSRCVF");
 
 /* CLOSE: close socket s and clear its mapping entry. A later use of s returns
  * EBADF. Returns 0 on success, -1 on error. */
-INT nsf_close(INT s) asm("@@NSCLOS");
+INT nsf_close(INT s) NSFEZA_ALIAS("@@NSCLOS");
 
 /* GETSOCKNAME: return the local name in *name (*namelen set to 16). Returns 0 on
  * success, -1 on error. */
-INT nsf_getsockname(INT s, NSF_SOCKADDR_IN *name, INT *namelen) asm("@@NSGSKN");
+INT nsf_getsockname(INT s, NSF_SOCKADDR_IN *name, INT *namelen) NSFEZA_ALIAS("@@NSGSKN");
 
 /* TERMAPI: close every socket of this application (RQ_CLOSE per live mapping
  * entry, then RQ_TERMAPI) and drop the registration. At the EZASOKET surface
  * TERMAPI has no RETCODE/ERRNO; the C API returns an int for diagnostics (0 ok),
  * which the facades discard. */
-INT nsf_termapi(void) asm("@@NSTERM");
+INT nsf_termapi(void) NSFEZA_ALIAS("@@NSTERM");
 
 /* The ERRNO of the last failed C-API call on this address space (the BSD idiom).
  * Valid only after a call that returned -1. The facades store it into their
  * ERRNO slot. (Module-global in v1: not multi-subtask-safe -- see the header
  * comment / conformance doc.) */
-INT nsf_lasterrno(void) asm("@@NSERNO");
+INT nsf_lasterrno(void) NSFEZA_ALIAS("@@NSERNO");
 
 /* The EZASOH03 plist decoder (ADR-0029). The HLASM facade EZASOH03 is a thin
  * veneer that passes its R1 plist straight here; this function decodes the
@@ -150,6 +161,6 @@ INT nsf_lasterrno(void) asm("@@NSERNO");
  * host-testable C. Always returns 0 (the EZASOH03 ABI: R15 is always 0; real
  * errors live in RETCODE/ERRNO). `plist` overlays the EZASOH03 argument list:
  * fullword A() slots on the target, natural pointers on the host. */
-INT nsf_ezasoh03(void *plist) asm("@@NSOH03");
+INT nsf_ezasoh03(void *plist) NSFEZA_ALIAS("@@NSOH03");
 
 #endif /* NSFEZA_H */

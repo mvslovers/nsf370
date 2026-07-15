@@ -2024,9 +2024,10 @@ table onto the internal `(gen<<16)|id`, MAXSOC clamped to the pool limit (64),
 MAXSNO = clamped-1, implicit INITAPI, EBADF-after-CLOSE, TERMAPI mass teardown;
 a `sockaddr_in` read/written byte-wise (network order) so host and target
 agree. The **EZASOH03 facade** (`asm/ezasoh03.asm`) — a thin veneer over the C
-decoder using the cc370 C prologue **PDPPRLG** (the proven dyn75 socket-entry
-pattern for calling C from asm), **not FUNHEAD** (which never sets the DSANAB
-the C callee reads — the issue-#8 save-chain corruption). The companion macro
+decoder using the cc370 C prologue **PDPPRLG** (the proven libc370 pattern for a
+hand-written asm entry that calls C — the `@@vsopen.c` VSAM exit stubs), **not
+FUNHEAD** (which never sets the DSANAB the C callee reads — the issue-#8
+save-chain corruption). The companion macro
 `maclib/nsfezasm.mac` adds the UDP verbs SENDTO/RECVFROM (new EZASOH03 codes
 **SNDT/RCVF**, since Shelby's first-4-char scheme collides SEND/RECV).
 **Errno correction:** the M3-2 stub verbs completed with `NSF_ENOSYS = 78`, but

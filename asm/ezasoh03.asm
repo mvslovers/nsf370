@@ -31,10 +31,12 @@
 *    not a bare OS save area.  FUNHEAD (mvsmacs.macro) never sets DSANAB;
 *    a C call after it reads a garbage NAB and corrupts the save chain --
 *    exactly the S0C6-on-the-next-call class (CLAUDE.md 3, issue #8).
-*    PDPPRLG is the PROVEN pattern for a hand-written socket-API asm entry
-*    that calls C in THIS ecosystem: libc370's dyn75 socket() entry
-*    (src/dyn75/@@75sock.s) is EZASOH03's exact analog and uses PDPPRLG +
-*    an arglist at 88(13) + L R15,=V(func); BALR.  PDPPRLG also gives a
+*    PDPPRLG is the PROVEN pattern for a HAND-WRITTEN asm entry that calls C
+*    in THIS ecosystem: libc370's VSAM exit stubs (src/clib/@@vsopen.c, the
+*    EODAD/LERAD/SYNAD routines in file-scope __asm__) are EZASOH03's analog
+*    -- hand-written asm, entered by a NON-C caller (the VSAM access method,
+*    as EZASOH03 is entered by the EZASMI macro), using PDPPRLG + L R15,=V(
+*    @@VSXEOF); BALR to call C.  PDPPRLG also gives a
 *    PER-INVOCATION DSA off each caller's C stack -- concurrency-safe for
 *    the nebenlaeufig app subtasks that enter here, with no static save
 *    area (the static-area corruption Mike flagged) and no GETMAIN.  The
@@ -44,8 +46,8 @@
 *    decoder (ADR-0029).
 *
 *  AS370 discipline (CLAUDE.md 3): every statement inside column 71 (col 72
-*  is a continuation flag); RS-format operands stay D(B); modelled verbatim
-*  on the proven @@75sock.s structure.
+*  is a continuation flag -- the M3-4 live S0C4: an over-long comment on the
+*  LR line swallowed the next LA); RS-format operands stay D(B).
 *
          COPY  PDPTOP
          CSECT ,

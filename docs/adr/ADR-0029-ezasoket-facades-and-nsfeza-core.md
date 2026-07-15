@@ -202,10 +202,14 @@ Implementation forced three deltas, recorded here (not silently):
    **DSANAB at `76(R13)`** — so the entry must present a valid cc370 DSA.
    `FUNHEAD` never sets DSANAB; a C call after it reads a garbage NAB and
    corrupts the save chain (the issue-#8 S0C6-on-the-next-call class). The
-   PROVEN pattern in this ecosystem is `PDPPRLG`: libc370's dyn75 socket
-   entries (`src/dyn75/@@75sock.s`) — EZASOH03's exact analog — are
-   hand-written asm socket entries that call C via `PDPPRLG` + an arglist at
-   `88(13)`. NSF's veneer follows them. `PDPPRLG` also yields a
+   PROVEN pattern in this ecosystem is `PDPPRLG`: libc370's VSAM exit stubs
+   (`src/clib/@@vsopen.c` — the `EODAD`/`LERAD`/`SYNAD` routines written in
+   file-scope `__asm__`) are EZASOH03's analog — HAND-WRITTEN asm, entered by
+   a non-C caller (the VSAM access method, as EZASOH03 is entered by the
+   EZASMI macro), calling C via `PDPPRLG` + `L R15,=V(@@VSXEOF)` + `BALR`.
+   NSF's veneer follows them. (Verified: `pdpprlg.macro` reads/stores the NAB
+   at `76(,13)`; `mvsmacs.macro`'s `FUNHEAD` never references offset 76.)
+   `PDPPRLG` also yields a
    per-invocation DSA off each caller's C stack — concurrency-safe for the
    app subtasks that enter EZASOH03, with no static save area and no
    GETMAIN. (The M3-4 caller is always in C context — a relinked C app, or
