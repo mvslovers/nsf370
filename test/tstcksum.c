@@ -141,6 +141,57 @@ static void test_empty(void)
              "zero-length range checksums to 0xffff");
 }
 
+/* -- UDP pseudo-header seed (M3-3, ADR-0028) -----------------------------------
+ * in_cksum_partial threads a separately-summed IPv4 pseudo-header into the
+ * datagram sum. Literal vector, INDEPENDENTLY computed (not a self-consistent
+ * round-trip): src 10.1.1.2, dst 10.1.1.1, sport 0x1234, dport 0x0035, a 6-byte
+ * payload, udplen 14 -> UDP checksum 0x9371. The payload is raw bytes, NOT a
+ * "hello!" character literal, so the vector is identical on the ASCII host and
+ * the EBCDIC target (a literal would checksum differently on MVS). */
+static UCHAR udp_psh[12] = {
+    0x0Au, 0x01u, 0x01u, 0x02u,   /* src 10.1.1.2                    */
+    0x0Au, 0x01u, 0x01u, 0x01u,   /* dst 10.1.1.1                    */
+    0x00u, 0x11u, 0x00u, 0x0Eu    /* zero, proto 17, UDP length 14   */
+};
+static UCHAR udp_msg[14] = {
+    0x12u, 0x34u, 0x00u, 0x35u,   /* sport 0x1234, dport 0x0035      */
+    0x00u, 0x0Eu, 0x00u, 0x00u,   /* UDP length 14, checksum 0       */
+    0x68u, 0x65u, 0x6Cu, 0x6Cu, 0x6Fu, 0x21u   /* payload bytes      */
+};
+
+static void test_udp_pseudo_header(void)
+{
+    PBUF   psh = seg(udp_psh, 12u, NULL);
+    PBUF   msg = seg(udp_msg, 14u, NULL);
+    UCHAR  msgck[14];
+    UINT   seed;
+
+    /* seed = partial(pseudo-header, 0); ck = fold(partial(datagram, seed)). The
+     * pseudo-header is 12 bytes (even), so the UDP region still opens on a HIGH
+     * byte -- the seed is a pure carry-in. */
+    seed = in_cksum_partial(&psh, 0u, 12u, 0u);
+    CHECK_EQ((long)in_cksum_fold(in_cksum_partial(&msg, 0u, 14u, seed)), 0x9371L,
+             "UDP checksum with pseudo-header seed -> 0x9371");
+
+    /* With that checksum stored, pseudo-header + datagram verifies to 0 (the
+     * receive-side check). */
+    memcpy(msgck, udp_msg, sizeof(msgck));
+    msgck[6] = 0x93u;
+    msgck[7] = 0x71u;
+    {
+        PBUF mc = seg(msgck, 14u, NULL);
+        seed = in_cksum_partial(&psh, 0u, 12u, 0u);
+        CHECK_EQ((long)in_cksum_fold(in_cksum_partial(&mc, 0u, 14u, seed)), 0L,
+                 "stored UDP checksum + pseudo-header verifies to 0 on receive");
+    }
+
+    /* Seeding with 0 reproduces the plain routine, so the M2 vectors stay valid
+     * and no second checksum routine exists. */
+    CHECK_EQ((long)in_cksum_fold(in_cksum_partial(&msg, 0u, 14u, 0u)),
+             (long)in_cksum(&msg, 0u, 14u),
+             "in_cksum(x) == fold(partial(x, 0))");
+}
+
 int main(void)
 {
     printf("=== nsf370 in_cksum (RFC 1071) tests ===\n");
@@ -152,6 +203,7 @@ int main(void)
     test_chain_boundary_carry();
     test_ip_header_split_odd();
     test_empty();
+    test_udp_pseudo_header();
 
     return mbt_test_summary("TSTCKSUM");
 }

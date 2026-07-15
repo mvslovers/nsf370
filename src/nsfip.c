@@ -91,6 +91,56 @@ static UINT    g_nroute;
 static UINT    g_local[NSFIP_MAX_LOCAL];
 static UINT    g_nlocal;
 
+/* -- transport demux handlers (spec 11.1) ------------------------------------
+ * A tiny fixed table proto -> handler, consulted by nsfip_input BEFORE the
+ * noproto/protocol-unreachable fallback. Deliberately SEPARATE from the routing
+ * table: handler wiring is static (which C function services which protocol),
+ * not per-config, so nsfip_init/nsfip_config do NOT reset it -- registration is
+ * idempotent-replace and order-independent. Kept small (UDP now, TCP at M4). */
+#define NSFIP_MAX_PROTO   4
+
+typedef struct ipproto {
+    UCHAR          inuse;
+    UCHAR          proto;
+    NSFIP_PROTO_FN fn;
+} IPPROTO;
+
+static IPPROTO g_proto[NSFIP_MAX_PROTO];
+
+int nsfip_register_proto(UCHAR proto, NSFIP_PROTO_FN fn)
+{
+    UINT i;
+
+    /* Replace an existing registration for the same proto (idempotent re-init). */
+    for (i = 0u; i < NSFIP_MAX_PROTO; i++) {
+        if (g_proto[i].inuse && g_proto[i].proto == proto) {
+            g_proto[i].fn = fn;
+            return 0;
+        }
+    }
+    for (i = 0u; i < NSFIP_MAX_PROTO; i++) {
+        if (!g_proto[i].inuse) {
+            g_proto[i].inuse = 1u;
+            g_proto[i].proto = proto;
+            g_proto[i].fn    = fn;
+            return 0;
+        }
+    }
+    return -1;                          /* table full */
+}
+
+static NSFIP_PROTO_FN ip_proto_lookup(UCHAR proto)
+{
+    UINT i;
+
+    for (i = 0u; i < NSFIP_MAX_PROTO; i++) {
+        if (g_proto[i].inuse && g_proto[i].proto == proto) {
+            return g_proto[i].fn;
+        }
+    }
+    return NULL;
+}
+
 /* Classful mask for `ip` (used for on-link HOME routes and a maskless GATEWAY):
  * A/B/C by the first octet; class D/E collapses to a host route. */
 static UINT classful_mask(UINT ip)
@@ -309,27 +359,29 @@ void nsfip_input(NETDEV *dev, PBUF *b)
         (unsigned)((dst >> 8) & 0xFFu),  (unsigned)(dst & 0xFFu),
         (unsigned)proto, (unsigned)total);
 
-    switch (proto) {
-    case NSFIP_PROTO_ICMP:
+    if (proto == (UCHAR)NSFIP_PROTO_ICMP) {
         nsficmp_input(dev, b, (const IPHDR *)p);    /* hands off ownership */
-        break;
-    case NSFIP_PROTO_TCP:
-    case NSFIP_PROTO_UDP:
-    default:
-        /* M3/M4 stubs, or a protocol NSF does not implement at all: this stack
-         * has no listener for it, full stop, so "protocol unreachable" (RFC 792)
-         * is accurate for v1 -- the LIVE M2-4 trigger for nsficmp_send_error.
-         * Once TCP/UDP land (M3/M4) their real demux replaces this case for
-         * those two protocols and this path narrows to truly unknown ones;
-         * closed-port "port unreachable" is a separate, still-unwired M4
-         * concern (spec 11.2). send_error reads b (still ours) and does not
-         * take ownership -- we free it right after, as every other drop does. */
-        ipc(ip_noproto);
-        nsficmp_send_error(b, (UCHAR)NSFICMP_DEST_UNREACH,
-                           (UCHAR)NSFICMP_UNREACH_PROTO);
-        buf_free(b);
-        break;
+        return;
     }
+    {
+        NSFIP_PROTO_FN fn = ip_proto_lookup(proto);
+        if (fn != NULL) {
+            fn(dev, b, (const IPHDR *)p);           /* hands off ownership */
+            return;
+        }
+    }
+    /* No transport registered for this protocol: this stack has no listener for
+     * it, full stop, so "protocol unreachable" (RFC 792, code 2) is accurate --
+     * the LIVE M2-4 trigger for nsficmp_send_error. UDP/TCP register through
+     * nsfip_register_proto when present (M3-3/M4); until then, and for genuinely
+     * unknown protocols, this fallback fires. Closed-PORT "port unreachable"
+     * (code 3) is a UDP/TCP concern raised from inside the transport handler, not
+     * here (spec 11.2). send_error reads b (still ours) and does not take
+     * ownership -- we free it right after, as every other drop does. */
+    ipc(ip_noproto);
+    nsficmp_send_error(b, (UCHAR)NSFICMP_DEST_UNREACH,
+                       (UCHAR)NSFICMP_UNREACH_PROTO);
+    buf_free(b);
 }
 
 /* -- output ------------------------------------------------------------------- */

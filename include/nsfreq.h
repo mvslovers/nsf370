@@ -82,13 +82,17 @@ enum {
 #define NSF_EINVAL          22      /* invalid argument / unsupported request   */
 #define NSF_EMFILE          24      /* socket table full (no free descriptor)   */
 #define NSF_EWOULDBLOCK     35      /* == EAGAIN: op would block, non-blocking   */
+#define NSF_EDESTADDRREQ    39      /* SEND with no peer (UDP: SENDTO required)  */
+#define NSF_EMSGSIZE        40      /* datagram larger than the interface MTU   */
 #define NSF_EPROTONOSUPPORT 43      /* protocol not supported                   */
-#define NSF_ENOSYS          78      /* verb not implemented (M3-2 stub verbs)   */
 #define NSF_EOPNOTSUPP      45      /* operation not supported on this socket   */
 #define NSF_EAFNOSUPPORT    47      /* address family not supported             */
+#define NSF_EADDRINUSE      48      /* local (addr,port) already bound          */
 #define NSF_ECONNABORTED    53      /* socket torn down under a parked request  */
 #define NSF_ENOBUFS         55      /* buffer/pool exhaustion (drop, not abend)  */
 #define NSF_ESHUTDOWN       58      /* stack is shutting down                   */
+#define NSF_EHOSTUNREACH    65      /* no route to the datagram's destination   */
+#define NSF_ENOSYS          78      /* verb not implemented (M3-2 stub verbs)   */
 
 /* EZASOKET RETCODE convention: 0 (or a byte count) on success, -1 on error with
  * errno_ set (spec 15.1). */
