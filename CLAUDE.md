@@ -502,11 +502,15 @@ asm VSAM exit stubs `src/clib/@@vsopen.c` EODAD/LERAD/SYNAD — PDPPRLG +
 static save area). Companion macro `maclib/nsfezasm.mac` adds SENDTO/RECVFROM (new
 codes **SNDT/RCVF**; Shelby's first-4-char scheme collides SEND/RECV). **Errno
 fix:** `NSF_ENOSYS 78` was wrong (Table 67 has no ENOSYS; 78 is EDEADLK) →
-stub verbs now `NSF_EOPNOTSUPP` (45), `NSF_ENOSYS` deleted+tombstoned. **#28**
-(IOHALT with no outstanding READ, now reachable via app sends) **FENCED** with
-Hercules evidence (`ctc_halt_or_clear` no-ops unless `fReadWaiting`, gated
-strictly around the read wait under `EventLock`) documented at the IOHALT call
-site — harmless (a wasted SVC 33 at worst), confirm live. Host **1197→1261**
+stub verbs now `NSF_EOPNOTSUPP` (45), `NSF_ENOSYS` deleted+tombstoned. **#28
+stays OPEN** (IOHALT with no outstanding READ, now reachable via app sends): NO
+abend (Hercules `ctc_halt_or_clear` no-ops unless `fReadWaiting`), but NOT
+harmless on the guest side — no X'48' purge means `service` never sets `rhold`
+(set only on a read completion), the re-armed read blocks on the idle link, and
+the WRITE STALLS until the next inbound (the pre-#21 stall class). Narrow window
+(a burst keeps sendq full → no drain → no race), so no live run hit it; real fix
+= a `rarmed` guard (IOHALT only with a read provably outstanding; else the
+channel is free → WRITE direct) in a dedicated PR. Host **1197→1261**
 (TSTEZA 64, `-Werror` clean, 11 unique `@@NS*` aliases no collisions); full
 cc370/as370/ld370 cross-build of all 34 test modules links clean incl. the
 EZASOH03 asm↔C boundary. NSFEZA links into the APPLICATION (like nsfreq.c's app
@@ -519,7 +523,8 @@ lifecycle through the veneer (INIT maxsno=63, SOCK/BIND/GETS/CLOS rc=0, GETS
 returned the bound addr+port), leak gate clean. **TSTEZAM CC 0 batch+TSO** — the
 C API over the real stack: `NSF210I CTCI 0500/0501 UP`, INITAPI rc=0/maxsno=63,
 SOCKET fd=0 (0-based), BIND rc=0, **SENDTO rc=8** (the local send through
-nsf_sendto + the ADR-0027 IOHALT read-park — #28 held, no S0C4), TERMAPI rc=0,
+nsf_sendto + the ADR-0027 IOHALT read-park; this send halted an OUTSTANDING read
+— the normal path, NOT the #28 race), TERMAPI rc=0,
 leak gate clean. **A live-only bug found + fixed (the reason TSTEZAH earns its
 keep):** the first run S0C4'd because an inline comment reaching **column 72**
 on the veneer's `LR 11,1` line made as370 swallow the next `LA 1,88(,13)`

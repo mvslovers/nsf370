@@ -2032,10 +2032,17 @@ save-chain corruption). The companion macro
 **SNDT/RCVF**, since Shelby's first-4-char scheme collides SEND/RECV).
 **Errno correction:** the M3-2 stub verbs completed with `NSF_ENOSYS = 78`, but
 Table 67 has no ENOSYS and 78 is EDEADLK — replaced with `NSF_EOPNOTSUPP` (45),
-`NSF_ENOSYS` deleted (tombstoned). **#28** (IOHALT with no outstanding READ,
-now reachable via app sends) is FENCED with Hercules source evidence
-(`ctc_halt_or_clear` no-ops unless `fReadWaiting`) documented at the IOHALT call
-site — held live (no S0C4 on the idle-link local send). Host **1197→1261**
+`NSF_ENOSYS` deleted (tombstoned). **#28 stays OPEN** (IOHALT with no outstanding
+READ, now reachable via app sends): NO abend (Hercules `ctc_halt_or_clear`
+no-ops unless `fReadWaiting`), but NOT harmless on the guest side — with no read
+to purge, `service` never sets `rhold` (set only on a read completion), the
+freshly-armed read blocks on the idle link, and the WRITE STALLS until the next
+inbound frame (the pre-#21 stall class, reintroduced for one send). The window
+is narrow (a burst keeps sendq full → no drain → no race), so no live run hit
+it, but the real fix is a `rarmed` guard (only IOHALT with a read provably
+outstanding; else the channel is free → issue the WRITE directly) — deferred to
+a dedicated PR with its own live validation. Documented accurately at the IOHALT
+call site. Host **1197→1261**
 (TSTEZA 64: mapping table / clamp / exhaustion / implicit init / EBADF /
 non-blocking RECVFROM / blocking round-trip with peer / TERMAPI leak gate /
 RETCODE-ERRNO per function / the decoder incl. unsupported→EOPNOTSUPP + R15=0);
