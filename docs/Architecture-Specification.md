@@ -1970,12 +1970,11 @@ afterwards (v1.21). **M2 COMPLETE.**
 | M3-5 | UDP echo server sample (MVS) + host-side test client | S |
 
 **Exit gate:** UDP echo via EZASOKET API works from host; kill -9 of the
-client and socket close paths leak nothing (leak gate). **Met (M3-5):**
+client and socket close paths leak nothing (leak gate). **Met (M3-5) — M3 COMPLETE.**
 `samples/nsfecho.c` + `samples/host/echo_client.py`; live gate green on MVSCE
 (idle-link echo 1000/1000, sizes/kill9/quit pass, server CC 0, leak clean) —
 after closing issue #28 (the idle-link CTCI write stall) with the `rarmed` guard
-(ADR-0030). Awaiting maintainer countersign of the live gate before "M3
-COMPLETE".
+(ADR-0030). Maintainer-countersigned; **M3 COMPLETE**.
 
 ### M4 — TCP
 
@@ -2030,7 +2029,7 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ## Appendix A — Change Log
 
 **v1.28: M3-5 — UDP echo sample (NSFECHO) + host client; issue #28 closed
-(ADR-0030). M3 exit gate GREEN.** The first user-visible NSF program: a UDP echo
+(ADR-0030). M3 exit gate GREEN — M3 COMPLETE (maintainer-countersigned).** The first user-visible NSF program: a UDP echo
 server on the EZASOKET C API, its own load module (`samples/nsfecho.c`, carrying
 the Phase-1 stack), plus a stdlib-only host test client (`samples/host/
 echo_client.py`, scenarios echo/sizes/kill9/quit/gate) and `jcl/NSFECHO.jcl`.
