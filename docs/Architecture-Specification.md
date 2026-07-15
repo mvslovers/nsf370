@@ -2034,17 +2034,24 @@ Table 67 has no ENOSYS and 78 is EDEADLK — replaced with `NSF_EOPNOTSUPP` (45)
 `NSF_ENOSYS` deleted (tombstoned). **#28** (IOHALT with no outstanding READ,
 now reachable via app sends) is FENCED with Hercules source evidence
 (`ctc_halt_or_clear` no-ops unless `fReadWaiting`) documented at the IOHALT call
-site — pending Mike's on-MVS confirmation. Host **1197→1261** (TSTEZA 64:
-mapping table / clamp / exhaustion / implicit init / EBADF / non-blocking
-RECVFROM / blocking round-trip with peer / TERMAPI leak gate / RETCODE-ERRNO
-per function / the decoder incl. unsupported→EOPNOTSUPP + R15=0); `-Werror`
-clean; 11 unique `@@NS*` aliases, no collisions; full cc370/as370/ld370
+site — held live (no S0C4 on the idle-link local send). Host **1197→1261**
+(TSTEZA 64: mapping table / clamp / exhaustion / implicit init / EBADF /
+non-blocking RECVFROM / blocking round-trip with peer / TERMAPI leak gate /
+RETCODE-ERRNO per function / the decoder incl. unsupported→EOPNOTSUPP + R15=0);
+`-Werror` clean; 11 unique `@@NS*` aliases, no collisions; full cc370/as370/ld370
 cross-build of all 34 test modules (incl. the EZASOH03 asm↔C boundary) links
-clean. **On-MVS gate PENDING:** `TSTEZAM` (C API over the real CTCI/IP/UDP
-stack) + `TSTEZAH` (the asm-veneer seam: two consecutive calls × two subtasks,
-Mike's predicted-failure probe) — NOT marked MVS-proven until CC 0 comes back.
-The `NSF` load-module source list is unchanged (NSFEZA links into the
-application, like nsfreq.c's app side). See ADR-0029 (amended) +
+clean. **VALIDATED LIVE on MVSCE** (real CTCI pair 0500/0501): `TSTEZAH` CC 0
+batch+TSO (the asm-veneer seam — Phase A two concurrent subtasks × 50
+consecutive calls, `bad_r15=0 bad_rc=0 bad_errno=0`, no abend; Phase B the full
+lifecycle through the veneer) and `TSTEZAM` CC 0 batch+TSO (the C API over the
+real stack — device up, INITAPI/SOCKET/BIND ok, `SENDTO rc=8` via the IOHALT
+read-park, TERMAPI + leak gate clean). The seam validation earned its keep: the
+first `TSTEZAH` run S0C4'd on a **column-72** trap — an inline comment reaching
+col 72 on the veneer's `LR` line made as370 swallow the following
+`LA 1,88(,13)`, invisible to the host build and a clean link; fixed by keeping
+instruction-line comments short (asm/ezasoh03.asm). The `NSF` load-module source
+list is unchanged (NSFEZA links into the application, like nsfreq.c's app side).
+See ADR-0029 (amended) +
 `docs/ezasoket-conformance.md`. §15.1 updated.
 
 **v1.26: M3-3 — NSFUDP: datagram in/out, port demux, checksum; sockets reachable

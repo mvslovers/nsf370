@@ -482,8 +482,8 @@ ADR-0027 IOHALT read-park, **no #28 abend, no dump**); PORT UNREACH (unbound por
 **1000-ping ICMP regression on the redeployed `NSF`** (refactored `nsfip.c`) still
 **1000/1000 0 % loss unimodal 0.554/0.876/1.735 ms**, all drops 0. `TSTCKSUM`/
 `TSTIP`/`TSTICMP`/`TSTREQM`/`TSTUDPM` **CC 0 on MVS** (0x9371 seed vector big-endian
-on S/370; M2/M3-2 regression clean). **M3-3 COMPLETE.** **M3-4 done (host +
-cross-link; on-MVS gate PENDING Mike's run) — NSFEZA: the EZASOKET API layer.**
+on S/370; M2/M3-2 regression clean). **M3-3 COMPLETE.** **M3-4 COMPLETE (host +
+cross-link + on-MVS VALIDATED live) — NSFEZA: the EZASOKET API layer.**
 A surface-neutral core + two facades (ADR-0029). **C API** (`src/nsfeza.c` /
 `include/nsfeza.h`, the `@@NS*` alias namespace disjoint from libc370 dyn75
 `@@75*`): `nsf_initapi`/`socket`/`bind`/`sendto`/`recvfrom`/`close`/
@@ -509,10 +509,23 @@ site — harmless (a wasted SVC 33 at worst), confirm live. Host **1197→1261**
 (TSTEZA 64, `-Werror` clean, 11 unique `@@NS*` aliases no collisions); full
 cc370/as370/ld370 cross-build of all 34 test modules links clean incl. the
 EZASOH03 asm↔C boundary. NSFEZA links into the APPLICATION (like nsfreq.c's app
-side) — the `NSF` `[[module]]` source list is UNCHANGED. **On-MVS PENDING:**
-`TSTEZAM` (C API over real CTCI/IP/UDP) + `TSTEZAH` (asm-veneer seam: 2
-consecutive calls × 2 subtasks — the predicted-failure probe). Spec v1.27,
-ADR-0029 amended, conformance doc §2.1/§3. **M4 (TCP + EZASOKET M4 set) next.** |
+side) — the `NSF` `[[module]]` source list is UNCHANGED. **VALIDATED LIVE on
+MVSCE** (real CTCI pair 0500/0501): **TSTEZAH CC 0 batch+TSO** — the asm-veneer
+seam under Mike's exact predicted-failure conditions: Phase A `calls=50/50
+bad_r15=0 bad_rc=0 bad_errno=0` (2 concurrent cthread subtasks × 50 consecutive
+calls, R15=0 + RETCODE=-1 + ERRNO=45 every call, no abend), Phase B full
+lifecycle through the veneer (INIT maxsno=63, SOCK/BIND/GETS/CLOS rc=0, GETS
+returned the bound addr+port), leak gate clean. **TSTEZAM CC 0 batch+TSO** — the
+C API over the real stack: `NSF210I CTCI 0500/0501 UP`, INITAPI rc=0/maxsno=63,
+SOCKET fd=0 (0-based), BIND rc=0, **SENDTO rc=8** (the local send through
+nsf_sendto + the ADR-0027 IOHALT read-park — #28 held, no S0C4), TERMAPI rc=0,
+leak gate clean. **A live-only bug found + fixed (the reason TSTEZAH earns its
+keep):** the first run S0C4'd because an inline comment reaching **column 72**
+on the veneer's `LR 11,1` line made as370 swallow the next `LA 1,88(,13)`
+(CLAUDE.md 3 — invisible to the host build AND a clean cc370/as370/ld370 link;
+only the live dump showed it). Fixed by keeping instruction-line comments short.
+Spec v1.27, ADR-0029 amended, conformance doc §2.1/§3. **M4 (TCP + EZASOKET M4
+set) next.** |
 | **M4** | TCP (state machine, data path, rexmit) + EZASOKET (M4 set) + loss harness | telnet TCP echo, clean FIN, survives 5% loss; TIME_WAIT reclaim shown | ☐ Planned |
 | **M5** | Phase 2: `NSFS` subsystem + cross-memory + TCP hardening + docs | 2 address spaces share one stack; stress passes; docs complete | ☐ Planned |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |

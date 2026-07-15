@@ -1,4 +1,4 @@
-         TITLE 'EZASOH03 - EZASMI/EZASOKET BACKEND FACADE (THIN VENEER)'
+         TITLE 'EZASOH03 - EZASMI/EZASOKET BACKEND FACADE VENEER'
 *
 *  EZASOH03 - the call-compatible replacement for IBM's EZASOKET backend
 *            module (extended return code 10110 = "LOAD of EZASOH03
@@ -60,13 +60,19 @@ EZASOH03 PDPPRLG CINDEX=0,FRAME=96,BASER=12,ENTRY=YES
          DROP  12
          BALR  12,0
          USING *,12
-* Function EZASOH03 code: pass R1 (the plist) as the sole C arg to the decoder
-         LR    11,1               R11 = incoming R1 = the EZASOH03 plist
-         ST    11,88(,13)         C arg list[0] = plist
-         LA    1,88(,13)          R1 -> the one-word C arg list
-         L     15,=V(@@NSOH03)    the C decoder owns all the logic
+*  Body: R11 = incoming R1 = the EZASOH03 plist. Build a one-word C arg
+*  list at 88(13) holding A(plist), point R1 at it, and call the C decoder
+*  @@NSOH03 (which owns all the logic). Then force R15 = 0 (the EZASOH03
+*  ABI: real errors live in RETCODE/ERRNO, never R15).
+*  NB CLAUDE.md 3: keep these instruction lines SHORT -- an inline comment
+*  reaching column 72 makes as370 treat the NEXT line as a continuation and
+*  silently drop it (the M3-4 live S0C4: a 72-col LR line swallowed the LA).
+         LR    11,1
+         ST    11,88(,13)
+         LA    1,88(,13)
+         L     15,=V(@@NSOH03)
          BALR  14,15
-         SLR   15,15              R15 = 0 ALWAYS (the EZASOH03 ABI)
+         SLR   15,15
 * Function EZASOH03 epilogue
          PDPEPIL
          DS    0F

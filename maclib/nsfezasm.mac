@@ -76,5 +76,5 @@
          OI    &PL+28,X'80'       set the VL bit on the last address
          LA    1,&PL              R1 -> the EZASOH03 plist
          L     15,=V(EZASOH03)
-         BALR  14,15              R15 is always 0; result in ERRNO/RETCODE
+         BALR  14,15              R15=0 always; result in ERRNO/RETCODE
          MEND

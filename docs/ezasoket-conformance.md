@@ -150,10 +150,14 @@ milestone; documented here rather than left implicit (ADR-0029).
 | GETSOCKNAME | GETS | Implemented |
 | TERMAPI | TERM | Implemented; closes all sockets of the app, then drops the registration |
 
-Host-proven (`test/host/tsteza.c`, 64 assertions). On-MVS proof is pending
-Mike's live run of `TSTEZAM` (C API over the real CTCI/IP/UDP stack) and
-`TSTEZAH` (the EZASOH03 asm-veneer seam) — do not mark MVS-proven here until
-those come back CC 0.
+Host-proven (`test/host/tsteza.c`, 64 assertions) AND **validated live on
+MVSCE** (real CTCI pair 0500/0501): `TSTEZAM` CC 0 (the C API over the real
+stack — device up, INITAPI/SOCKET/BIND ok, SENDTO byte-count 8, TERMAPI + leak
+gate clean) and `TSTEZAH` CC 0 (the EZASOH03 asm-veneer seam — two concurrent
+subtasks × 50 consecutive calls with correct R15/RETCODE/ERRNO, plus the full
+lifecycle through the veneer). The veneer uses the cc370 C prologue (PDPPRLG),
+not FUNHEAD (see ADR-0029); a live column-72 assembler trap that swallowed one
+veneer instruction was found and fixed during that run.
 
 ## 4. Appendix D Table 67 — System Error Return Codes (complete)
 
