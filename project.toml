@@ -462,6 +462,37 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tsthio.c", "test/asm/tsthalt.asm", "test/asm/tststmw.asm", "asm/nsfctcio.asm", "src/nsfctci.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfabend.c", "src/nsffmt.c"]
 
+# -- M4-1 TCP skeleton (NSFTCP): TCB + state machine + SEGMENT ARRIVES --------
+# Host-only (mvs = false, the TSTEZA/TSTEZAM split): crafted segments driven
+# through the real IP path over a capture DEVOPS, the loop NOT running (no
+# threads -- the M4-1 contract), so every RST byte and drop counter is asserted
+# deterministically. Covers the sequence-arithmetic macros (pinned first, across
+# the wrap), the TCP checksum against an independent hand vector (0x22F3), the
+# RFC 793 §3.4 RST generation byte-exact (SYN -> RST,ACK ack=seq+1; ACK -> RST
+# seq=ack; SYN+ACK -> ACK branch; RST -> silence), bad-checksum / bad-offset /
+# runt drops, and the socket/TCB lifecycle (attach alloc, close free, EMFILE-
+# class pool exhaustion with s->pcb left NULL, the destroy leak gate). The
+# on-target byte-order re-run is TSTTCPM. Same source set as TSTUDP with
+# nsftcp.c in place of nsfudp.c.
+[[test]]
+name = "TSTTCP"
+startup = "crt1"
+mvs = false
+sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M4-1 NSFTCP on MVS: the portable segment vectors, byte-order proof --------
+# MVS-only (host = false), tstip-M2 pattern: the same crafted-segment / checksum
+# / sequence-arithmetic vectors re-run on the S/370 target over the capture
+# DEVOPS, proving big-endian header build + the signed-difference seq macros +
+# the 0x22F3 checksum on 3.8j (where TSTTCP -- native little-endian -- cannot).
+# The cross-compile also fires the TCB SIZE_ASSERT (188 B) on target. No live
+# handshake yet (that is M4-2's gate). Same source set as TSTTCP.
+[[test]]
+name = "TSTTCPM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tsttcpm.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
