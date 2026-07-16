@@ -70,10 +70,39 @@
 
 /* Default MSS when no MSS option is negotiated (RFC 1122 §4.2.2.6 / RFC 879:
  * 536 = 576-byte minimum reassembly buffer - 40 bytes of IP+TCP headers) and
- * the default receive window (spec 13.2: "default rcv_wnd 4096"). Declared here
- * for the M4-2 handshake; M4-1 only stores them. */
+ * the default receive window (spec 13.2: "default rcv_wnd 4096"). */
 #define NSFTCP_MSS_DEFAULT     536
 #define NSFTCP_RCVWND_DEFAULT  4096
+
+/* MSS clamp (M4-2). A peer-announced MSS is bounded to a sane range: never below
+ * the RFC 879 floor, never above what one BUFLARGE data area can carry as a TCP
+ * payload (BUFLARGE 2048 - IP 20 - TCP 20). The data path (M4-3) enforces it;
+ * M4-2 parses + stores it. */
+#define NSFTCP_MSS_MIN         88
+#define NSFTCP_MSS_MAX         (NSFBUF_LARGE_DATA - NSFIP_HDR_MIN - NSFTCP_HDRLEN)
+
+/* TCP option kinds we handle (RFC 793 §3.1). All other options are skipped by
+ * their length byte; a malformed length drops the segment (never an overrun). */
+#define NSFTCP_OPT_END         0    /* end of option list                       */
+#define NSFTCP_OPT_NOP         1    /* no-op (single byte, no length)            */
+#define NSFTCP_OPT_MSS         2    /* maximum segment size (kind, len=4, 2-byte)*/
+#define NSFTCP_OPT_MSS_LEN     4
+
+/* TIME_WAIT hold = 2*MSL. RFC 793 MSL is 2 minutes; a small-memory host stack
+ * uses a shorter, TCPCONFIG-tunable MSL (M4-4/M5). Here 2MSL = 60 s at the
+ * 100 ms tick (spec 6.3) -- a named constant, tunable later. */
+#define NSFTCP_MSL_TICKS       300  /* 30 s per MSL (100 ms ticks)              */
+#define NSFTCP_2MSL_TICKS      (2 * NSFTCP_MSL_TICKS)
+
+/* Ephemeral local-port range for an active open without an explicit BIND (the
+ * IANA dynamic range, as NSFUDP uses). */
+#define NSFTCP_EPHEM_LO        49152u
+#define NSFTCP_EPHEM_HI        65535u
+
+/* TCB.flags bits (NSF-internal connection topology / lifecycle -- distinct from
+ * the M5 socket options NODELAY/KEEPALIVE, which will take the high bits). */
+#define TCB_F_APPCLOSED  0x01u  /* app issued CLOSE: the TCB owns its own death  */
+#define TCB_F_ONACCEPTQ  0x02u  /* linked on a listener's acceptq (via acceptlink)*/
 
 /* TCP connection states (TCB.state), RFC 793 §3.2 order. CLOSED is 0 so a
  * freshly memset TCB is CLOSED. */
@@ -147,9 +176,15 @@ typedef struct tcb {
     USHORT   rttvar;            /*   2  @180  round-trip variance               */
     UCHAR    backoff;           /*   1  @182  exponential-backoff shift         */
     UCHAR    dupacks;           /*   1  @183  duplicate-ACK run length          */
-    USHORT   rsvd;              /*   2  @184  pad to a fullword boundary        */
-} TCB;                          /* 188 bytes (padded to a fullword) */
-NSF_SIZE_ASSERT(TCB, 188);
+    /* connection topology (M4-2, NSF-internal -- not RFC 793): a passively-opened
+     * child points back at its listener until it is ACCEPTed; an established but
+     * un-ACCEPTed child is also queued on the listener's acceptq through
+     * `acceptlink` (a SECOND linkage -- `q` above always links the demux list). */
+    struct tcb *listener;       /*   4  @184  child -> listening TCB, else NULL  */
+    QELEM    acceptlink;        /*   8  @188  linkage on the listener's acceptq  */
+    USHORT   rsvd;              /*   2  @196  pad to a fullword boundary        */
+} TCB;                          /* 200 bytes (padded to a fullword) */
+NSF_SIZE_ASSERT(TCB, 200);
 
 /* asm() external-symbol aliases (CLAUDE.md §3): cc370 folds an external to 8
  * chars (upcased, '_'->'@'), so every export pins a unique 8-char name, scheme

@@ -493,6 +493,21 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tsttcpm.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M4-2 NSFTCP on MVS: the full stack over the real CTCI pair (live gate) ---
+# MVS-only (host = false): the M4-2 connection machine over CTCI (0500/0501) + IP
+# + the request path, with a cthread APP SUBTASK doing both handshake directions
+# and a clean FIN teardown over the real 3088 wire. PASSIVE: LISTEN + a bounded
+# non-blocking ACCEPT poll -- host `nc 192.168.200.1 3000` completes the 3WHS,
+# then a FIN exchange on close. ACTIVE: CONNECT to `nc -l 192.168.200.2 3001` --
+# the locally-originated idle-link SYN (the ADR-0030 rarmed read-park). Same MVS
+# source set as TSTUDPM with nsftcp.c in place of nsfudp.c. Built + run with
+# -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
+[[test]]
+name = "TSTTCPH"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tsttcph.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is

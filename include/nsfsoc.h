@@ -79,7 +79,23 @@ typedef struct protops {
     int (*recv)   (SOCKCB *s, NSFRQE *r);   /* RECV / RECVFROM                 */
     int (*close)  (SOCKCB *s, NSFRQE *r);   /* CLOSE                           */
     int (*detach) (SOCKCB *s);              /* final resource release          */
+    int (*accept) (SOCKCB *s, NSFRQE *r);   /* ACCEPT (TCP, M4-2)              */
 } PROTOPS;
+/* `accept` is the LAST member ON PURPOSE (M4-2): protocols and tests that use a
+ * POSITIONAL PROTOPS initializer (UDP's g_udp_ops, the dummy PROTOPS in the M3
+ * tests) omit the trailing member, which C zero-fills to NULL -- so adding accept
+ * needs no edit to any non-TCP initializer, and a NULL accept maps to
+ * NSF_EOPNOTSUPP through soc_dispatch exactly like the other unset ops. */
+
+/* PROTOPS.close return convention (M4-2). A close op that has TAKEN OWNERSHIP of
+ * the request -- completed it and is managing teardown itself, possibly in the
+ * background (TCP: a graceful FIN, then TIME_WAIT) -- returns NSF_CLOSE_OWNED, and
+ * the request dispatcher (do_close) does nothing further. Any OTHER return (0 = no
+ * graceful teardown; the protocol just did local cleanup) lets do_close run the
+ * default checklist: soc_destroy(s) + complete RETOK. UDP has no close op and
+ * takes the default directly; a protocol WITHOUT a background phase never needs
+ * the sentinel. Distinct from RETERR(-1) and every (positive) NSF_E* errno. */
+#define NSF_CLOSE_OWNED   (-2)
 
 /* The socket control block (spec 10.2). Target <=128 bytes; 72 on the S/370
  * target (SIZE_ASSERT below). Pool-allocated (SOCKET pool) at create, mm_freed by

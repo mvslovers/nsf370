@@ -200,6 +200,196 @@ static void inject(NETDEV *dev, const UCHAR *pkt, USHORT total)
 }
 
 /* ==========================================================================
+ * M4-2 helpers: connection setup + segment injection with sequence tracking.
+ * The loop is still NOT running; each request is dispatched directly and each
+ * segment injected through the real IP path over the capture device, so every
+ * transition and byte is asserted deterministically with no threads.
+ * ========================================================================== */
+
+/* Forward decls: the request-building helpers below live with the M4-1 socket
+ * lifecycle tests (section 4), after this block. */
+static void rqe_init(NSFRQE *r, UINT fn, UINT desc);
+static UINT tcp_socket(void);
+
+/* Build IPv4+TCP carrying `optlen` option bytes (a multiple of 4, so the data
+ * offset lands on a whole word). Valid IP + TCP checksums. */
+static USHORT build_tcp_opt(UCHAR *buf, UINT src, UINT dst, USHORT sport, USHORT dport,
+                            UINT seq, UINT ack, UCHAR flags, USHORT window,
+                            const UCHAR *opt, USHORT optlen)
+{
+    UCHAR *ip = buf;
+    UCHAR *t  = buf + 20;
+    USHORT tcplen = (USHORT)(20u + optlen);
+    USHORT total  = (USHORT)(20u + tcplen);
+    UINT   seed;
+    PBUF   tp;
+
+    ip[0] = 0x45u; ip[1] = 0u; put16(ip + 2, total);
+    put16(ip + 4, 0x4321u); put16(ip + 6, 0u);
+    ip[8] = 64u; ip[9] = (UCHAR)NSFIP_PROTO_TCP;
+    ip[10] = 0u; ip[11] = 0u; put32(ip + 12, src); put32(ip + 16, dst);
+    put16(ip + 10, raw_cksum(ip, 20u));
+
+    put16(t + 0, sport); put16(t + 2, dport);
+    put32(t + 4, seq);   put32(t + 8, ack);
+    t[12] = (UCHAR)(((20u + optlen) / 4u) << 4);        /* data offset in words */
+    t[13] = flags;
+    put16(t + 14, window); put16(t + 16, 0u); put16(t + 18, 0u);
+    if (optlen != 0u) {
+        memcpy(t + 20, opt, optlen);
+    }
+    seed = tcp_seed(src, dst, tcplen);
+    memset(&tp, 0, sizeof(tp)); tp.data = t; tp.len = tcplen;
+    put16(t + 16, in_cksum_fold(in_cksum_partial(&tp, 0u, tcplen, seed)));
+    return total;
+}
+
+/* Decode the most-recently captured outbound TCP segment (a 20-byte IP header,
+ * IHL 5, as nsfip_output emits). NULL out-params are skipped. */
+static void cap_tcp(UINT *seq, UINT *ack, UCHAR *flags, USHORT *sport,
+                    USHORT *dport, UCHAR *dataoff)
+{
+    const UCHAR *t = g_cap + 20;
+
+    if (sport   != NULL) { *sport   = get16(t + 0); }
+    if (dport   != NULL) { *dport   = get16(t + 2); }
+    if (seq     != NULL) { *seq     = get32(t + 4); }
+    if (ack     != NULL) { *ack     = get32(t + 8); }
+    if (dataoff != NULL) { *dataoff = (UCHAR)((t[12] >> 4) & 0x0Fu); }
+    if (flags   != NULL) { *flags   = t[13]; }
+}
+
+/* TCP state behind a descriptor, or -1 if the socket / TCB is gone. */
+static int tcb_state(UINT desc)
+{
+    SOCKCB *s = sock_lookup(desc);
+
+    if (s == NULL || s->pcb == NULL) {
+        return -1;
+    }
+    return (int)((TCB *)s->pcb)->state;
+}
+
+/* Dispatch a request and flush any outbound segment it produced into the capture.*/
+static void dispatch(NSFRQE *r)
+{
+    nsfreq_dispatch(r);
+    nsfdev_kick_output();
+}
+
+/* A connection's sequence bookkeeping (test side). cli_next = the peer's next
+ * send sequence; srv_next = our next send sequence (== the peer's rcv_nxt). */
+typedef struct {
+    UINT   desc;
+    UINT   ldesc;               /* the listener descriptor (passive), else 0    */
+    USHORT lport, cport;
+    UINT   cli_next, srv_next;
+} CONN;
+
+/* Establish an ACTIVE connection (connect -> SYN -> SYN|ACK -> ACK), fill *c. */
+static void establish_active(NETDEV *dev, USHORT peerport, CONN *c)
+{
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total, sport;
+    UINT   synseq, aseq, aack;
+    UCHAR  flags, aflags;
+    UINT   peerISS = 0x50000000u;
+
+    memset(c, 0, sizeof(*c));
+    c->desc = tcp_socket();
+    CHECK(c->desc != 0u, "active: socket");
+
+    rqe_init(&r, RQ_CONNECT, c->desc);
+    r.p1 = PEER_IP; r.p2 = (UINT)peerport;
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)g_capcount, 1L, "active: connect sent one SYN");
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+    CHECK_EQ((long)(flags & (TCP_FL_SYN | TCP_FL_ACK)), (long)TCP_FL_SYN, "active: SYN only");
+    CHECK_EQ((long)tcb_state(c->desc), (long)TCP_SYN_SENT, "active: SYN_SENT");
+
+    c->lport    = sport;                        /* our ephemeral source port      */
+    c->cport    = peerport;
+    c->srv_next = synseq + 1u;                  /* our snd_nxt after the SYN       */
+
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, peerport, sport,
+                      peerISS, synseq + 1u, (UCHAR)(TCP_FL_SYN | TCP_FL_ACK),
+                      0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 1L, "active: SYN|ACK -> one ACK");
+    cap_tcp(&aseq, &aack, &aflags, NULL, NULL, NULL);
+    CHECK_EQ((long)aflags, (long)TCP_FL_ACK, "active: final segment is a pure ACK");
+    CHECK_EQ((long)aseq, (long)(synseq + 1u), "active: ACK seq = our snd_nxt");
+    CHECK_EQ((long)aack, (long)(peerISS + 1u), "active: ACK ack = peerISS + 1");
+    CHECK(r.retcode == NSF_RETOK, "active: connect completed RETOK");
+    CHECK_EQ((long)tcb_state(c->desc), (long)TCP_ESTABLISHED, "active: ESTABLISHED");
+
+    c->cli_next = peerISS + 1u;                 /* the peer's next send sequence   */
+}
+
+/* Establish a PASSIVE connection (listen -> SYN -> SYN|ACK -> ACK -> accept),
+ * fill *c (including the listener descriptor for cleanup). */
+static USHORT g_listen_port = 7000u;
+
+static void establish_passive(NETDEV *dev, CONN *c)
+{
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total, lport = g_listen_port++;
+    USHORT cport = 41000u;
+    UINT   cliISS = 0x60000000u, srvISS, sack;
+    UCHAR  flags, doff;
+
+    memset(c, 0, sizeof(*c));
+    c->ldesc = tcp_socket();
+    CHECK(c->ldesc != 0u, "passive: listen socket");
+    rqe_init(&r, RQ_BIND, c->ldesc); r.p1 = HOME_IP; r.p2 = (UINT)lport; dispatch(&r);
+    CHECK(r.retcode == NSF_RETOK, "passive: bind");
+    rqe_init(&r, RQ_LISTEN, c->ldesc); r.p1 = 5u; dispatch(&r);
+    CHECK(r.retcode == NSF_RETOK, "passive: listen");
+    CHECK_EQ((long)tcb_state(c->ldesc), (long)TCP_LISTEN, "passive: LISTEN");
+
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, cport, lport, cliISS, 0u,
+                      (UCHAR)TCP_FL_SYN, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 1L, "passive: SYN -> one SYN|ACK");
+    cap_tcp(&srvISS, &sack, &flags, NULL, NULL, &doff);
+    CHECK_EQ((long)flags, (long)(TCP_FL_SYN | TCP_FL_ACK), "passive: SYN|ACK flags");
+    CHECK_EQ((long)sack, (long)(cliISS + 1u), "passive: SYN|ACK ack = clientISS + 1");
+    CHECK_EQ((long)doff, 6L, "passive: SYN|ACK carries an option (data offset 6)");
+    CHECK_EQ((long)g_cap[40], 2L, "passive: option kind = MSS");
+    CHECK_EQ((long)g_cap[41], 4L, "passive: option length = 4");
+
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, cport, lport, cliISS + 1u, srvISS + 1u,
+                      (UCHAR)TCP_FL_ACK, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 0L, "passive: final ACK draws no reply");
+
+    rqe_init(&r, RQ_ACCEPT, c->ldesc);
+    dispatch(&r);
+    CHECK(r.retcode > 0, "passive: accept returns a child descriptor");
+    CHECK(r.retcode != (INT)c->ldesc, "passive: child descriptor != listener");
+    c->desc     = (UINT)r.retcode;
+    c->lport    = lport;
+    c->cport    = cport;
+    c->cli_next = cliISS + 1u;
+    c->srv_next = srvISS + 1u;
+    CHECK_EQ((long)tcb_state(c->desc), (long)TCP_ESTABLISHED, "passive: child ESTABLISHED");
+}
+
+/* Close a descriptor via the request path. */
+static void conn_close(UINT desc)
+{
+    NSFRQE r;
+    rqe_init(&r, RQ_CLOSE, desc);
+    dispatch(&r);
+}
+
+/* ==========================================================================
  * 1. Sequence arithmetic -- pinned FIRST, across the 2^32 wrap.
  * ========================================================================== */
 static void test_seq_macros(void)
@@ -570,12 +760,345 @@ static void test_pool_exhaustion(void)
     CHECK_EQ((long)sock_inuse(), 0L, "exhaustion: SOCKET pool back to baseline");
 }
 
+/* ==========================================================================
+ * 5. M4-2 handshake, teardown, TIME_WAIT.
+ * ========================================================================== */
+
+/* Inject an acceptable RST to abort a connection instantly (leak-gate helper),
+ * then close the listener too for a passively-opened connection. */
+static void conn_abort(NETDEV *dev, CONN *c)
+{
+    UCHAR  pkt[64];
+    USHORT total;
+
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c->cport, c->lport,
+                      c->cli_next, 0u, (UCHAR)TCP_FL_RST, 0u, NULL, 0u);
+    inject(dev, pkt, total);
+    if (c->ldesc != 0u) {
+        conn_close(c->ldesc);
+    }
+}
+
+/* Full active handshake (asserted inside establish_active), then teardown. */
+static void test_active_handshake(NETDEV *dev)
+{
+    CONN c;
+
+    establish_active(dev, 8000u, &c);
+    conn_abort(dev, &c);
+    CHECK_EQ((long)tcb_inuse(), 0L, "active handshake: torn down, pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "active handshake: no buffer leak");
+}
+
+/* Full passive handshake incl. the SYN|ACK + MSS option + accept (asserted inside
+ * establish_passive), then teardown. */
+static void test_passive_handshake(NETDEV *dev)
+{
+    CONN c;
+
+    establish_passive(dev, &c);
+    conn_abort(dev, &c);
+    CHECK_EQ((long)tcb_inuse(), 0L, "passive handshake: torn down, pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "passive handshake: no buffer leak");
+}
+
+/* Active connect refused by a RST|ACK in SYN_SENT -> ECONNREFUSED. */
+static void test_active_refused(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total, sport;
+    UINT   synseq;
+    UCHAR  flags;
+    UINT   desc = tcp_socket();
+
+    rqe_init(&r, RQ_CONNECT, desc); r.p1 = PEER_IP; r.p2 = 8010u;
+    g_capcount = 0;
+    dispatch(&r);
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+    CHECK_EQ((long)tcb_state(desc), (long)TCP_SYN_SENT, "refused: SYN_SENT");
+
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 8010u, sport, 0u, synseq + 1u,
+                      (UCHAR)(TCP_FL_RST | TCP_FL_ACK), 0u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK(r.retcode == NSF_RETERR, "refused: connect failed");
+    CHECK_EQ((long)r.errno_, (long)NSF_ECONNREFUSED, "refused: errno ECONNREFUSED");
+    CHECK_EQ((long)tcb_state(desc), -1L, "refused: connection destroyed");
+    CHECK_EQ((long)tcb_inuse(), 0L, "refused: pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "refused: no buffer leak");
+}
+
+/* A RST in a synchronized state completes a PARKED request with ECONNRESET. The
+ * parked request is a CONNECT that reached SYN_RCVD via a simultaneous open (the
+ * only synchronized state that carries a parked request in M4-2). */
+static void test_rst_econnreset(NETDEV *dev)
+{
+    NSFRQE  r;
+    SOCKCB *s;
+    UCHAR   pkt[64];
+    USHORT  total, sport;
+    UINT    synseq;
+    UCHAR   flags;
+    UINT    peerISS = 0x33330000u;
+    UINT    desc = tcp_socket();
+
+    rqe_init(&r, RQ_CONNECT, desc); r.p1 = PEER_IP; r.p2 = 8020u;
+    g_capcount = 0;
+    dispatch(&r);
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+
+    /* A bare SYN (no ACK) -> simultaneous open -> SYN_RCVD, connect still parked. */
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 8020u, sport, peerISS, 0u,
+                      (UCHAR)TCP_FL_SYN, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(desc), (long)TCP_SYN_RCVD, "econnreset: SYN_RCVD (simultaneous open)");
+    s = sock_lookup(desc);
+    CHECK(s != NULL && s->pend_connect == &r, "econnreset: connect still parked");
+
+    /* An acceptable RST (seq = our RCV.NXT = peerISS + 1) -> ECONNRESET, destroy. */
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 8020u, sport, peerISS + 1u, 0u,
+                      (UCHAR)TCP_FL_RST, 0u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK(r.retcode == NSF_RETERR, "econnreset: connect failed");
+    CHECK_EQ((long)r.errno_, (long)NSF_ECONNRESET, "econnreset: errno ECONNRESET");
+    CHECK_EQ((long)tcb_state(desc), -1L, "econnreset: connection destroyed");
+    CHECK_EQ((long)tcb_inuse(), 0L, "econnreset: pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "econnreset: no buffer leak");
+}
+
+/* A RST on an ESTABLISHED connection with no parked request -> destroy. */
+static void test_rst_established(NETDEV *dev)
+{
+    CONN   c;
+    UCHAR  pkt[64];
+    USHORT total;
+    UINT   rr0;
+
+    establish_passive(dev, &c);
+    rr0 = ctr_get("NSFTCP", "resetrcvd");
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport, c.cli_next, 0u,
+                      (UCHAR)TCP_FL_RST, 0u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(c.desc), -1L, "RST on ESTABLISHED -> destroyed");
+    CHECK_EQ((long)ctr_get("NSFTCP", "resetrcvd"), (long)rr0 + 1, "resetrcvd counted");
+    conn_close(c.ldesc);
+    CHECK_EQ((long)tcb_inuse(), 0L, "RST established: pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "RST established: no buffer leak");
+}
+
+/* Active close: FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT -> (2MSL) -> destroyed. */
+static void test_teardown_active(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total;
+    UINT   fseq;
+    UCHAR  fflags;
+
+    establish_active(dev, 8030u, &c);
+
+    rqe_init(&r, RQ_CLOSE, c.desc);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK(r.retcode == NSF_RETOK, "active close: returns immediately (background FIN)");
+    CHECK_EQ((long)g_capcount, 1L, "active close: one FIN sent");
+    cap_tcp(&fseq, NULL, &fflags, NULL, NULL, NULL);
+    CHECK_EQ((long)(fflags & TCP_FL_FIN), (long)TCP_FL_FIN, "active close: FIN flag set");
+    CHECK_EQ((long)fseq, (long)c.srv_next, "active close: FIN seq = snd_nxt");
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_FIN_WAIT_1, "active close: FIN_WAIT_1");
+
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport,
+                      c.cli_next, c.srv_next + 1u, (UCHAR)TCP_FL_ACK, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_FIN_WAIT_2, "active close: ACK of FIN -> FIN_WAIT_2");
+
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport,
+                      c.cli_next, c.srv_next + 1u, (UCHAR)(TCP_FL_FIN | TCP_FL_ACK),
+                      0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 1L, "active close: peer FIN -> ACK sent");
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_TIME_WAIT, "active close: peer FIN -> TIME_WAIT");
+
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_state(c.desc), -1L, "active close: 2MSL -> destroyed");
+    CHECK_EQ((long)tcb_inuse(), 0L, "active close: pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "active close: no buffer leak");
+}
+
+/* Passive close: peer FIN -> CLOSE_WAIT, app close -> LAST_ACK -> (ACK) destroyed. */
+static void test_teardown_passive(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total;
+
+    establish_active(dev, 8040u, &c);
+
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport,
+                      c.cli_next, c.srv_next, (UCHAR)(TCP_FL_FIN | TCP_FL_ACK),
+                      0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 1L, "passive close: our ACK of the peer FIN");
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_CLOSE_WAIT, "passive close: CLOSE_WAIT");
+    c.cli_next = c.cli_next + 1u;               /* the peer's FIN consumed a seq   */
+
+    rqe_init(&r, RQ_CLOSE, c.desc);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)g_capcount, 1L, "passive close: app close sends FIN");
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_LAST_ACK, "passive close: LAST_ACK");
+
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport,
+                      c.cli_next, c.srv_next + 1u, (UCHAR)TCP_FL_ACK, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(c.desc), -1L, "passive close: ACK of our FIN -> CLOSED, destroyed");
+    CHECK_EQ((long)tcb_inuse(), 0L, "passive close: pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "passive close: no buffer leak");
+}
+
+/* Simultaneous close: app close -> FIN_WAIT_1, peer FIN (not acking ours) ->
+ * CLOSING, peer ACK -> TIME_WAIT -> (2MSL) destroyed. */
+static void test_teardown_simultaneous(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total;
+
+    establish_active(dev, 8050u, &c);
+
+    rqe_init(&r, RQ_CLOSE, c.desc);
+    dispatch(&r);
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_FIN_WAIT_1, "simultaneous: FIN_WAIT_1");
+
+    /* Peer FIN that does NOT acknowledge our FIN (ack = snd_una, before our FIN). */
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport,
+                      c.cli_next, c.srv_next, (UCHAR)(TCP_FL_FIN | TCP_FL_ACK),
+                      0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 1L, "simultaneous: our ACK of the peer FIN");
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_CLOSING, "simultaneous: FIN_WAIT_1 + FIN -> CLOSING");
+    c.cli_next = c.cli_next + 1u;
+
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport,
+                      c.cli_next, c.srv_next + 1u, (UCHAR)TCP_FL_ACK, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_TIME_WAIT, "simultaneous: CLOSING + ACK -> TIME_WAIT");
+
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_state(c.desc), -1L, "simultaneous: 2MSL -> destroyed");
+    CHECK_EQ((long)tcb_inuse(), 0L, "simultaneous: pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "simultaneous: no buffer leak");
+}
+
+/* Malformed TCP options on an inbound SYN -> drop + count hdrerr, no SYN|ACK, no
+ * child, no overrun (ASan). */
+static void test_malformed_options(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total;
+    UINT   he0;
+    UINT   ldesc = tcp_socket();
+    UCHAR  badlen0[4]  = { 2u, 0u, 0u, 0u };    /* MSS kind, length 0  -> malformed */
+    UCHAR  badrun[4]   = { 2u, 40u, 0u, 0u };   /* length runs past the option area */
+
+    rqe_init(&r, RQ_BIND, ldesc); r.p1 = HOME_IP; r.p2 = 6100u; dispatch(&r);
+    rqe_init(&r, RQ_LISTEN, ldesc); r.p1 = 4u; dispatch(&r);
+    he0 = ctr_get("NSFTCP", "hdrerr");
+
+    g_capcount = 0;
+    total = build_tcp_opt(pkt, PEER_IP, HOME_IP, 44000u, 6100u, 0x10u, 0u,
+                          (UCHAR)TCP_FL_SYN, 0x2000u, badlen0, 4u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 0L, "malformed opt (len 0): no SYN|ACK");
+    CHECK_EQ((long)ctr_get("NSFTCP", "hdrerr"), (long)he0 + 1, "malformed opt (len 0): hdrerr");
+
+    g_capcount = 0;
+    total = build_tcp_opt(pkt, PEER_IP, HOME_IP, 44001u, 6100u, 0x20u, 0u,
+                          (UCHAR)TCP_FL_SYN, 0x2000u, badrun, 4u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 0L, "malformed opt (overrun): no SYN|ACK");
+    CHECK_EQ((long)ctr_get("NSFTCP", "hdrerr"), (long)he0 + 2, "malformed opt (overrun): hdrerr");
+    CHECK_EQ((long)tcb_inuse(), 1L, "malformed opt: only the listener TCB (no child allocated)");
+
+    conn_close(ldesc);
+    CHECK_EQ((long)tcb_inuse(), 0L, "malformed opt: listener closed, pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "malformed opt: no buffer leak");
+}
+
+/* Drive a fresh active connection all the way to TIME_WAIT; returns its
+ * descriptor (a TIME_WAIT TCB lives until 2MSL). */
+static UINT active_to_timewait(NETDEV *dev, USHORT peerport)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total;
+
+    establish_active(dev, peerport, &c);
+    rqe_init(&r, RQ_CLOSE, c.desc);
+    dispatch(&r);
+    /* Peer FIN + ACK-of-our-FIN in one segment: FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT. */
+    total = build_tcp(pkt, PEER_IP, HOME_IP, c.cport, c.lport,
+                      c.cli_next, c.srv_next + 1u, (UCHAR)(TCP_FL_FIN | TCP_FL_ACK),
+                      0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_TIME_WAIT, "reclaim setup: TIME_WAIT reached");
+    return c.desc;
+}
+
+/* Pool exhaustion at SYN time reclaims the oldest TIME_WAIT TCB (spec 13.4). Fill
+ * the pool with a listener + (POOL-1) TIME_WAIT TCBs, then a new SYN reclaims one. */
+static void test_timewait_reclaim(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total;
+    UINT   ldesc, recl0;
+    int    i;
+
+    CHECK_EQ((long)tcb_inuse(), 0L, "reclaim: pool starts at baseline");
+    ldesc = tcp_socket();
+    rqe_init(&r, RQ_BIND, ldesc); r.p1 = HOME_IP; r.p2 = 6000u; dispatch(&r);
+    rqe_init(&r, RQ_LISTEN, ldesc); r.p1 = 8u; dispatch(&r);
+
+    for (i = 0; i < TSTTCP_POOL - 1; i++) {
+        (void)active_to_timewait(dev, (USHORT)(8100 + i));
+    }
+    CHECK_EQ((long)tcb_inuse(), (long)TSTTCP_POOL, "reclaim: pool full (listener + TIME_WAITs)");
+    recl0 = ctr_get("NSFTCP", "twreclaim");      /* 12-char stats field (nsfsts.h) */
+
+    /* A new SYN to the listener: the pool is full -> reclaim the oldest TIME_WAIT,
+     * retry the allocation, and reply SYN|ACK for the new connection. */
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 8200u, 6000u, 0x70000000u, 0u,
+                      (UCHAR)TCP_FL_SYN, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)ctr_get("NSFTCP", "twreclaim"), (long)recl0 + 1,
+             "reclaim: one TIME_WAIT reclaimed");
+    CHECK_EQ((long)g_capcount, 1L, "reclaim: SYN|ACK sent for the new connection");
+    CHECK_EQ((long)tcb_inuse(), (long)TSTTCP_POOL, "reclaim: pool still full (child took the slot)");
+
+    /* Cleanup: closing the listener destroys the embryonic child too; fire the
+     * 2MSL timers to drain the remaining TIME_WAIT TCBs. */
+    conn_close(ldesc);
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "reclaim: pool back to baseline after cleanup");
+    CHECK_EQ((long)small_inuse(), 0L, "reclaim: no buffer leak");
+}
+
 int main(void)
 {
     DEVCFG  cfg;
     NETDEV *dev;
 
-    printf("=== nsf370 NSFTCP tests (M4-1) ===\n");
+    printf("=== nsf370 NSFTCP tests (M4-1 + M4-2) ===\n");
 
     sts_init();
     mm_init(NULL);
@@ -622,6 +1145,18 @@ int main(void)
     test_attach_lifecycle();
     test_destroy_leak_gate();
     test_pool_exhaustion();
+
+    /* M4-2: handshake, teardown matrix, TIME_WAIT, RST, malformed options. */
+    test_active_handshake(dev);
+    test_passive_handshake(dev);
+    test_active_refused(dev);
+    test_rst_econnreset(dev);
+    test_rst_established(dev);
+    test_teardown_active(dev);
+    test_teardown_passive(dev);
+    test_teardown_simultaneous(dev);
+    test_malformed_options(dev);
+    test_timewait_reclaim(dev);
 
     {
         NSFRQE rt;
