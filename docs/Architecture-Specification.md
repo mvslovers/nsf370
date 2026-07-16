@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.28 — Draft for implementation. Companion document to the frozen
+*Version 1.29 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1534,6 +1534,22 @@ range 400–499): `in, out, noport, badlen, badcksum, rxfull, binds`.
 The largest component; this chapter fixes structure and lifetime, while
 algorithm details follow RFC 793/1122 directly.
 
+> **Status (M4-1, v1.29): the skeleton is in place** — `include/nsftcp.h` /
+> `src/nsftcp.c`. The TCB (§13.2, 188 B, 256-byte target pool slot), the
+> sequence-arithmetic macros, the RFC 793 "SEGMENT ARRIVES" event skeleton
+> (§13.3) and `tcp_destroy` (§13.4) exist; the §13.5 counters are registered.
+> **M4-1 is structure, not behavior:** the demux + per-state handlers are RFC-
+> ordered stubs, and the only live emitter is a RST — a segment to a closed port
+> draws the RFC 793 §3.4 reset (SYN → `<SEQ=0><ACK=SEG.SEQ+1><RST,ACK>`, ACK →
+> `<SEQ=SEG.ACK><RST>`, never a RST in response to a RST, and — RFC 1122
+> §3.2.1.3 — never a RST toward a non-unicast source), everything else drops and
+> counts. No connection can be established yet (LISTEN/CONNECT are M4-2, the
+> data path M4-3). NSFTCP plugs into the IP demux seam (`nsfip_register_proto(6,
+> …)`) and the SOCKET PROTOPS seam (`nsfreq_register_proto(6, …)`) exactly as
+> NSFUDP does, so it stays OUT of the `NSF` production load module until the
+> EZASOKET M4 set makes it reachable. Checksum reuses the ADR-0028 pseudo-header
+> seed (proto 6) with NO zero-checksum exemption (TCP checksums are mandatory).
+
 ### 13.1 Responsibilities
 
 Full state machine (11 states), sequence processing per RFC 793,
@@ -2027,6 +2043,46 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.29: M4-1 — NSFTCP skeleton: TCB + state machine + RFC 793 "SEGMENT
+ARRIVES" structure; host + cross-link (live gate is M4-2's).** The TCP skeleton
+`include/nsftcp.h` / `src/nsftcp.c`, mirroring the NSFUDP module discipline
+(registration seams, static handlers, NOT in the `NSF` load module until the
+EZASOKET M4 set). **Structure, not behavior:** every crafted segment now gets
+the RFC-correct reaction SHAPE but no connection can be established (that is
+M4-2). The **TCB** is spec-§13.2 verbatim (188 B on target, `NSF_SIZE_ASSERT`;
+the pool slot is `max(sizeof(TCB), 256)` — 256 on target for the M5 growth
+reserve, the exact struct size on the host where 8-byte pointers + the four
+48-byte TMRs inflate it to 328 B, so a fixed 256 would overflow the slot: the
+SOCKET-pool `sizeof(SOCKCB)` lesson, pinned live by AddressSanitizer). The
+**sequence-arithmetic macros** `TCP_SEQ_LT/LEQ/GT/GEQ` (signed 32-bit
+difference) are pinned first against wrap vectors. `tcp_input` follows RFC 793
+pp. 64-76 literally: validate length/data-offset/**mandatory** checksum (the
+ADR-0028 pseudo-header seed at proto 6, NO zero-checksum exemption) → demux
+(4-tuple, then listener) → no TCB → **RST per RFC 793 §3.4** (`tcp_output_rst`,
+the one live emitter) → matched TCB → RFC-ordered per-state stubs (drop+count).
+**RST seq/ack byte-exact:** SYN → `<SEQ=0><ACK=SEG.SEQ+SEG.LEN><RST,ACK>` with
+SEG.LEN counting the SYN (a bare SYN draws ack = seq + 1); ACK →
+`<SEQ=SEG.ACK><RST>`; a RST is never answered with a RST (counted `resetrcvd`).
+a RST is never answered with a RST (counted `resetrcvd`), and per RFC 1122
+§3.2.1.3 a RST is **suppressed toward a non-unicast source** (zero / broadcast /
+multicast) — `nsfip_input` validates only the local destination, so TCP filters
+the source itself, mirroring `nsficmp_send_error`. `tcp_destroy` is the §13.4
+checklist from day one (4× `tmr_cancel`, free sndq/oooq, unlink, detach the
+SOCKCB, `mm_free`); the PROTOPS surface is attach (alloc the TCB, `s->pcb` left
+NULL on failure so teardown no-ops) + detach, every other verb NULL → the
+dispatcher completes it EOPNOTSUPP. All 12 §13.5 counters registered, plus a
+private `hdrerr` for malformed drops. `test/tsttcp.c` (host, **137** assertions:
+seq wrap, the independent checksum vector 0x22F4 two-sided, RST byte-exact per
+§3.4, non-unicast-source suppression, bad-checksum / bad-offset / runt drops, the
+socket/TCB lifecycle + EMFILE-class pool exhaustion + the leak gate) — no threads
+(the M4-1 contract). `test/mvs/tsttcpm.c` (host = false) re-runs the byte-order-
+sensitive vectors on S/370. Host suite **1262 → 1399**; `-Wall -Wextra -Werror
+-pthread` + ASan clean; NSF + NSFECHO + 34 test modules cross-link clean
+(cc370/as370/ld370); alias scan clean (5 unique `NSFTC*`); TSTTCPM **CC 0 batch +
+TSO on MVSCE**. §13 status note. **NSFTCP NOT in the `NSF` module — `S NSF` is
+byte-for-byte unchanged (inbound TCP still draws ICMP protocol-unreachable in
+production).**
 
 **v1.28: M3-5 — UDP echo sample (NSFECHO) + host client; issue #28 closed
 (ADR-0030). M3 exit gate GREEN — M3 COMPLETE (maintainer-countersigned).** The first user-visible NSF program: a UDP echo
