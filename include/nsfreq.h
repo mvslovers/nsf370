@@ -89,8 +89,13 @@ enum {
 #define NSF_EAFNOSUPPORT    47      /* address family not supported             */
 #define NSF_EADDRINUSE      48      /* local (addr,port) already bound          */
 #define NSF_ECONNABORTED    53      /* socket torn down under a parked request  */
+#define NSF_ECONNRESET      54      /* connection reset by peer (RST, M4-2)     */
 #define NSF_ENOBUFS         55      /* buffer/pool exhaustion (drop, not abend)  */
+#define NSF_EISCONN         56      /* CONNECT on an already-connected socket    */
+#define NSF_ENOTCONN        57      /* socket is not connected                  */
 #define NSF_ESHUTDOWN       58      /* stack is shutting down                   */
+#define NSF_ETIMEDOUT       60      /* connection timed out before completing    */
+#define NSF_ECONNREFUSED    61      /* connection refused (RST in SYN_SENT, M4-2)*/
 #define NSF_EHOSTUNREACH    65      /* no route to the datagram's destination   */
 /* NO NSF_ENOSYS: M3-2 used 78 for the not-implemented stub verbs (SELECT/
  * SET|GETSOCKOPT/FCNTL/GETPEERNAME), but IBM Table 67 has no ENOSYS and 78 is

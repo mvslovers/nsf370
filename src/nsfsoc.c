@@ -197,6 +197,11 @@ int soc_dispatch(SOCKCB *s, NSFRQE *r)
             return NSF_EOPNOTSUPP;
         }
         return s->ops->listen(s, (int)r->p1);
+    case RQ_ACCEPT:
+        if (s->ops == NULL || s->ops->accept == NULL) {
+            return NSF_EOPNOTSUPP;
+        }
+        return s->ops->accept(s, r);
     case RQ_SEND:
     case RQ_SENDTO:
         if (s->ops == NULL || s->ops->send == NULL) {
@@ -300,11 +305,17 @@ void soc_destroy(SOCKCB *s)
         buf_free(Q_ENTRY(e, PBUF, q));
     }
 
-    /* 3. Flush the accept queue. Empty in M3-1; TCP (M4) fills it with
-     *    established-but-un-ACCEPTed connections -- revisit the element type
-     *    there (spec 10.2). Treated as PBUFs now, symmetric with rxq. */
-    while ((e = q_deq(&s->acceptq)) != NULL) {
-        buf_free(Q_ENTRY(e, PBUF, q));
+    /* 3. Drain the accept queue. It is PROTOCOL-OWNED (M4-2 fix): TCP fills it
+     *    with established, un-ACCEPTed CHILD sockets linked through TCB.acceptlink
+     *    -- NOT PBUFs. The protocol detach in step 1 (tcp_detach -> tcp_destroy of
+     *    a listener) tears every child down through soc_destroy and empties this
+     *    queue, so it is normally already empty here. Drain any residue by
+     *    UNLINKING ONLY -- never buf_free, which on a TCB acceptlink would use the
+     *    wrong container base and corrupt the heap (the M3-1 placeholder freed it
+     *    as a PBUF -- a latent landmine now removed, spec 10.2). UDP never uses
+     *    acceptq, so this is a no-op there. */
+    while (q_deq(&s->acceptq) != NULL) {
+        /* unlink only; each child was owned + destroyed by the protocol detach */
     }
 
     /* 4. COMPLETE every parked NSFRQE with an error, so no app task WAITs

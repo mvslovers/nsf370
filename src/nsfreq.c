@@ -282,6 +282,25 @@ static void do_bind(NSFRQE *r)
     soc_complete(r, (rc == 0) ? NSF_RETOK : NSF_RETERR, (rc == 0) ? 0 : rc);
 }
 
+/* LISTEN is SYNCHRONOUS like BIND (the listen op returns an rc and does NOT
+ * receive r, so it cannot complete it): complete r here from the op's result.
+ * This is why RQ_LISTEN is NOT in the do_delegate group -- do_delegate leaves an
+ * rc==0 op uncompleted (correct for CONNECT/ACCEPT/SEND/RECV, which complete or
+ * park r themselves; wrong for the r-less listen op). Latent until M4-2's real
+ * listen op first returned 0 (before that, TCP listen was NULL -> EOPNOTSUPP). */
+static void do_listen(NSFRQE *r)
+{
+    SOCKCB *s = req_socket(r);
+    int     rc;
+
+    if (s == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_EBADF);
+        return;
+    }
+    rc = soc_dispatch(s, r);            /* -> s->ops->listen(s, backlog)          */
+    soc_complete(r, (rc == 0) ? NSF_RETOK : NSF_RETERR, (rc == 0) ? 0 : rc);
+}
+
 static void do_getsockname(NSFRQE *r)
 {
     SOCKCB *s = req_socket(r);
@@ -304,8 +323,20 @@ static void do_close(NSFRQE *r)
         soc_complete(r, NSF_RETERR, NSF_EBADF);
         return;
     }
-    /* r itself is NOT parked on s, so soc_destroy (which completes s's PARKED
-     * requests with ECONNABORTED) does not touch r; complete r afterwards. */
+    /* A protocol with a CLOSE op is given first refusal: if it TAKES OWNERSHIP
+     * (returns NSF_CLOSE_OWNED -- TCP: a graceful FIN teardown that completes r
+     * immediately and finishes in the background, or destroys a LISTEN/half-open
+     * socket now), do_close does nothing further. Otherwise (a close op that only
+     * did local cleanup, or no close op at all -- UDP) RQ_CLOSE goes through the
+     * ONE destroy checklist (spec 10.5): r is not parked on s, so soc_destroy
+     * (which ECONNABORTs s's PARKED requests) never touches r; complete it after.
+     * This keeps every M3 dummy close op (which returns 0 = "not owned") working
+     * unchanged while letting TCP own its background teardown. */
+    if (s->ops != NULL && s->ops->close != NULL) {
+        if (soc_dispatch(s, r) == NSF_CLOSE_OWNED) {
+            return;                     /* the op owns r + teardown               */
+        }
+    }
     soc_destroy(s);
     soc_complete(r, NSF_RETOK, 0);
 }
@@ -346,13 +377,14 @@ void nsfreq_dispatch(NSFRQE *r)
     case RQ_TERMAPI:     do_termapi(r);      break;
     case RQ_SOCKET:      do_socket(r);       break;
     case RQ_BIND:        do_bind(r);         break;
+    case RQ_LISTEN:      do_listen(r);       break;
     case RQ_GETSOCKNAME: do_getsockname(r);  break;
     case RQ_CLOSE:       do_close(r);        break;
 
     /* -- socket-protocol verbs, delegated to the PROTOPS op (M3-3 UDP, M4 TCP;
-     *    the M3-1 dummy protocol proves the park/complete round-trip) -- */
+     *    the M3-1 dummy protocol proves the park/complete round-trip). LISTEN is
+     *    NOT here: it is synchronous + r-less, handled by do_listen above. -- */
     case RQ_CONNECT:
-    case RQ_LISTEN:
     case RQ_ACCEPT:
     case RQ_SEND:
     case RQ_SENDTO:

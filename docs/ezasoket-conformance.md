@@ -123,6 +123,16 @@ that value was wrong. M3-4 replaces it with **EOPNOTSUPP (45)**, the classic
 tombstone in `include/nsfreq.h` so 78 is never reused. All other `NSF_E*`
 values in `nsfreq.h` are verified correct against Table 67.
 
+**M4-2 TCP errnos (added, Table-67-verified).** The TCP connection machine
+(ADR-0031) adds five provisional `NSF_E*` values, taken straight from Table 67
+below and pinned in `include/nsfreq.h`: **`ECONNRESET = 54`** (a RST in a
+synchronized state completes a parked request with it), **`EISCONN = 56`** (a
+second CONNECT on a connecting/connected socket), **`ENOTCONN = 57`** (reserved
+for the M4-3 data-path "not connected" callers), **`ETIMEDOUT = 60`** (reserved
+for the M4-4 connect/rexmit timeout), and **`ECONNREFUSED = 61`** (a RST in
+SYN_SENT refuses the connect). As with the M3 set, only the NSFRQE *layout* is
+frozen — these errno values stay provisional until the M6 relink audit.
+
 **Extended (10xxx) codes.** NSF emits **none** in M3-4 (the facade-level
 IUCV/interface diagnostics in Table 68 have no analog in the Phase-1 same-AS
 transport). The subset NSF will emit — e.g. the 10108/10200 "first call not

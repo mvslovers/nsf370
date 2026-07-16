@@ -1549,6 +1549,34 @@ algorithm details follow RFC 793/1122 directly.
 > NSFUDP does, so it stays OUT of the `NSF` production load module until the
 > EZASOKET M4 set makes it reachable. Checksum reuses the ADR-0028 pseudo-header
 > seed (proto 6) with NO zero-checksum exemption (TCP checksums are mandatory).
+>
+> **Status (M4-2, v1.30): the connection machine is in place** (ADR-0031). The
+> per-state handlers (§13.3) now have their real RFC-793-ordered bodies: **active
+> open** (PROTOPS.connect → SYN+MSS, SYN_SENT, park RQ_CONNECT; SYN|ACK →
+> ESTABLISHED; RST → `NSF_ECONNREFUSED`), **passive open** (PROTOPS.listen →
+> LISTEN with a backlog-bounded acceptq; inbound SYN → an embryonic child
+> SOCKCB+TCB in SYN_RCVD linked to the listener; final ACK → ESTABLISHED, queued
+> on the acceptq; ACCEPT hands back the child's descriptor), and full **FIN
+> teardown** (active close → FIN_WAIT_1→FIN_WAIT_2→TIME_WAIT; passive close →
+> CLOSE_WAIT→LAST_ACK→CLOSED; simultaneous close → CLOSING→TIME_WAIT), with
+> **TIME_WAIT** holding the TCB for 2MSL (60 s) and the oldest TIME_WAIT TCB
+> reclaimed early under `TCPTCB` pool pressure (§13.4, counted `twreclaim`).
+> Close is **BSD-immediate** — the request completes at once and the connection
+> finishes in the background; end-of-life drives `soc_destroy(sock)` →
+> `tcp_detach` → `tcp_destroy` (the one teardown, never the reverse). **No data
+> path (M4-3):** ESTABLISHED carries no payload — a data-bearing segment is
+> processed for its control bits and its data dropped + counted (`datadrop`),
+> RCV.NXT never advanced over undelivered data. **No retransmission (M4-4):** the
+> CTCI link is lossless (M2 gate), so a segment lost on a real lossy path simply
+> fails the connection; no RTO is half-built. NSFTCP is still OUT of the `NSF`
+> load module (unreachable until the EZASOKET M4 set, M4-5). See ADR-0031 for the
+> acceptq-linkage, background-close ownership, and PROTOPS `accept` / `do_listen`
+> decisions. **Validated live on MVSCE** (`test/mvs/tsttcph.c`, real 0500/0501,
+> TSTTCPH CC 0 batch+TSO): both handshake directions + a clean FIN teardown on the
+> host `tcpdump` wire — passive `nc` → SYN,ACK (MSS 1460, win 4096) → ACK →
+> 4-way FIN; the guest's idle-link active SYN → `nc -l` SYN,ACK → ACK (CONNECT
+> ok); `established` 2, `resetrcvd` 0, leak gate clean. Pending the maintainer's
+> merge countersign.
 
 ### 13.1 Responsibilities
 
@@ -2043,6 +2071,36 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.30: M4-2 — TCP handshake + teardown + TIME_WAIT (the connection machine).**
+The M4-1 RST-only skeleton becomes a full state machine (ADR-0031): active +
+passive three-way handshake, orderly FIN teardown (active / passive /
+simultaneous), and TIME_WAIT with 2MSL + oldest-first pool-pressure reclaim.
+**No data path (M4-3)** — ESTABLISHED carries no payload; a data-bearing segment
+is processed for its SYN/ACK/FIN/RST content and its data bytes dropped + counted
+(`datadrop`), RCV.NXT never advanced over undelivered data. **No retransmission
+(M4-4)** — the CTCI link is lossless (M2 gate), so a lost segment simply fails the
+connection; no RTO is half-built. Key decisions: an established, un-ACCEPTed child
+hangs on the listener's `acceptq` via a **second** TCB `QELEM` (`acceptlink`) plus
+a `listener` back-pointer (SOCKCB untouched, 72 B), and `soc_destroy`'s M3-1
+acceptq-as-PBUF placeholder is removed (the acceptq is protocol-owned, drained by
+unlinking); **background close** completes the request immediately and finishes in
+the background, with end-of-life driving `soc_destroy(sock)` → `tcp_detach` →
+`tcp_destroy` (`tcp_destroy` never calls `soc_destroy` — the recursion break);
+`accept` is added as the **trailing** `PROTOPS` member (UDP + the M3 test dummies
+keep compiling untouched) with an `RQ_ACCEPT` case in `soc_dispatch`; RQ_LISTEN
+gets a synchronous `do_listen` completion (the r-less listen op cannot ride
+`do_delegate`). Five new provisional errnos (`NSF_ECONNRESET 54`, `NSF_EISCONN
+56`, `NSF_ENOTCONN 57`, `NSF_ETIMEDOUT 60`, `NSF_ECONNREFUSED 61`, Table 67). The
+spec-§13.5 metric "timewaitreclaim" (15 chars) is registered as `twreclaim` — an
+`STSCTR` name is a 12-char field, and the full name would be truncated to
+"timewaitrecl" and then unreadable by `sts_value` (M4-2 is the first to tick +
+read it). §13 status note + §13.5. Host **1399 → 1641** (TSTTCP 137 → 379:
+handshake byte-exact both directions, teardown matrix, TIME_WAIT expiry +
+reclaim, RST→ECONNRESET/ECONNREFUSED, malformed-option drops under ASan, leak gate
+per scenario), `-Wall -Wextra` clean; cross-link + alias scan clean; NSFTCP still
+OUT of the `NSF` module. **M4-2 live gate:** both handshake directions + clean FIN
+teardown on MVSCE (`test/mvs/tsttcph.c`), tcpdump evidence in the PR.
 
 **v1.29: M4-1 — NSFTCP skeleton: TCB + state machine + RFC 793 "SEGMENT
 ARRIVES" structure; host + cross-link (live gate is M4-2's).** The TCP skeleton
