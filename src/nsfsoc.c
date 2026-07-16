@@ -237,6 +237,7 @@ int soc_park(SOCKCB *s, NSFRQE *r, UINT which)
     case SOC_PEND_RECV:    slot = &s->pend_recv;    break;
     case SOC_PEND_ACCEPT:  slot = &s->pend_accept;  break;
     case SOC_PEND_CONNECT: slot = &s->pend_connect; break;
+    case SOC_PEND_SEND:    slot = &s->pend_send;    break;
     default:               return NSF_EINVAL;
     }
     if (*slot != NULL) {
@@ -270,6 +271,9 @@ void soc_complete(NSFRQE *r, INT retcode, INT errno_)
         }
         if (s->pend_connect == r) {
             s->pend_connect = NULL;
+        }
+        if (s->pend_send == r) {
+            s->pend_send = NULL;
         }
     }
 
@@ -330,6 +334,9 @@ void soc_destroy(SOCKCB *s)
     }
     if (s->pend_connect != NULL) {
         soc_complete(s->pend_connect, NSF_RETERR, NSF_ECONNABORTED);
+    }
+    if (s->pend_send != NULL) {
+        soc_complete(s->pend_send, NSF_RETERR, NSF_ECONNABORTED);
     }
 
     /* 5. Release the pcb reference (detach freed the storage). */

@@ -133,6 +133,17 @@ for the M4-4 connect/rexmit timeout), and **`ECONNREFUSED = 61`** (a RST in
 SYN_SENT refuses the connect). As with the M3 set, only the NSFRQE *layout* is
 frozen — these errno values stay provisional until the M6 relink audit.
 
+**M4-3 TCP data-path errnos (no new values; new uses).** The data path (ADR-0032)
+adds no `NSF_E*` values, only new *uses* of existing ones, Table-67-consistent:
+**`ENOTCONN = 57`** now actively returned for a SEND / RECV issued outside a
+connected state (Table 67: "the socket is not connected"), and
+**`EWOULDBLOCK = 35`** for a non-blocking SEND with no send-budget room or a
+non-blocking RECV on an empty receive queue (Table 67: "the socket is in
+nonblocking mode and buffers are not available" / "data is not available" — "not
+an error condition"). A stream SEND returns the byte count (or a partial count
+for a non-blocking short write); a stream RECV returns the bytes read, or **0 at
+EOF** (the peer's FIN — a normal end of stream, not an errno).
+
 **Extended (10xxx) codes.** NSF emits **none** in M3-4 (the facade-level
 IUCV/interface diagnostics in Table 68 have no analog in the Phase-1 same-AS
 transport). The subset NSF will emit — e.g. the 10108/10200 "first call not

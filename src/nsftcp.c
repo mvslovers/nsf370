@@ -79,6 +79,9 @@ typedef struct tcpseg {
     UINT   seglen;              /* SEG.LEN = dlen + SYN + FIN                  */
     const UCHAR *opt;           /* TCP options (at header+20), or NULL         */
     USHORT optlen;              /* option bytes = dataoffset*4 - 20            */
+    USHORT payoff;              /* bytes from b->data to the payload (M4-3):    */
+                                /* IP ihl + TCP data-offset -- the trim-in-    */
+                                /* place head-strip for the receive path       */
 } TCPSEG;
 
 /* -- state: TCPTCB pool + TCB list -------------------------------------------- */
@@ -94,7 +97,7 @@ static QUEUE   g_tcblist;                        /* live TCBs, demux scan list  
 static STSCTR *tcp_activeopen, *tcp_passiveopen, *tcp_established;
 static STSCTR *tcp_resetsent, *tcp_resetrcvd, *tcp_rexmit, *tcp_dupack;
 static STSCTR *tcp_badcksum, *tcp_oooseg, *tcp_wndprobe, *tcp_keepdrop;
-static STSCTR *tcp_timewaitreclaim, *tcp_hdrerr, *tcp_datadrop;
+static STSCTR *tcp_timewaitreclaim, *tcp_hdrerr, *tcp_datadrop, *tcp_rxfull;
 static int     tcp_stats_ready;
 
 static void tcpc(STSCTR *c)
@@ -128,8 +131,13 @@ static void tcp_stats_init(void)
     tcp_timewaitreclaim = sts_register("NSFTCP", "twreclaim");
     tcp_hdrerr          = sts_register("NSFTCP", "hdrerr");     /* private: bad hdr/
                                                                 * malformed options */
-    tcp_datadrop        = sts_register("NSFTCP", "datadrop");   /* private: M4-2 has
-                                                                * no data path yet  */
+    /* private (M4-3): data-bearing text dropped in a state that legitimately
+     * drops it (SYN_RCVD before data / a closing state past the peer's FIN) --
+     * NOT in-window ESTABLISHED data, which is now delivered (ADR-0032). */
+    tcp_datadrop        = sts_register("NSFTCP", "datadrop");
+    /* private (M4-3): an in-order segment dropped because the rxq PBUF bound was
+     * hit before the byte window closed (mirrors UDP rxfull; ADR-0032). */
+    tcp_rxfull          = sts_register("NSFTCP", "rxfull");
     tcp_stats_ready = 1;
 }
 
@@ -300,6 +308,9 @@ static void tcp_arm_2msl(TCB *tcb);
 static int  tcp_process_ack(TCB *tcb, const TCPSEG *seg);
 static void tcp_process_fin(TCB *tcb, const TCPSEG *seg);
 static int  tcp_reclaim_timewait(void);
+static void tcp_output(TCB *tcb);               /* the data/FIN transmit clock */
+static void tcp_send_resume(TCB *tcb);          /* refill a parked SEND on ACK */
+static void tcp_sndq_free(TCB *tcb, UINT nbytes);
 
 /* Build and send a control segment for `tcb` (SYN / SYN|ACK / ACK / FIN / RST --
  * no data payload in M4-2), optionally carrying an MSS option (SYN and SYN|ACK).
@@ -366,6 +377,322 @@ static int tcp_emit(TCB *tcb, USHORT flags, int want_mss)
         return NSF_EHOSTUNREACH;                /* nsfip_output freed b + counted */
     }
     return 0;
+}
+
+/* -- data path: send queue + segmentized output (M4-3, ADR-0032) --------------
+ * Send is COPY-ON-TRANSMIT: sndq holds the application payload (front byte ==
+ * SND.UNA); each transmission COPIES the slice into a fresh wire PBUF. Receive is
+ * TRIM-IN-PLACE: an accepted segment is queued on the socket rxq as-is. Both keep
+ * PBUFs single-owner (spec 3.4). All executive-task, run-to-completion. */
+
+/* Append up to `n` bytes from `src` onto the sndq tail (into a tail PBUF's spare
+ * capacity, else a fresh BUFLARGE), returning the count actually appended (< n on
+ * budget/pool exhaustion, both normal). Maintains sndq_bytes; append is at the
+ * tail, so the front byte stays SND.UNA. */
+static USHORT tcp_sndq_append(TCB *tcb, const UCHAR *src, USHORT n)
+{
+    USHORT done = 0u;
+
+    while (done < n) {
+        PBUF *tail = Q_EMPTY(&tcb->sndq) ? NULL
+                   : Q_ENTRY(tcb->sndq.head.prev, PBUF, q);
+
+        if (tail == NULL || tail->len >= tail->size) {
+            PBUF *nb = buf_alloc((USHORT)NSFBUF_LARGE_DATA);   /* force BUFLARGE  */
+            if (nb == NULL || q_enq(&tcb->sndq, &nb->q) != 0) {
+                if (nb != NULL) {
+                    buf_free(nb);
+                }
+                break;                          /* pool/queue full -> partial      */
+            }
+            continue;                           /* retry with the new tail         */
+        }
+        {
+            USHORT room = (USHORT)(tail->size - tail->len);
+            USHORT want = (USHORT)(n - done);
+            USHORT take = (want < room) ? want : room;
+            USHORT got  = buf_copyin(tail, src + done, take);
+            if (got == 0u) {
+                break;                          /* defensive: no forward progress  */
+            }
+            done            = (USHORT)(done + got);
+            tcb->sndq_bytes = tcb->sndq_bytes + (UINT)got;
+        }
+    }
+    return done;
+}
+
+/* Copy `len` bytes starting at byte offset `off` within the sndq into `dst` (a
+ * fresh wire PBUF), appending via buf_copyin -- across sndq-element boundaries.
+ * off/off+len lie within sndq_bytes (off = SND.NXT-SND.UNA, len = the seg size).*/
+static void tcp_sndq_slice(TCB *tcb, UINT off, PBUF *dst, USHORT len)
+{
+    QELEM *e;
+    UINT   skip = off;
+    USHORT left = len;
+
+    for (e = tcb->sndq.head.next; e != &tcb->sndq.head && left > 0u; e = e->next) {
+        PBUF  *sp = Q_ENTRY(e, PBUF, q);
+        USHORT from, avail, take;
+
+        if (skip >= (UINT)sp->len) {
+            skip -= (UINT)sp->len;              /* whole element before the slice  */
+            continue;
+        }
+        from  = (USHORT)skip;                   /* skip < sp->len here             */
+        avail = (USHORT)(sp->len - from);
+        take  = (left < avail) ? left : avail;
+        (void)buf_copyin(dst, sp->data + from, take);
+        skip  = 0u;
+        left  = (USHORT)(left - take);
+    }
+}
+
+/* Free `nbytes` of ACKed data off the FRONT of the sndq (front byte == SND.UNA):
+ * drop fully-acked PBUFs, buf_trim_head a partially-acked front. `nbytes` is the
+ * DATA acked (the caller clamps out any SYN/FIN sequence -- not in the sndq). */
+static void tcp_sndq_free(TCB *tcb, UINT nbytes)
+{
+    while (nbytes > 0u && !Q_EMPTY(&tcb->sndq)) {
+        PBUF *front = Q_ENTRY(tcb->sndq.head.next, PBUF, q);
+
+        if ((UINT)front->len <= nbytes) {
+            (void)q_deq(&tcb->sndq);
+            nbytes          -= (UINT)front->len;
+            tcb->sndq_bytes  = tcb->sndq_bytes - (UINT)front->len;
+            buf_free(front);
+        } else {
+            (void)buf_trim_head(front, (USHORT)nbytes);
+            tcb->sndq_bytes  = tcb->sndq_bytes - nbytes;
+            nbytes           = 0u;
+        }
+    }
+}
+
+/* Emit ONE data segment: `len` bytes copied from the sndq at byte offset `off`
+ * (off = seq - SND.UNA), header at `seq`, ACK always set (carries RCV.NXT/WND),
+ * PSH on the last buffered byte. Builds a FRESH wire PBUF and hands it to
+ * nsfip_output (which owns it) or frees it. Returns the bytes actually emitted
+ * (buf_copyin may clamp `len` to the wire PBUF capacity, so a huge MSS still fits
+ * -- the remainder rides the next segment) or 0 on a build/route failure, in
+ * which case SND.NXT is NOT advanced (copy-on-transmit retry, ADR-0032). */
+static USHORT tcp_data_emit(TCB *tcb, UINT off, UINT seq, USHORT len)
+{
+    SOCKCB *s    = tcb->sock;
+    USHORT  hlen = (USHORT)NSFTCP_HDRLEN;
+    PBUF   *b;
+    UCHAR  *p;
+    USHORT  actual, win, ck;
+    UCHAR   flags;
+    UINT    seed;
+
+    b = buf_alloc(len);                         /* payload-sized (class by len)   */
+    if (b == NULL) {
+        return 0u;
+    }
+    tcp_sndq_slice(tcb, off, b, len);           /* COPY the slice out of the sndq  */
+    actual = buf_chain_len(b);                  /* <= len if capacity clamped      */
+    if (actual == 0u || buf_prepend(b, hlen) != 0) {
+        buf_free(b);
+        return 0u;
+    }
+    flags = (UCHAR)(TCP_FL_ACK |
+                    ((off + (UINT)actual >= tcb->sndq_bytes) ? TCP_FL_PSH : 0u));
+    p   = b->data;
+    win = (tcb->rcv_wnd > 0xFFFFu) ? 0xFFFFu : (USHORT)tcb->rcv_wnd;
+    put16(p + 0,  s->lport);
+    put16(p + 2,  s->fport);
+    put32(p + 4,  seq);
+    put32(p + 8,  tcb->rcv_nxt);
+    p[12] = (UCHAR)((hlen / 4u) << 4);          /* data offset = 5 words           */
+    p[13] = flags;
+    put16(p + 14, win);
+    put16(p + 16, 0u);                          /* checksum (computed below)       */
+    put16(p + 18, 0u);                          /* urgent pointer                  */
+    seed = tcp_pseudo_seed(s->laddr, s->faddr, (USHORT)(hlen + actual));
+    ck   = in_cksum_fold(in_cksum_partial(b, 0u, (USHORT)(hlen + actual), seed));
+    put16(p + 16, ck);                          /* TCP: a computed 0 stays 0       */
+
+    TRC(TCP, "DATA :%u -> :%u seq=%08X len=%u", (unsigned)s->lport,
+        (unsigned)s->fport, (unsigned)seq, (unsigned)actual);
+
+    if (nsfip_output(b, s->laddr, s->faddr, (UCHAR)NSFIP_PROTO_TCP,
+                     (UCHAR)NSFIP_TTL_DEFAULT) != 0) {
+        return 0u;                              /* freed b + counted; NXT unmoved  */
+    }
+    return actual;
+}
+
+/* Transmit clock: push as much sndq data as the peer's window allows in
+ * MSS-bounded segments, then the FIN if the app has closed and all data is out.
+ * Called after RQ_SEND appends, after an ACK advances SND.UNA / opens the window,
+ * and after the close path queues a FIN. */
+static void tcp_output(TCB *tcb)
+{
+    for (;;) {
+        UINT   sent = tcb->snd_nxt - tcb->snd_una;             /* data in flight   */
+        UINT   avail;
+        INT    usable;
+        USHORT seg, out;
+
+        avail  = (sent < tcb->sndq_bytes) ? (tcb->sndq_bytes - sent) : 0u;
+        usable = (INT)(tcb->snd_una + tcb->snd_wnd - tcb->snd_nxt);   /* signed     */
+        if (avail == 0u || usable <= 0) {
+            break;                              /* nothing to send / window closed  */
+        }
+        seg = (USHORT)((avail < (UINT)usable) ? avail : (UINT)usable);
+        if (seg > tcb->mss) {
+            seg = tcb->mss;
+        }
+        out = tcp_data_emit(tcb, sent, tcb->snd_nxt, seg);
+        if (out == 0u) {
+            break;                              /* build/route failed -> retry later */
+        }
+        tcb->snd_nxt = tcb->snd_nxt + (UINT)out;
+    }
+
+    /* FIN (RFC CLOSE): the app has closed (FINQ) and every data byte is sent
+     * (SND.NXT reached SND.UNA + sndq_bytes). Guarded by FINSENT so it emits ONCE
+     * -- the equality goes true AGAIN when the peer's ACK advances SND.UNA up to
+     * SND.NXT, which must NOT re-send the FIN. A build/route failure leaves
+     * FINSENT clear, so the FIN retries on the next tcp_output (copy-on-transmit).*/
+    if ((tcb->flags & TCB_F_FINQ) && !(tcb->flags & TCB_F_FINSENT) &&
+        tcb->snd_nxt == tcb->snd_una + tcb->sndq_bytes) {
+        if (tcp_emit(tcb, (USHORT)(TCP_FL_FIN | TCP_FL_ACK), 0) == 0) {
+            tcb->snd_nxt = tcb->snd_nxt + 1u;   /* our FIN consumes a sequence      */
+            tcb->flags  |= (UCHAR)TCB_F_FINSENT;
+        }
+    }
+}
+
+/* Refill a parked blocking SEND from where it left off (r->p3 = bytes already
+ * copied), as ACKs free budget; complete it once the whole request is buffered.
+ * Called from tcp_process_ack after tcp_sndq_free opens room. */
+static void tcp_send_resume(TCB *tcb)
+{
+    SOCKCB *s = tcb->sock;
+    NSFRQE *r;
+    UINT    total, already, room, take;
+    USHORT  got;
+
+    if (s == NULL || s->pend_send == NULL) {
+        return;
+    }
+    r       = s->pend_send;
+    total   = r->ulen;
+    already = r->p3;
+    room    = (tcb->sndq_bytes >= (UINT)NSFTCP_SNDBUF) ? 0u
+            : (UINT)NSFTCP_SNDBUF - tcb->sndq_bytes;
+    take    = (total > already) ? (total - already) : 0u;
+    if (take > room) {
+        take = room;
+    }
+    got     = (take > 0u)
+            ? tcp_sndq_append(tcb, (const UCHAR *)r->ubuf + already, (USHORT)take)
+            : 0u;
+    r->p3   = already + (UINT)got;
+    tcp_output(tcb);
+    if (r->p3 >= total) {
+        soc_complete(r, (INT)total, 0);         /* clears pend_send (soc_complete)  */
+    }
+}
+
+/* Copy STREAM bytes out of the rxq into r's user buffer (up to r->ulen), freeing
+ * fully-consumed PBUFs and head-trimming a partial one, grow rcv_wnd by the
+ * drained bytes (clamped to the budget), and complete r with the count. Any bytes
+ * available satisfy a blocking recv (stream semantics). Returns the byte count.
+ * NO ACK here -- the caller decides (inbound path piggybacks one; the app op
+ * sends a pure window update only if the window reopened). */
+static UINT tcp_recv_drain_to(TCB *tcb, NSFRQE *r)
+{
+    SOCKCB *s   = tcb->sock;
+    UCHAR  *dst = (UCHAR *)r->ubuf;
+    UINT    want = r->ulen;
+    UINT    got  = 0u;
+
+    while (got < want && !Q_EMPTY(&s->rxq)) {
+        PBUF  *front = Q_ENTRY(s->rxq.head.next, PBUF, q);
+        USHORT flen  = buf_chain_len(front);
+        USHORT take  = (USHORT)(((want - got) < (UINT)flen) ? (want - got)
+                                                            : (UINT)flen);
+
+        if (dst != NULL && take > 0u) {
+            (void)buf_copyout(front, dst + got, take);
+        }
+        got = got + (UINT)take;
+        if (take >= flen) {
+            (void)q_deq(&s->rxq);
+            buf_free(front);                    /* PBUF fully consumed             */
+        } else {
+            /* Partial: keep the remainder. An rxq element is ONE PBUF (one
+             * inbound segment trimmed in place -- never a chain), so buf_trim_head
+             * (bounded by len, not chainlen) trims the whole remainder here. */
+            (void)buf_trim_head(front, take);
+        }
+    }
+    tcb->rcv_wnd = tcb->rcv_wnd + got;
+    if (tcb->rcv_wnd > (UINT)NSFTCP_RCVWND_DEFAULT) {
+        tcb->rcv_wnd = (UINT)NSFTCP_RCVWND_DEFAULT;
+    }
+    soc_complete(r, (INT)got, 0);               /* clears pend_recv (soc_complete)  */
+    return got;
+}
+
+/* Segment text (RFC 793 p.74). Accept in-order data at RCV.NXT into the socket
+ * rxq (trim-in-place, ownership transfers -> *kept), head-trimming an overlap
+ * already received (a retransmission) and tail-trimming beyond the window; a gap
+ * above RCV.NXT is dropped + oooseg + dup-ACKed (oooq is M5), an rxq-full drop is
+ * counted rxfull + re-ACKed, data in a non-receiving state is datadrop. On any
+ * accept it ACKs the new RCV.NXT and delivers to a parked recv. */
+static void tcp_recv_data(TCB *tcb, const TCPSEG *seg, PBUF *b, int *kept)
+{
+    SOCKCB *s = tcb->sock;
+    UINT    below;
+    USHORT  newlen, have;
+
+    if (tcb->state != (UCHAR)TCP_ESTABLISHED &&
+        tcb->state != (UCHAR)TCP_FIN_WAIT_1 &&
+        tcb->state != (UCHAR)TCP_FIN_WAIT_2) {
+        tcpc(tcp_datadrop);                     /* closing/embryonic state: spurious */
+        tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);
+        return;
+    }
+    if (TCP_SEQ_GT(seg->seq, tcb->rcv_nxt)) {
+        tcpc(tcp_oooseg);                       /* a gap: oooq is M5 -> drop+dup-ACK */
+        tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);
+        return;
+    }
+    below = tcb->rcv_nxt - seg->seq;            /* bytes at/below RCV.NXT (overlap) */
+    if (below >= (UINT)seg->dlen) {
+        tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* pure duplicate -> ACK, drop      */
+        return;
+    }
+    newlen = (USHORT)((UINT)seg->dlen - below);
+    if ((UINT)newlen > tcb->rcv_wnd) {
+        newlen = (USHORT)tcb->rcv_wnd;          /* clip past the advertised window  */
+    }
+    if (newlen == 0u) {
+        tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* window full -> ACK, drop         */
+        return;
+    }
+    (void)buf_trim_head(b, (USHORT)(seg->payoff + (USHORT)below)); /* -> RCV.NXT byte*/
+    have = buf_chain_len(b);
+    if (have > newlen) {
+        (void)buf_trim_tail(b, (USHORT)(have - newlen));
+    }
+    if (q_enq(&s->rxq, &b->q) != 0) {           /* rxq PBUF bound hit -> rxfull     */
+        tcpc(tcp_rxfull);
+        tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* re-ACK old RCV.NXT               */
+        return;                                 /* *kept stays 0 -> caller frees b  */
+    }
+    *kept        = 1;                           /* rxq owns b now                   */
+    tcb->rcv_nxt = tcb->rcv_nxt + (UINT)newlen;
+    tcb->rcv_wnd = (tcb->rcv_wnd > (UINT)newlen) ? (tcb->rcv_wnd - (UINT)newlen) : 0u;
+
+    if (s->pend_recv != NULL) {
+        (void)tcp_recv_drain_to(tcb, s->pend_recv);   /* deliver + grow rcv_wnd     */
+    }
+    tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);       /* ONE ACK: final RCV.NXT/WND       */
 }
 
 /* An initial send sequence from the platform clock. RFC 793 §3.3 draws the ISS
@@ -556,6 +883,9 @@ static void tcp_do_reset(TCB *tcb)
         if (s->pend_accept != NULL) {
             soc_complete(s->pend_accept, NSF_RETERR, NSF_ECONNRESET);
         }
+        if (s->pend_send != NULL) {
+            soc_complete(s->pend_send, NSF_RETERR, NSF_ECONNRESET);
+        }
     }
     tcp_close_done(tcb);
 }
@@ -681,10 +1011,25 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
         return 0;
     }
     if (TCP_SEQ_GT(seg->ack, tcb->snd_una)) {
-        tcb->snd_una = seg->ack;                /* new data / our FIN acknowledged */
+        UINT acked = seg->ack - tcb->snd_una;   /* new data / our FIN acknowledged */
+        tcb->snd_una = seg->ack;
+        /* Free the DATA portion off the sndq front (a SYN/FIN sequence is not in
+         * the sndq -- clamp to sndq_bytes), then refill a parked SEND (M4-3). */
+        tcp_sndq_free(tcb, (acked < tcb->sndq_bytes) ? acked : tcb->sndq_bytes);
+        tcp_send_resume(tcb);
+    } else if (tcb->snd_una != tcb->snd_nxt && seg->dlen == 0u &&
+               !(seg->flags & (TCP_FL_SYN | TCP_FL_FIN))) {
+        tcpc(tcp_dupack);                       /* a received duplicate ACK (M4-3)  */
     }
-    /* (a duplicate ACK, SEG.ACK <= SND.UNA, is ignored in M4-2: no rexmit yet.) */
     tcp_update_window(tcb, seg);
+
+    /* Clock out data / the FIN with the possibly-opened window (states that still
+     * transmit; a closing/destroying state is a no-op here or handled below). */
+    if (tcb->state == (UCHAR)TCP_ESTABLISHED ||
+        tcb->state == (UCHAR)TCP_CLOSE_WAIT ||
+        tcb->state == (UCHAR)TCP_FIN_WAIT_1) {
+        tcp_output(tcb);
+    }
 
     /* `our_fin_acked` == SND.UNA reached SND.NXT (our FIN was the last byte sent).*/
     switch (tcb->state) {
@@ -724,7 +1069,16 @@ static void tcp_process_fin(TCB *tcb, const TCPSEG *seg)
         return;                                 /* not the in-order FIN yet        */
     }
     tcb->rcv_nxt = tcb->rcv_nxt + 1u;           /* consume the FIN                 */
+    tcb->flags  |= (UCHAR)TCB_F_RCVFIN;         /* EOF: recv returns 0 from now on */
     tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);       /* ACK it                          */
+
+    /* A recv parked on an empty rxq now sees EOF (rc=0). If data preceded the FIN
+     * it was delivered by the data step, which drained the parked recv, so
+     * pend_recv is NULL here and this is a no-op (data-before-EOF ordering). */
+    if (tcb->sock != NULL && tcb->sock->pend_recv != NULL &&
+        Q_EMPTY(&tcb->sock->rxq)) {
+        soc_complete(tcb->sock->pend_recv, 0, 0);
+    }
 
     switch (tcb->state) {
     case TCP_SYN_RCVD:
@@ -845,6 +1199,9 @@ static void tcp_passive_open(TCB *listener, const TCPSEG *seg)
     child->irs      = seg->seq;
     child->rcv_nxt  = seg->seq + 1u;            /* past the peer's SYN             */
     child->rcv_wnd  = NSFTCP_RCVWND_DEFAULT;
+    child->snd_wnd  = seg->wnd;                 /* the peer's advertised window     */
+    child->snd_wl1  = seg->seq;
+    child->snd_wl2  = child->iss;
     child->state    = (UCHAR)TCP_SYN_RCVD;
     tcpc(tcp_passiveopen);
 
@@ -934,7 +1291,7 @@ static void tcp_synsent_input(TCB *tcb, const TCPSEG *seg)
 
 /* RFC 793 pp. 69-76, the synchronized states (SYN_RCVD, ESTABLISHED, FIN_WAIT_1,
  * FIN_WAIT_2, CLOSE_WAIT, CLOSING, LAST_ACK, TIME_WAIT), in RFC step order. */
-static void tcp_synchronized_input(TCB *tcb, const TCPSEG *seg)
+static void tcp_synchronized_input(TCB *tcb, const TCPSEG *seg, PBUF *b, int *kept)
 {
     /* 1. sequence-number acceptability -> unacceptable: ACK (unless RST), drop. */
     if (!tcp_seq_acceptable(tcb, seg)) {
@@ -963,13 +1320,13 @@ static void tcp_synchronized_input(TCB *tcb, const TCPSEG *seg)
     if (!tcp_process_ack(tcb, seg)) {
         return;                                 /* consumed / TCB destroyed        */
     }
-    /* 6. URG -- not modeled. */
-    /* 7. segment text -- M4-2 has no data path: drop + count (do NOT advance
-     *    RCV.NXT over undelivered data, which would falsely ACK it). */
+    /* 6. URG -- not modeled (the urgent data is delivered inline, ADR-0032). */
+    /* 7. segment text -> in-order data accepted to the socket rxq (trim-in-place;
+     *    *kept set on a successful enqueue), else dropped + counted (ADR-0032). */
     if (seg->dlen > 0u) {
-        tcpc(tcp_datadrop);
+        tcp_recv_data(tcb, seg, b, kept);
     }
-    /* 8. FIN -> advance RCV.NXT past it, ACK, transition. */
+    /* 8. FIN -> advance RCV.NXT past it, ACK, transition (EOF to a parked recv). */
     if (seg->flags & TCP_FL_FIN) {
         tcp_process_fin(tcb, seg);
     }
@@ -990,11 +1347,11 @@ static void tcp_closed_input(const TCPSEG *seg)
 /* Route a matched TCB to its per-state handler. A demuxed TCB is never CLOSED
  * (a CLOSED TCB has no ports / is not a listener, so tcp_demux cannot return
  * it), but CLOSED is routed defensively. */
-static void tcp_state_input(TCB *tcb, const TCPSEG *seg)
+static void tcp_state_input(TCB *tcb, const TCPSEG *seg, PBUF *b, int *kept)
 {
     switch (tcb->state) {
-    case TCP_LISTEN:       tcp_listen_input(tcb, seg);        break;
-    case TCP_SYN_SENT:     tcp_synsent_input(tcb, seg);       break;
+    case TCP_LISTEN:       tcp_listen_input(tcb, seg);                break;
+    case TCP_SYN_SENT:     tcp_synsent_input(tcb, seg);               break;
     case TCP_SYN_RCVD:
     case TCP_ESTABLISHED:
     case TCP_FIN_WAIT_1:
@@ -1002,9 +1359,9 @@ static void tcp_state_input(TCB *tcb, const TCPSEG *seg)
     case TCP_CLOSE_WAIT:
     case TCP_CLOSING:
     case TCP_LAST_ACK:
-    case TCP_TIME_WAIT:    tcp_synchronized_input(tcb, seg);  break;
+    case TCP_TIME_WAIT:    tcp_synchronized_input(tcb, seg, b, kept); break;
     case TCP_CLOSED:
-    default:               tcp_closed_input(seg);             break;
+    default:               tcp_closed_input(seg);                     break;
     }
 }
 
@@ -1018,6 +1375,7 @@ void nsftcp_input(NETDEV *dev, PBUF *b, const IPHDR *ip)
     UINT         src, dst, seed;
     TCPSEG       seg;
     TCB         *tcb;
+    int          kept = 0;                      /* did a handler keep b? (M4-3)   */
 
     (void)dev;
     if (b == NULL || ip == NULL) {
@@ -1079,6 +1437,7 @@ void nsftcp_input(NETDEV *dev, PBUF *b, const IPHDR *ip)
                + ((seg.flags & TCP_FL_FIN) ? 1u : 0u);
     seg.optlen = (USHORT)(thoff - (UCHAR)NSFTCP_HDRLEN);        /* dataoff*4 - 20 */
     seg.opt    = (seg.optlen > 0u) ? (d + ihl + NSFTCP_HDRLEN) : NULL;
+    seg.payoff = (USHORT)((USHORT)ihl + (USHORT)thoff);         /* -> payload byte */
 
     TRC(TCP, "IN %u.%u.%u.%u:%u -> :%u flags=%02X seq=%08X ack=%08X len=%u",
         (unsigned)((src >> 24) & 0xFFu), (unsigned)((src >> 16) & 0xFFu),
@@ -1090,11 +1449,13 @@ void nsftcp_input(NETDEV *dev, PBUF *b, const IPHDR *ip)
     tcb = tcp_demux(&seg);
     if (tcb == NULL) {
         tcp_closed_input(&seg);
-        buf_free(b);
+        buf_free(b);                            /* a closed-port seg is never kept */
         return;
     }
-    tcp_state_input(tcb, &seg);
-    buf_free(b);                                /* M4-1 handlers read seg, not b  */
+    tcp_state_input(tcb, &seg, b, &kept);
+    if (!kept) {
+        buf_free(b);                            /* not queued on an rxq -> free it */
+    }
 }
 
 /* -- teardown (spec 13.4) ----------------------------------------------------- *
@@ -1302,6 +1663,90 @@ static int tcp_accept(SOCKCB *s, NSFRQE *r)
     return soc_park(s, r, SOC_PEND_ACCEPT);         /* wake when a child graduates   */
 }
 
+/* SEND / SENDTO (RFC SEND, M4-3): copy the request's bytes into the sndq bounded
+ * by the send budget, then clock them out under the peer's window. All copied ->
+ * complete now (RETCODE = byte count); a blocking short copy PARKS (SOC_PEND_SEND,
+ * progress cursor in r->p3) and completes when the rest is buffered as ACKs free
+ * space; a non-blocking short copy returns the partial count (EWOULDBLOCK if
+ * nothing fit). SEND outside ESTABLISHED / CLOSE_WAIT -> ENOTCONN (ADR-0032). */
+static int tcp_send(SOCKCB *s, NSFRQE *r)
+{
+    TCB   *tcb = (TCB *)s->pcb;
+    UINT   total, room, take;
+    USHORT got;
+
+    if (tcb == NULL ||
+        (tcb->state != (UCHAR)TCP_ESTABLISHED &&
+         tcb->state != (UCHAR)TCP_CLOSE_WAIT)) {
+        soc_complete(r, NSF_RETERR, NSF_ENOTCONN);
+        return 0;
+    }
+    total = r->ulen;
+    room  = (tcb->sndq_bytes >= (UINT)NSFTCP_SNDBUF) ? 0u
+          : (UINT)NSFTCP_SNDBUF - tcb->sndq_bytes;
+    take  = (total < room) ? total : room;      /* room <= SNDBUF, so fits USHORT  */
+    got   = (take > 0u)
+          ? tcp_sndq_append(tcb, (const UCHAR *)r->ubuf, (USHORT)take)
+          : 0u;
+    tcp_output(tcb);                            /* push what the window allows      */
+
+    if ((UINT)got >= total) {
+        soc_complete(r, (INT)total, 0);         /* everything is buffered           */
+        return 0;
+    }
+    if (r->flags & RQ_F_NONBLOCK) {
+        if (got == 0u) {
+            soc_complete(r, NSF_RETERR, NSF_EWOULDBLOCK);
+        } else {
+            soc_complete(r, (INT)got, 0);       /* partial (BSD non-blocking)       */
+        }
+        return 0;
+    }
+    r->p3 = (UINT)got;                          /* parked cursor: bytes copied so far*/
+    return soc_park(s, r, SOC_PEND_SEND);       /* wake as ACKs free budget         */
+}
+
+/* RECV / RECVFROM (RFC RECEIVE, M4-3): deliver buffered stream bytes, or EOF, or
+ * park. Any available bytes satisfy a blocking recv (stream semantics). A drain
+ * that reopens the advertised window (from 0, or by >= 1 MSS) sends a pure
+ * window-update ACK so a window-blocked peer resumes (the deadlock rule); the FIN
+ * makes recv on an empty rxq return rc=0 (EOF, sticky) -- data queued ahead of the
+ * FIN is delivered first. RECV before/after a receiving state -> ENOTCONN. */
+static int tcp_recv(SOCKCB *s, NSFRQE *r)
+{
+    TCB *tcb = (TCB *)s->pcb;
+
+    if (tcb == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_ENOTCONN);
+        return 0;
+    }
+    if (!Q_EMPTY(&s->rxq)) {
+        UINT wnd_before = tcb->rcv_wnd;
+        UINT drained    = tcp_recv_drain_to(tcb, r);      /* copies out + completes r */
+
+        if (drained > 0u &&
+            (wnd_before == 0u || drained >= (UINT)tcb->mss)) {
+            tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);         /* pure window update       */
+        }
+        return 0;
+    }
+    if (tcb->flags & TCB_F_RCVFIN) {
+        soc_complete(r, 0, 0);                  /* EOF (sticky), never an errno     */
+        return 0;
+    }
+    if (tcb->state != (UCHAR)TCP_ESTABLISHED &&
+        tcb->state != (UCHAR)TCP_FIN_WAIT_1 &&
+        tcb->state != (UCHAR)TCP_FIN_WAIT_2) {
+        soc_complete(r, NSF_RETERR, NSF_ENOTCONN);
+        return 0;
+    }
+    if (r->flags & RQ_F_NONBLOCK) {
+        soc_complete(r, NSF_RETERR, NSF_EWOULDBLOCK);
+        return 0;
+    }
+    return soc_park(s, r, SOC_PEND_RECV);       /* app WAITs until data / EOF        */
+}
+
 /* CLOSE (RFC 793 CLOSE call): graceful FIN teardown by state. The app is done, so
  * r completes immediately (RETOK) and the connection finishes in the background
  * (FIN handshake, TIME_WAIT) -- BSD close() semantics. A LISTEN / SYN_SENT / fresh
@@ -1329,18 +1774,19 @@ static int tcp_close(SOCKCB *s, NSFRQE *r)
         return NSF_CLOSE_OWNED;
     case TCP_SYN_RCVD:
     case TCP_ESTABLISHED:
-        tcb->flags |= (UCHAR)TCB_F_APPCLOSED;
-        tcp_emit(tcb, (USHORT)(TCP_FL_FIN | TCP_FL_ACK), 0);
-        tcb->snd_nxt = tcb->snd_nxt + 1u;           /* our FIN consumes a sequence   */
-        tcb->state   = (UCHAR)TCP_FIN_WAIT_1;
+        /* FIN-after-data (RFC CLOSE, ADR-0032): queue the FIN and transition now
+         * (BSD-immediate); tcp_output emits it once the sndq drains (immediately
+         * if it is already empty -- byte-identical to the M4-2 teardown). */
+        tcb->flags |= (UCHAR)(TCB_F_APPCLOSED | TCB_F_FINQ);
+        tcb->state  = (UCHAR)TCP_FIN_WAIT_1;
         soc_complete(r, NSF_RETOK, 0);
+        tcp_output(tcb);
         return NSF_CLOSE_OWNED;
     case TCP_CLOSE_WAIT:
-        tcb->flags |= (UCHAR)TCB_F_APPCLOSED;
-        tcp_emit(tcb, (USHORT)(TCP_FL_FIN | TCP_FL_ACK), 0);
-        tcb->snd_nxt = tcb->snd_nxt + 1u;
-        tcb->state   = (UCHAR)TCP_LAST_ACK;
+        tcb->flags |= (UCHAR)(TCB_F_APPCLOSED | TCB_F_FINQ);
+        tcb->state  = (UCHAR)TCP_LAST_ACK;
         soc_complete(r, NSF_RETOK, 0);
+        tcp_output(tcb);
         return NSF_CLOSE_OWNED;
     default:
         /* Already closing (FIN_WAIT_*, CLOSING, LAST_ACK, TIME_WAIT): a second
@@ -1356,8 +1802,8 @@ static PROTOPS g_tcp_ops = {
     NULL,           /* BIND    -- framework records the name (protocol-independent)*/
     tcp_connect,    /* CONNECT -- active open (M4-2)                              */
     tcp_listen,     /* LISTEN  -- passive open enable (M4-2)                      */
-    NULL,           /* SEND    -- EOPNOTSUPP (M4-3)                               */
-    NULL,           /* RECV    -- EOPNOTSUPP (M4-3)                               */
+    tcp_send,       /* SEND / SENDTO -- copy-on-transmit data path (M4-3)         */
+    tcp_recv,       /* RECV / RECVFROM -- in-order stream delivery (M4-3)         */
     tcp_close,      /* CLOSE   -- graceful FIN teardown (M4-2)                    */
     tcp_detach,     /* final resource release -> tcp_destroy                      */
     tcp_accept      /* ACCEPT  -- hand back an established child (M4-2)           */
