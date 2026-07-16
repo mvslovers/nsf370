@@ -171,7 +171,7 @@ static int app_sub(void *arg)
         UINT child = 0u;
         int  got   = 0;
 
-        for (i = 0; i < 60; i++) {
+        for (i = 0; i < 180; i++) {             /* ~90 s window per connection    */
             rqe_init(&ra, RQ_ACCEPT, g_ldesc);
             ra.flags = (USHORT)RQ_F_NONBLOCK;
             nsfreq_call(&ra);

@@ -1605,10 +1605,17 @@ algorithm details follow RFC 793/1122 directly.
 > is ACKed at once. Counters: `datadrop` now only text dropped in a non-receiving
 > state, `oooseg` / `dupack` tick for real, private `rxfull` for an rxq-PBUF-bound
 > drop. NSFTCP is still OUT of the `NSF` load module (unreachable until the
-> EZASOKET M4 verb set, M4-5). Live gate: `test/mvs/tsttcpd.c` (a TCP echo server
-> over the real 0500/0501 pair) — a `nc` line echoes back byte-exact, and a 16 KB
-> transfer (> the 4096 window, drained in 1 KB slices) echoes intact, proving the
-> window-update rule on the wire.
+> EZASOKET M4 verb set, M4-5). **Validated live on MVSCE** (`test/mvs/tsttcpd.c`,
+> real 0500/0501 pair, batch CC 0, 22/22): connection #1 a small **echo** — a
+> `nc` line comes back byte-exact (`recv=16 sent=16`, guest `[P.] len 16 win 4096`
+> in `tcpdump`, clean FIN); connection #2 a **one-way drain** of a 16 KB transfer
+> received in 1 KB slices (`n=16384`, checksum matching the host — byte-exact),
+> where `tcpdump` shows the guest window closing to `win 0` and then the pure
+> window-update ACK reopening it (`ack 4097, win 0` → `ack 4097, win 1024`, same
+> ack) — the deadlock rule that would hang a >window transfer if it were wrong;
+> `oooseg`/`dupack`/`rxfull`/`datadrop` all 0, leak gate clean. (The TSO re-run of
+> the single physical pair back-to-back stalls MIH-pending, a live-hardware reuse
+> artifact — the batch run is the gate, per the M1 TSTCTCM precedent.)
 
 ### 13.1 Responsibilities
 
