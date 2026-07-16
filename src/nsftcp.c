@@ -747,10 +747,15 @@ static void tcp_process_fin(TCB *tcb, const TCPSEG *seg)
     }
 }
 
-/* Reclaim the OLDEST TIME_WAIT TCB under pool pressure (spec 13.4): destroy it so
- * its pool object frees, then the caller retries the allocation once. "Oldest" =
- * the first TIME_WAIT TCB scanning the demux list from the head (new TCBs enqueue
- * at the tail, so head-first is insertion order). Returns 1 if one was reclaimed. */
+/* Reclaim a TIME_WAIT TCB under pool pressure (spec 13.4): destroy it so its pool
+ * object frees, then the caller retries the allocation once. Picks the first
+ * TIME_WAIT TCB scanning the demux list from the head -- the oldest by INSERTION
+ * order (new TCBs enqueue at the tail), which is NOT necessarily the one closest
+ * to 2MSL expiry: a later-inserted connection can enter TIME_WAIT first. That
+ * distinction is materially irrelevant for reclaim -- every candidate is an
+ * already-dead connection, so any TIME_WAIT slot serves -- but if M4-6's
+ * pool-pressure stress asserts evict-nearest-expiry fairness, order by the t_2msl
+ * remaining instead. Returns 1 if one was reclaimed. */
 static int tcp_reclaim_timewait(void)
 {
     QELEM *e;
