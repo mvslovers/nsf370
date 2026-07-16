@@ -1571,7 +1571,12 @@ algorithm details follow RFC 793/1122 directly.
 > fails the connection; no RTO is half-built. NSFTCP is still OUT of the `NSF`
 > load module (unreachable until the EZASOKET M4 set, M4-5). See ADR-0031 for the
 > acceptq-linkage, background-close ownership, and PROTOPS `accept` / `do_listen`
-> decisions.
+> decisions. **Validated live on MVSCE** (`test/mvs/tsttcph.c`, real 0500/0501,
+> TSTTCPH CC 0 batch+TSO): both handshake directions + a clean FIN teardown on the
+> host `tcpdump` wire — passive `nc` → SYN,ACK (MSS 1460, win 4096) → ACK →
+> 4-way FIN; the guest's idle-link active SYN → `nc -l` SYN,ACK → ACK (CONNECT
+> ok); `established` 2, `resetrcvd` 0, leak gate clean. Pending the maintainer's
+> merge countersign.
 
 ### 13.1 Responsibilities
 
