@@ -311,6 +311,11 @@ static int  tcp_reclaim_timewait(void);
 static void tcp_output(TCB *tcb);               /* the data/FIN transmit clock */
 static void tcp_send_resume(TCB *tcb);          /* refill a parked SEND on ACK */
 static void tcp_sndq_free(TCB *tcb, UINT nbytes);
+/* M4-4: retransmission + zero-window persist timers (ADR-0033). */
+static void tcp_conn_abort(TCB *tcb, INT err);  /* give-up teardown (ETIMEDOUT) */
+static void tcp_timers_update(TCB *tcb);        /* reconcile rexmit/persist arming */
+static void tcp_rexmit_expire(void *arg);
+static void tcp_persist_expire(void *arg);
 
 /* Build and send a control segment for `tcb` (SYN / SYN|ACK / ACK / FIN / RST --
  * no data payload in M4-2), optionally carrying an MSS option (SYN and SYN|ACK).
@@ -319,14 +324,14 @@ static void tcp_sndq_free(TCB *tcb, UINT nbytes);
  * and handed to nsfip_output (which then owns it) or freed on an early error --
  * single owner (spec 3.4). Returns 0 on success. The caller adjusts SND.NXT for a
  * sequence-consuming flag (SYN / FIN) around this call. */
-static int tcp_emit(TCB *tcb, USHORT flags, int want_mss)
+static int tcp_emit_seq(TCB *tcb, USHORT flags, int want_mss, UINT seq)
 {
     SOCKCB *s = tcb->sock;
     PBUF   *b;
     UCHAR  *p;
     USHORT  hlen = (USHORT)NSFTCP_HDRLEN;
     USHORT  win, ck;
-    UINT    seq, ackno, seed;
+    UINT    ackno, seed;
 
     if (want_mss) {
         hlen = (USHORT)(NSFTCP_HDRLEN + NSFTCP_OPT_MSS_LEN);   /* 24, dataoff 6  */
@@ -340,7 +345,6 @@ static int tcp_emit(TCB *tcb, USHORT flags, int want_mss)
         return NSF_ENOBUFS;
     }
     p     = b->data;
-    seq   = (flags & TCP_FL_SYN) ? tcb->iss : tcb->snd_nxt;
     ackno = (flags & TCP_FL_ACK) ? tcb->rcv_nxt : 0u;
     win   = (tcb->rcv_wnd > 0xFFFFu) ? 0xFFFFu : (USHORT)tcb->rcv_wnd;
 
@@ -377,6 +381,16 @@ static int tcp_emit(TCB *tcb, USHORT flags, int want_mss)
         return NSF_EHOSTUNREACH;                /* nsfip_output freed b + counted */
     }
     return 0;
+}
+
+/* Emit a control segment at the natural sequence: ISS for a SYN-bearing segment
+ * (the SYN occupies ISS), SND.NXT otherwise. The M4-4 FIN retransmit uses
+ * tcp_emit_seq directly to re-emit the FIN at its own (already-consumed)
+ * sequence, SND.UNA, without touching SND.NXT. */
+static int tcp_emit(TCB *tcb, USHORT flags, int want_mss)
+{
+    UINT seq = (flags & TCP_FL_SYN) ? tcb->iss : tcb->snd_nxt;
+    return tcp_emit_seq(tcb, flags, want_mss, seq);
 }
 
 /* -- data path: send queue + segmentized output (M4-3, ADR-0032) --------------
@@ -563,6 +577,11 @@ static void tcp_output(TCB *tcb)
             tcb->flags  |= (UCHAR)TCB_F_FINSENT;
         }
     }
+
+    /* Reconcile the retransmit / persist timers with the new send state (M4-4):
+     * data/SYN/FIN now in flight -> arm rexmit; blocked behind a zero window ->
+     * arm persist; nothing outstanding -> cancel both. */
+    tcp_timers_update(tcb);
 }
 
 /* Refill a parked blocking SEND from where it left off (r->p3 = bytes already
@@ -852,6 +871,153 @@ static void tcp_send_rst(TCB *tcb)
     (void)tcp_emit(tcb, (USHORT)TCP_FL_RST, 0);
 }
 
+/* -- retransmission + zero-window persist timers (M4-4, ADR-0033) --------------
+ * Fixed RTO with exponential backoff. srtt/rttvar stay 0 (Karn + adaptive RTT is
+ * M5, spec 13.1). The rexmit and persist timers are NEVER armed together: rexmit
+ * governs whenever sequence space is in flight (SND.UNA < SND.NXT); persist
+ * governs when the sender is paused on a zero window with nothing in flight. That
+ * mutual exclusion (enforced by tcp_timers_update) keeps the give-up teardown
+ * safe to free the TCB from a timer callback: only the firing timer is queued for
+ * this TCB, exactly as tcp_2msl_expire relies on. `backoff` is the shared
+ * consecutive-expiry / interval-shift count (the two timers cannot both be
+ * armed). `rto` is the current interval in ticks. */
+
+/* Current interval = base << backoff, capped at the 64 s max. The shift is capped
+ * at 6 (10 << 6 = 640 = the max) so a large backoff never triggers shift UB
+ * (persist grows backoff without an upper bound while a peer is silent). */
+static UINT tcp_rto_compute(UCHAR backoff)
+{
+    UINT shift = (backoff > 6u) ? 6u : (UINT)backoff;
+    UINT t     = (UINT)NSFTCP_RTO_TICKS << shift;
+
+    return (t > (UINT)NSFTCP_RTO_MAX_TICKS) ? (UINT)NSFTCP_RTO_MAX_TICKS : t;
+}
+
+/* Reconcile the rexmit / persist timers with the current send state. Called after
+ * every event that moves SND.UNA / SND.NXT / SND.WND / the sndq (tcp_output tail,
+ * the SYN emitters, and tcp_process_ack). Idempotent by "arm only if idle", so a
+ * doubled call in one event never restarts a running timer; a progress ACK forces
+ * a fresh RTO by cancelling t_rexmit first (in tcp_process_ack) so this re-arms at
+ * the base interval. */
+static void tcp_timers_update(TCB *tcb)
+{
+    if (TCP_SEQ_LT(tcb->snd_una, tcb->snd_nxt)) {
+        /* Sequence space in flight -> rexmit governs; persist must be off. If we
+         * were persisting (window just opened, data now on the wire), start the
+         * retransmit escalation fresh. */
+        if (tcb->t_persist.state == (UCHAR)TMR_PENDING) {
+            tmr_cancel(&tcb->t_persist);
+            tcb->backoff = 0u;
+            tcb->rto     = (USHORT)NSFTCP_RTO_TICKS;
+        }
+        if (tcb->t_rexmit.state == (UCHAR)TMR_IDLE) {
+            if (tcb->rto == 0u) {
+                tcb->rto = (USHORT)NSFTCP_RTO_TICKS;
+            }
+            tmr_start(&tcb->t_rexmit, (UINT)tcb->rto, tcp_rexmit_expire, tcb);
+        }
+    } else {
+        /* Nothing in flight. Persist iff data is waiting behind a zero window
+         * (a shrunk-to-zero peer window with unsent bytes); otherwise both off. */
+        tmr_cancel(&tcb->t_rexmit);
+        if (tcb->sndq_bytes > 0u && tcb->snd_wnd == 0u) {
+            if (tcb->t_persist.state == (UCHAR)TMR_IDLE) {
+                tcb->backoff = 0u;
+                tcb->rto     = (USHORT)NSFTCP_RTO_TICKS;
+                tcb->flags  &= (UCHAR)~TCB_F_PROBEACK;   /* fresh probe episode  */
+                tmr_start(&tcb->t_persist, (UINT)tcb->rto, tcp_persist_expire, tcb);
+            }
+        } else {
+            tmr_cancel(&tcb->t_persist);
+        }
+    }
+}
+
+/* Retransmit EXACTLY ONE segment starting at SND.UNA (RFC 1122 §4.2.3.1 go-back-N
+ * restraint -- never re-blast the whole flight). The oldest outstanding sequence
+ * is a SYN (SYN_SENT / SYN_RCVD), or data (copy-on-transmit the SND.UNA slice,
+ * ADR-0032), or -- data all acked -- our FIN. A retransmitted segment is
+ * byte-identical in payload and sequence to the original; only the ack/window
+ * fields reflect newer state. SND.NXT is never moved here (the sequence is
+ * already counted); TCB_F_FINSENT stays set across a FIN rexmit (the flag means
+ * "the FIN occupies sequence space", not "sent once"). */
+static void tcp_rexmit_one(TCB *tcb)
+{
+    switch (tcb->state) {
+    case TCP_SYN_SENT:
+        (void)tcp_emit(tcb, (USHORT)TCP_FL_SYN, 1);            /* seq = ISS = UNA  */
+        return;
+    case TCP_SYN_RCVD:
+        (void)tcp_emit(tcb, (USHORT)(TCP_FL_SYN | TCP_FL_ACK), 1);
+        return;
+    default:
+        break;
+    }
+    if (tcb->sndq_bytes > 0u) {
+        USHORT len = (tcb->sndq_bytes < (UINT)tcb->mss)
+                   ? (USHORT)tcb->sndq_bytes : tcb->mss;
+        (void)tcp_data_emit(tcb, 0u, tcb->snd_una, len);       /* seq = SND.UNA    */
+        return;
+    }
+    if (tcb->flags & TCB_F_FINSENT) {
+        /* Only our FIN is outstanding: re-emit it at SND.UNA (its own sequence,
+         * == SND.NXT-1 once the data drained). SND.NXT unchanged, FINSENT kept. */
+        (void)tcp_emit_seq(tcb, (USHORT)(TCP_FL_FIN | TCP_FL_ACK), 0, tcb->snd_una);
+    }
+}
+
+/* Retransmit timer expiry. After NSFTCP_RTO_MAXTRIES no-progress expiries the
+ * connection is dead (NSF_ETIMEDOUT + teardown -- a SYN_SENT give-up is the
+ * classic connect timeout). Otherwise retransmit one segment, count it, double
+ * the backoff (capped), and re-arm. Freeing the TCB from here is safe: no sibling
+ * timer of this TCB is armed (persist is mutually exclusive; keep is M5; 2msl is
+ * TIME_WAIT-only, which carries no unacked data) and nsftmr_run detached +
+ * IDLE'd t_rexmit before this call. */
+static void tcp_rexmit_expire(void *arg)
+{
+    TCB *tcb = (TCB *)arg;
+
+    if (tcb->backoff >= (UCHAR)NSFTCP_RTO_MAXTRIES) {
+        tcp_conn_abort(tcb, NSF_ETIMEDOUT);
+        return;
+    }
+    tcp_rexmit_one(tcb);
+    tcpc(tcp_rexmit);
+    tcb->backoff = (UCHAR)(tcb->backoff + 1u);
+    tcb->rto     = (USHORT)tcp_rto_compute(tcb->backoff);
+    tmr_start(&tcb->t_rexmit, (UINT)tcb->rto, tcp_rexmit_expire, tcb);
+}
+
+/* Persist (zero-window probe) timer expiry (RFC 793 §3.7 / RFC 1122 §4.2.2.17).
+ * Send ONE byte of sndq data beyond the closed window, count wndprobe, back off,
+ * re-arm. Persist does NOT advance SND.NXT (the probe byte stays on the sndq and
+ * is sent for real once the window reopens), so the sender bookkeeping keeps
+ * "nothing in flight" and persist stays the governing timer.
+ *
+ * Persist never gives up as long as the peer answers probes (a zero-window ACK
+ * sets TCB_F_PROBEACK via the inbound path); only if probing draws NO segment at
+ * all through the whole backoff escalation does it fall back to the rexmit
+ * give-up discipline (documented choice, ADR-0033). backoff still grows on every
+ * probe so the intervals visibly back off even while the peer keeps ACKing. */
+static void tcp_persist_expire(void *arg)
+{
+    TCB *tcb = (TCB *)arg;
+    UINT off = tcb->snd_nxt - tcb->snd_una;      /* 0 while persisting            */
+
+    if (tcb->backoff >= (UCHAR)NSFTCP_RTO_MAXTRIES &&
+        !(tcb->flags & TCB_F_PROBEACK)) {
+        tcp_conn_abort(tcb, NSF_ETIMEDOUT);      /* silent peer -> dead           */
+        return;
+    }
+    if (tcb->sndq_bytes > off) {
+        (void)tcp_data_emit(tcb, off, tcb->snd_nxt, 1u);   /* 1 byte, no NXT move */
+        tcpc(tcp_wndprobe);
+    }
+    tcb->backoff = (UCHAR)(tcb->backoff + 1u);
+    tcb->rto     = (USHORT)tcp_rto_compute(tcb->backoff);
+    tmr_start(&tcb->t_persist, (UINT)tcb->rto, tcp_persist_expire, tcb);
+}
+
 /* End of life: a connection is fully finished (LAST_ACK -> CLOSED, TIME_WAIT 2MSL
  * expiry, or a fresh LISTEN / SYN_SENT close). Drive the ONE top-level teardown
  * -- soc_destroy(sock) -> tcp_detach -> tcp_destroy. tcp_destroy NEVER calls
@@ -865,29 +1031,36 @@ static void tcp_close_done(TCB *tcb)
     }
 }
 
-/* A RST was received in a synchronized state (RFC 793 p.70): complete any parked
- * request with the SPECIFIC errno FIRST -- that clears the pend slot, so the
- * following soc_destroy will not re-complete it with ECONNABORTED -- then tear the
- * connection down. */
-static void tcp_do_reset(TCB *tcb)
+/* Abort a connection with a specific errno: complete every parked request with
+ * `err` FIRST -- that clears each pend slot, so the following soc_destroy will not
+ * re-complete it with the generic ECONNABORTED -- then drive the ONE end-of-life
+ * teardown. Shared by the received-RST path (NSF_ECONNRESET) and the M4-4
+ * retransmit / persist give-up (NSF_ETIMEDOUT). */
+static void tcp_conn_abort(TCB *tcb, INT err)
 {
     SOCKCB *s = tcb->sock;
 
     if (s != NULL) {
         if (s->pend_connect != NULL) {
-            soc_complete(s->pend_connect, NSF_RETERR, NSF_ECONNRESET);
+            soc_complete(s->pend_connect, NSF_RETERR, err);
         }
         if (s->pend_recv != NULL) {
-            soc_complete(s->pend_recv, NSF_RETERR, NSF_ECONNRESET);
+            soc_complete(s->pend_recv, NSF_RETERR, err);
         }
         if (s->pend_accept != NULL) {
-            soc_complete(s->pend_accept, NSF_RETERR, NSF_ECONNRESET);
+            soc_complete(s->pend_accept, NSF_RETERR, err);
         }
         if (s->pend_send != NULL) {
-            soc_complete(s->pend_send, NSF_RETERR, NSF_ECONNRESET);
+            soc_complete(s->pend_send, NSF_RETERR, err);
         }
     }
     tcp_close_done(tcb);
+}
+
+/* A RST was received in a synchronized state (RFC 793 p.70). */
+static void tcp_do_reset(TCB *tcb)
+{
+    tcp_conn_abort(tcb, NSF_ECONNRESET);
 }
 
 /* A SYN arrived inside an established window (RFC 793 p.71) -- an error: send a
@@ -980,6 +1153,14 @@ static void tcp_enter_established(TCB *tcb)
     if (s != NULL) {
         s->state = (UCHAR)SOC_ST_CONNECTED;
     }
+    /* Start the data phase with a fresh RTO (M4-4): the handshake converges here
+     * on BOTH the active (tcp_synsent_input) and passive (tcp_process_ack SYN_RCVD)
+     * paths, neither of which runs the progress-ACK backoff reset -- so a SYN /
+     * SYN|ACK that was retransmitted would otherwise leave a grown backoff/rto for
+     * the first data send. The subsequent tcp_timers_update cancels rexmit here
+     * (SYN acked -> nothing in flight), so nothing re-arms until that first send. */
+    tcb->backoff = 0u;
+    tcb->rto     = (USHORT)NSFTCP_RTO_TICKS;
     tcpc(tcp_established);
     if (s != NULL && s->pend_connect != NULL) {
         soc_complete(s->pend_connect, NSF_RETOK, 0);   /* active open done        */
@@ -1003,6 +1184,7 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
         tcb->snd_una = seg->ack;
         tcp_update_window(tcb, seg);
         tcp_enter_established(tcb);             /* a same-segment FIN may follow   */
+        tcp_timers_update(tcb);                 /* our SYN|ACK acked -> cancel rexmit*/
         return 1;
     }
 
@@ -1010,18 +1192,34 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
         tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* ACKs something unsent -> ACK+drop*/
         return 0;
     }
+    /* Update the send window BEFORE any transmit below (RFC 793 p.72 step 5). The
+     * progress branch advances SND.UNA and immediately re-clocks the sender
+     * (send_resume -> tcp_output); if the window were still stale there, advancing
+     * SND.UNA past a SHRUNK window would slide the right edge right and the sender
+     * would transmit beyond it (found live via the M4-4 persist trace: a segment
+     * sent past the peer's window, dropped, then retransmitted -- rexmit instead of
+     * persist; test_flowctl_no_oversend). */
+    tcp_update_window(tcb, seg);
+
     if (TCP_SEQ_GT(seg->ack, tcb->snd_una)) {
         UINT acked = seg->ack - tcb->snd_una;   /* new data / our FIN acknowledged */
         tcb->snd_una = seg->ack;
+        /* Progress: reset the backoff + RTO and cancel the rexmit timer so the
+         * reconciliation below re-arms it fresh for the new oldest segment
+         * (RFC restart-on-ACK). backoff/rto/dupacks all clear on progress. */
+        tcb->backoff = 0u;
+        tcb->rto     = (USHORT)NSFTCP_RTO_TICKS;
+        tcb->dupacks = 0u;
+        tmr_cancel(&tcb->t_rexmit);
         /* Free the DATA portion off the sndq front (a SYN/FIN sequence is not in
          * the sndq -- clamp to sndq_bytes), then refill a parked SEND (M4-3). */
         tcp_sndq_free(tcb, (acked < tcb->sndq_bytes) ? acked : tcb->sndq_bytes);
         tcp_send_resume(tcb);
     } else if (tcb->snd_una != tcb->snd_nxt && seg->dlen == 0u &&
                !(seg->flags & (TCP_FL_SYN | TCP_FL_FIN))) {
+        tcb->dupacks = (UCHAR)(tcb->dupacks + 1u);   /* run length (counting only) */
         tcpc(tcp_dupack);                       /* a received duplicate ACK (M4-3)  */
     }
-    tcp_update_window(tcb, seg);
 
     /* Clock out data / the FIN with the possibly-opened window (states that still
      * transmit; a closing/destroying state is a no-op here or handled below). */
@@ -1030,6 +1228,12 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
         tcb->state == (UCHAR)TCP_FIN_WAIT_1) {
         tcp_output(tcb);
     }
+
+    /* Reconcile the rexmit / persist timers for EVERY surviving state (the
+     * transmitting ones reconciled inside tcp_output above; the closing states
+     * that do not transmit -- FIN_WAIT_2, LAST_ACK -- still need their rexmit
+     * cancelled once our FIN is acked, or kept armed while it is not). M4-4. */
+    tcp_timers_update(tcb);
 
     /* `our_fin_acked` == SND.UNA reached SND.NXT (our FIN was the last byte sent).*/
     switch (tcb->state) {
@@ -1207,6 +1411,8 @@ static void tcp_passive_open(TCB *listener, const TCPSEG *seg)
 
     if (tcp_emit(child, (USHORT)(TCP_FL_SYN | TCP_FL_ACK), 1) != 0) {
         soc_destroy(cs);                        /* could not reply -> abandon child */
+    } else {
+        tcp_timers_update(child);               /* arm rexmit for the SYN|ACK       */
     }
 }
 
@@ -1283,6 +1489,7 @@ static void tcp_synsent_input(TCB *tcb, const TCPSEG *seg)
             tcb->state = (UCHAR)TCP_SYN_RCVD;       /* simultaneous open           */
             tcp_emit(tcb, (USHORT)(TCP_FL_SYN | TCP_FL_ACK), 1);
         }
+        tcp_timers_update(tcb);                     /* SYN acked -> cancel; else arm*/
         return;
     }
 
@@ -1300,6 +1507,9 @@ static void tcp_synchronized_input(TCB *tcb, const TCPSEG *seg, PBUF *b, int *ke
         }
         return;
     }
+    /* Any acceptable segment proves the peer is alive -> a zero-window probe will
+     * be answered, so persist must not hit the silent-peer give-up (M4-4). */
+    tcb->flags |= (UCHAR)TCB_F_PROBEACK;
     /* 2. RST -> reset the connection (ECONNRESET to a parked request). */
     if (seg->flags & TCP_FL_RST) {
         tcpc(tcp_resetrcvd);
@@ -1557,6 +1767,7 @@ static int tcp_attach(SOCKCB *s)
     tcb->state   = TCP_CLOSED;
     tcb->mss     = NSFTCP_MSS_DEFAULT;
     tcb->rcv_wnd = NSFTCP_RCVWND_DEFAULT;
+    tcb->rto     = NSFTCP_RTO_TICKS;            /* base RTO; srtt/rttvar M5 (0)   */
     q_init(&tcb->sndq, (USHORT)NSFTCP_MAX_TCB);   /* bounded; byte flow ctrl M4-3 */
     q_init(&tcb->oooq, 4u);                        /* spec 13.2: oooq bounded 4    */
     if (q_enq(&g_tcblist, &tcb->q) != 0) {         /* demux list full             */
@@ -1617,6 +1828,7 @@ static int tcp_connect(SOCKCB *s, NSFRQE *r)
         return 0;
     }
     tcpc(tcp_activeopen);
+    tcp_timers_update(tcb);                         /* arm rexmit for the SYN        */
     return soc_park(s, r, SOC_PEND_CONNECT);        /* wake on SYN|ACK / RST         */
 }
 

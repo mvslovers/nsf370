@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.31 — Draft for implementation. Companion document to the frozen
+*Version 1.32 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1616,14 +1616,60 @@ algorithm details follow RFC 793/1122 directly.
 > `oooseg`/`dupack`/`rxfull`/`datadrop` all 0, leak gate clean. (The TSO re-run of
 > the single physical pair back-to-back stalls MIH-pending, a live-hardware reuse
 > artifact — the batch run is the gate, per the M1 TSTCTCM precedent.)
+>
+> **Status (M4-4, v1.32): retransmission + zero-window persist are in place**
+> (ADR-0033). Connections now survive loss and a zero-window peer. **Retransmit
+> timer** (`t_rexmit`): armed whenever sequence space is in flight
+> (`SND.UNA < SND.NXT` — data, SYN, or FIN uniformly), re-armed at a fresh RTO on
+> each ACK that advances `SND.UNA` with data still outstanding, cancelled when all
+> is acked. On expiry it retransmits **exactly one** segment starting at `SND.UNA`
+> (RFC 1122 §4.2.3.1 go-back-N restraint), byte-identical in payload and sequence,
+> counts `rexmit`, doubles the backoff (**fixed RTO** `NSFTCP_RTO_TICKS` = 1 s
+> base × 2^backoff, capped at 64 s), and re-arms; after `NSFTCP_RTO_MAXTRIES` (8)
+> no-progress expiries the connection is declared dead (`NSF_ETIMEDOUT` to any
+> parked request, then teardown — a SYN_SENT give-up is the classic connect
+> timeout). **Persist timer** (`t_persist`): armed when the sender pauses on a
+> zero window with nothing in flight; on expiry it sends a one-byte probe beyond
+> the window (RFC 1122 §4.2.2.17, `wndprobe`), backs off, and re-arms — without
+> advancing `SND.NXT`, so the invariant that **rexmit and persist are never armed
+> together** holds (this is what makes the give-up teardown safe to free the TCB
+> from a timer callback). Persist never gives up while the peer answers probes (a
+> zero-window ACK proves liveness); only an all-silent peer falls back to the
+> rexmit give-up. `srtt`/`rttvar` stay 0 (**Karn + adaptive RTT is M5**), fast
+> retransmit is M5 (`dupacks` counts only), and the TCB is unchanged (200 B — the
+> RTO-state fields already existed; the only new state is one flag bit). No new
+> external symbols (every M4-4 helper is `static`). NSFTCP is still OUT of the
+> `NSF` load module (M4-5). **Host-proven** (`test/tsttcp.c`, ASan+UBSan clean):
+> lost-segment retransmit (one segment, byte-identical), backoff to the cap +
+> MAXTRIES give-up (parked SEND → `ETIMEDOUT`), SYN loss (active + passive,
+> byte-identical incl. the MSS option), FIN loss (`SND.NXT` not re-incremented),
+> persist probe/backoff/window-reopen (`wndprobe` exact), partial-ACK-resets-
+> backoff, the rexmit⊕persist invariant, and (found live, fixed) a latent **M4-3**
+> flow-control over-send — advancing `SND.UNA` before the window update let the
+> sender transmit past a peer's shrunk window; `tcp_update_window` now precedes the
+> transmit (`test_flowctl_no_oversend`). **Live state (MVSCE, real 0500/0501):**
+> the M4-3 lossless regression re-runs green with `rexmit == 0`
+> (`test/mvs/tsttcpd.c`, batch CC 0); persist was driven live
+> (`test/mvs/tsttcpr.c`, a tiny-`SO_RCVBUF` host receiver → `win 0`) — the guest
+> respects the window, a one-byte zero-window probe fires (`wndprobe > 0`), the
+> connection survives and the full 4 MB completes on reopen. The multi-tick
+> **backoff cadence is NOT faithfully visible live** (probes sparse, intervals
+> distorted) due to a foundational executive tick-advance bug — **issue #40**
+> (`nsftmr_run(1u)` per wake vs. a head-delta-armed STIMER → a delta-N timer fires
+> after N(N+1)/2 ticks; also mis-times the production 2MSL). The persist/RTO
+> **policy + backoff** are host-proven; live cadence follows issue #40.
+> Genuine-loss RTO firing needs root; the drop/dup/reorder matrix is M4-6.
 
 ### 13.1 Responsibilities
 
 Full state machine (11 states), sequence processing per RFC 793,
 handshake and teardown, sliding-window flow control with small fixed
-windows, retransmission (simple fixed RTO in M4 → Karn + exponential
-backoff in M5), delayed ACK and Nagle (M5, both configurable), RST
-generation/handling, keepalive.
+windows, retransmission (**fixed RTO + exponential backoff in M4** →
+Karn + adaptive RTT `srtt`/`rttvar` in M5), zero-window persist probes
+(M4), delayed ACK and Nagle (M5, both configurable), RST
+generation/handling, keepalive (`t_keep`, M5). **Fast retransmit is
+M5** — M4 counts a duplicate-ACK run (`dupacks`) but only the
+retransmit timer drives a retransmission.
 
 ### 13.2 TCB
 
@@ -2110,6 +2156,34 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.32: M4-4 — TCP retransmission (fixed RTO + exponential backoff) + zero-window
+persist probes.** Connections survive loss and a zero-window peer (ADR-0033).
+**Retransmit timer** (`t_rexmit`) armed whenever sequence space is in flight
+(`SND.UNA < SND.NXT`); on expiry it retransmits **exactly one** segment at
+`SND.UNA` (RFC 1122 §4.2.3.1 go-back-N), byte-identical, counts `rexmit`, doubles
+the fixed RTO (1 s base, capped 64 s), and re-arms; `NSFTCP_RTO_MAXTRIES` (8)
+no-progress expiries → `NSF_ETIMEDOUT` + teardown (SYN_SENT give-up = connect
+timeout). FIN retransmit keeps `TCB_F_FINSENT` and does not re-increment
+`SND.NXT`. **Persist timer** (`t_persist`) armed on a zero send window with data
+waiting and nothing in flight; on expiry it probes one byte beyond the window
+(`wndprobe`) without advancing `SND.NXT`, backs off, and re-arms — the two timers
+are **never armed together** (the invariant that makes the give-up teardown safe
+to free the TCB from a callback). Persist never gives up while the peer answers
+(`TCB_F_PROBEACK` tracks liveness); an all-silent peer falls back to the rexmit
+give-up. Fixed RTO only — Karn + adaptive RTT (`srtt`/`rttvar`) and fast
+retransmit (`dupacks` counts only) are M5. TCB unchanged (200 B — the RTO-state
+fields pre-existed; one new flag bit); no new external symbols. §13.1 + the §13
+M4-4 status note. Also fixes a latent **M4-3** flow-control over-send found live
+(`tcp_update_window` now precedes the ACK-driven transmit, RFC 793 p.72 step 5;
+`test_flowctl_no_oversend`). Host: TSTTCP 529→692 (lost-segment/backoff-giveup/
+SYN-loss/establish-resets-backoff/FIN-loss/persist/partial-ACK/invariant/
+flowctl-no-oversend), ASan+UBSan clean; suite 1791→1954.
+Live: TSTTCPD M4-3 regression green with `rexmit == 0`; TSTTCPR persist driven
+live (tiny-`SO_RCVBUF` receiver → `win 0`, window respected, one-byte probe, 4 MB
+completes) — the multi-tick backoff **cadence** is distorted live by a foundational
+executive tick-advance bug (**issue #40**), so persist/RTO backoff is host-proven
+and the live cadence follows #40. Conformance: `ETIMEDOUT` now live.
 
 **v1.31: M4-3 — TCP data path (segmentation, sliding window, in-order receive).**
 ESTABLISHED carries payload (ADR-0032). **Send = copy-on-transmit** — `sndq`

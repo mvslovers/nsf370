@@ -294,6 +294,8 @@ int main(void)
            sts_value("NSFTCP", "resetrcvd"),  sts_value("NSFTCP", "oooseg"),
            sts_value("NSFTCP", "dupack"),     sts_value("NSFTCP", "rxfull"),
            sts_value("NSFTCP", "datadrop"));
+    printf("STATS tcp rexmit=%u wndprobe=%u\n",
+           sts_value("NSFTCP", "rexmit"), sts_value("NSFTCP", "wndprobe"));
 
     CHECK_EQ((long)g_ini_rc, (long)NSF_RETOK, "INITAPI round-tripped");
     CHECK(g_lsock_rc >= 0, "listen SOCKET returned a descriptor");
@@ -310,6 +312,9 @@ int main(void)
               "drain #2: a transfer LARGER than the window completed (window-update rule)");
     }
     CHECK_EQ((long)g_term_rc, (long)NSF_RETOK, "TERMAPI round-tripped");
+    /* M4-4 regression: the CTCI link is lossless, so the retransmit timer must
+     * NEVER fire on this path -- data is ACKed well inside the 1 s base RTO. */
+    CHECK_EQ((long)sts_value("NSFTCP", "rexmit"), 0L, "no retransmit on the lossless link");
     CHECK_EQ((long)soc_count(), 0L, "no sockets left open (leak gate)");
 #if NSF_DEBUG
     CHECK_EQ((long)nsftcp_debug_inuse(), 0L, "TCPTCB pool at baseline (leak gate)");
