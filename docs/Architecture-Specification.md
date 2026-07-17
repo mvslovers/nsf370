@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.29 — Draft for implementation. Companion document to the frozen
+*Version 1.31 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1577,6 +1577,45 @@ algorithm details follow RFC 793/1122 directly.
 > 4-way FIN; the guest's idle-link active SYN → `nc -l` SYN,ACK → ACK (CONNECT
 > ok); `established` 2, `resetrcvd` 0, leak gate clean. Pending the maintainer's
 > merge countersign.
+>
+> **Status (M4-3, v1.31): the data path is in place** (ADR-0032). ESTABLISHED now
+> carries payload. **Send = copy-on-transmit:** `sndq` holds the application data
+> (front byte = SND.UNA, bounded by `NSFTCP_SNDBUF`, default 4096); each
+> (re)transmission COPIES the slice being sent into a FRESH wire PBUF handed to
+> `nsfip_output`, so PBUFs stay single-owner (§3.4) and a transmit failure loses
+> only the copy — SND.NXT is not advanced, the data survives on the sndq, and the
+> next event (ACK / window update / next SEND) retries. That recoverability is why
+> M4-3 needs **no retransmission timer** on the lossless link, and is the seam
+> M4-4's RTO plugs into. **Receive = trim-in-place:** the inbound PBUF is trimmed
+> past its headers and queued on the socket `rxq` as-is (ownership transfers, no
+> copy), so `nsftcp_input`'s free of `b` is now conditional on an ownership flag set
+> only on a successful rxq enqueue. **Sliding window:** the usable send window is
+> `SND.UNA + SND.WND − SND.NXT` (signed, a shrunk window is a clean zero → pause,
+> no persist probe until M4-4); `rcv_wnd` is the LIVE advertised window (base −
+> bytes queued), its right edge never shrinks, and a recv that reopens the window
+> (from 0, or by ≥ 1 MSS) sends a pure window-update ACK — the rule that keeps a
+> >window transfer from deadlocking. **FIN-after-data:** `close()` queues the FIN
+> (BSD-immediate return) and `tcp_output` emits it once the sndq drains (or at once
+> if empty — byte-identical to the M4-2 teardown). **EOF** (peer FIN) makes recv on
+> an empty rxq return rc=0, sticky; data queued ahead of the FIN is delivered
+> first. A blocking SEND over budget parks (`SOCKCB.pend_send`) and completes as
+> ACKs free space; a blocking RECV parks until data or EOF. **Still no
+> out-of-order reassembly (M5)** — a gap segment is dropped + dup-ACKed
+> (`oooseg`), `oooq` stays empty; **no Nagle / delayed ACK (M5)** — every segment
+> is ACKed at once. Counters: `datadrop` now only text dropped in a non-receiving
+> state, `oooseg` / `dupack` tick for real, private `rxfull` for an rxq-PBUF-bound
+> drop. NSFTCP is still OUT of the `NSF` load module (unreachable until the
+> EZASOKET M4 verb set, M4-5). **Validated live on MVSCE** (`test/mvs/tsttcpd.c`,
+> real 0500/0501 pair, batch CC 0, 22/22): connection #1 a small **echo** — a
+> `nc` line comes back byte-exact (`recv=16 sent=16`, guest `[P.] len 16 win 4096`
+> in `tcpdump`, clean FIN); connection #2 a **one-way drain** of a 16 KB transfer
+> received in 1 KB slices (`n=16384`, checksum matching the host — byte-exact),
+> where `tcpdump` shows the guest window closing to `win 0` and then the pure
+> window-update ACK reopening it (`ack 4097, win 0` → `ack 4097, win 1024`, same
+> ack) — the deadlock rule that would hang a >window transfer if it were wrong;
+> `oooseg`/`dupack`/`rxfull`/`datadrop` all 0, leak gate clean. (The TSO re-run of
+> the single physical pair back-to-back stalls MIH-pending, a live-hardware reuse
+> artifact — the batch run is the gate, per the M1 TSTCTCM precedent.)
 
 ### 13.1 Responsibilities
 
@@ -2071,6 +2110,31 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.31: M4-3 — TCP data path (segmentation, sliding window, in-order receive).**
+ESTABLISHED carries payload (ADR-0032). **Send = copy-on-transmit** — `sndq`
+holds the app data (bounded by `NSFTCP_SNDBUF`, default 4096); each transmission
+copies the slice into a fresh wire PBUF, so a transmit failure loses only the
+copy (SND.NXT unmoved, data retained, retried on the next event) — the seam
+M4-4's RTO plugs into, and why no RTO is needed on the lossless link. **Receive =
+trim-in-place** — the inbound PBUF is trimmed and queued on the socket rxq as-is,
+so `nsftcp_input`'s free is now conditional on an ownership flag set only on a
+successful enqueue (the double-free/leak gate; ASan/UBSan-clean). **Sliding
+window** — usable send window `SND.UNA+SND.WND−SND.NXT` (signed → clean
+zero-window pause); `rcv_wnd` is the live advertised window (base − queued, right
+edge never shrinks); a recv that reopens the window (from 0 or by ≥ 1 MSS) sends a
+pure window-update ACK (the >window-transfer deadlock rule). **FIN-after-data** —
+`close()` queues the FIN and `tcp_output` emits it once the sndq drains (at once
+if empty → M4-2 teardown byte-identical). **EOF** sticky; a blocking SEND over
+budget parks (`SOCKCB.pend_send` + `SOC_PEND_SEND`, progress in `r->p3`); a
+blocking RECV parks until data/EOF. Counters: `datadrop` narrowed, `oooseg` /
+`dupack` real, private `rxfull`. **No out-of-order reassembly / Nagle / delayed
+ACK (M5).** SOCKCB 72→76 B (the fourth pend slot); TCB unchanged (200 B, only new
+flag bits). Host **1641→1791** (TSTTCP +150; ASan+UBSan clean), cross-build + alias
+scan clean (all new nsftcp helpers static — no new externals), NSFTCP still out of
+the `NSF` module. Live gate `test/mvs/tsttcpd.c` (echo server over the real
+0500/0501 pair). §13 status note + ADR-0032. NSFTCP data path; M4-4 (RTO/rexmit)
+next.
 
 **v1.30: M4-2 — TCP handshake + teardown + TIME_WAIT (the connection machine).**
 The M4-1 RST-only skeleton becomes a full state machine (ADR-0031): active +

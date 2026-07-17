@@ -55,9 +55,15 @@
 #define TSTTCP_POOL  8
 
 /* ---- capture device ---------------------------------------------------------- */
+/* g_cap holds the LAST captured segment (the M4-1/M4-2 single-reply tests read it
+ * through cap_tcp). M4-3 sends produce several segments per dispatch, so cap_send
+ * also records each into g_capsegs[] for per-segment assertions (cap_seg). */
+#define CAP_MAX 32
 static UCHAR  g_cap[2048];
 static USHORT g_caplen;
 static int    g_capcount;
+static UCHAR  g_capsegs[CAP_MAX][2048];
+static USHORT g_capseglen[CAP_MAX];
 
 static int cap_init(NETDEV *d, const DEVCFG *c)     { (void)d; (void)c; return 0; }
 static int cap_start(NETDEV *d)                     { (void)d; return 0; }
@@ -66,6 +72,10 @@ static int cap_send(NETDEV *d, PBUF *b)
 {
     (void)d;
     g_caplen = buf_copyout(b, g_cap, (USHORT)sizeof(g_cap));
+    if (g_capcount >= 0 && g_capcount < CAP_MAX) {
+        memcpy(g_capsegs[g_capcount], g_cap, g_caplen);
+        g_capseglen[g_capcount] = g_caplen;
+    }
     g_capcount++;
     buf_free(b);                        /* capture owns + frees the sent PBUF */
     return 0;
@@ -1093,12 +1103,527 @@ static void test_timewait_reclaim(NETDEV *dev)
     CHECK_EQ((long)small_inuse(), 0L, "reclaim: no buffer leak");
 }
 
+/* ==========================================================================
+ * 6. M4-3 data path: segmentation, sliding window, in-order receive, EOF,
+ *    copy-on-transmit recovery (ADR-0032). The loop is still NOT running; each
+ *    request is dispatched directly and each segment injected over the capture
+ *    device, so every byte, counter and window transition is deterministic.
+ * ========================================================================== */
+
+#define REQ_PENDING  0x7F7F7F7F         /* retcode sentinel: a parked request    */
+
+static UINT large_inuse(void)
+{
+#if NSF_DEBUG
+    MMSTATS s;
+    mm_stats(buf_debug_pool(NSFBUF_CLASS_LARGE), &s);
+    return s.inuse;
+#else
+    return 0u;
+#endif
+}
+
+/* TCB field peeks (TCB is a public struct, nsftcp.h). */
+static TCB *tcb_of(UINT desc)
+{
+    SOCKCB *s = sock_lookup(desc);
+    return (s != NULL) ? (TCB *)s->pcb : NULL;
+}
+static UINT tcb_sndq(UINT desc)   { TCB *t = tcb_of(desc); return (t != NULL) ? t->sndq_bytes : 0u; }
+static UINT tcb_rcvwnd(UINT desc) { TCB *t = tcb_of(desc); return (t != NULL) ? t->rcv_wnd : 0u; }
+static UINT tcb_sndnxt(UINT desc) { TCB *t = tcb_of(desc); return (t != NULL) ? t->snd_nxt : 0u; }
+
+/* Fill n bytes with a recognizable, position-dependent pattern. */
+static void fill_pattern(UCHAR *buf, USHORT n, UCHAR base)
+{
+    USHORT i;
+    for (i = 0u; i < n; i++) {
+        buf[i] = (UCHAR)(base + (i & 0x3Fu));
+    }
+}
+
+/* Decode captured outbound segment #i (variable IHL/data-offset). Returns the
+ * payload pointer; NULL out-params are skipped. */
+static const UCHAR *cap_seg(int i, UCHAR *flags, UINT *seq, UINT *ack,
+                            USHORT *win, USHORT *paylen)
+{
+    const UCHAR *ip    = g_capsegs[i];
+    UCHAR        ihl   = (UCHAR)((ip[0] & 0x0Fu) * 4u);
+    const UCHAR *t     = ip + ihl;
+    UCHAR        thoff = (UCHAR)(((t[12] >> 4) & 0x0Fu) * 4u);
+    USHORT       total = get16(ip + 2);
+
+    if (flags  != NULL) { *flags  = t[13]; }
+    if (seq    != NULL) { *seq    = get32(t + 4); }
+    if (ack    != NULL) { *ack    = get32(t + 8); }
+    if (win    != NULL) { *win    = get16(t + 14); }
+    if (paylen != NULL) { *paylen = (USHORT)(total - ihl - thoff); }
+    return t + thoff;
+}
+
+/* Establish an ACTIVE connection advertising a peer window + MSS (via a SYN|ACK
+ * MSS option), so the data tests control segmentation and flow control. */
+static void establish_active_opt(NETDEV *dev, USHORT peerport, USHORT peer_win,
+                                 USHORT peer_mss, CONN *c)
+{
+    NSFRQE r;
+    UCHAR  pkt[64], opt[4];
+    USHORT total, sport;
+    UINT   synseq;
+    UCHAR  flags;
+    UINT   peerISS = 0x50000000u;
+
+    memset(c, 0, sizeof(*c));
+    c->desc = tcp_socket();
+    CHECK(c->desc != 0u, "estab-opt: socket");
+
+    rqe_init(&r, RQ_CONNECT, c->desc);
+    r.p1 = PEER_IP; r.p2 = (UINT)peerport;
+    g_capcount = 0;
+    dispatch(&r);
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+    c->lport    = sport;
+    c->cport    = peerport;
+    c->srv_next = synseq + 1u;
+
+    opt[0] = 2u; opt[1] = 4u; put16(opt + 2, peer_mss);
+    total = build_tcp_opt(pkt, PEER_IP, HOME_IP, peerport, sport, peerISS,
+                          synseq + 1u, (UCHAR)(TCP_FL_SYN | TCP_FL_ACK), peer_win,
+                          opt, 4u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(c->desc), (long)TCP_ESTABLISHED, "estab-opt: ESTABLISHED");
+    c->cli_next = peerISS + 1u;
+}
+
+/* The peer's current send sequence == our RCV.NXT (a synced peer's bare ACK/RST
+ * carries this, so it is always sequence-acceptable even after we received data
+ * that advanced RCV.NXT past the handshake cli_next). */
+static UINT peer_seq(CONN *c)
+{
+    TCB *t = tcb_of(c->desc);
+    return (t != NULL) ? t->rcv_nxt : c->cli_next;
+}
+
+/* Inject a bare ACK from the peer, advancing our SND.UNA to `ack` and
+ * advertising window `win`. */
+static void inject_ack_win(NETDEV *dev, CONN *c, UINT ack, USHORT win)
+{
+    UCHAR  pkt[64];
+    USHORT total = build_tcp(pkt, PEER_IP, HOME_IP, c->cport, c->lport,
+                             peer_seq(c), ack, (UCHAR)TCP_FL_ACK, win, NULL, 0u);
+    inject(dev, pkt, total);
+}
+
+/* Inject a data (and optionally FIN) segment from the peer at sequence `seq`. */
+static void inject_seg(NETDEV *dev, CONN *c, UINT seq, const UCHAR *pay,
+                       USHORT n, UCHAR extra)
+{
+    UCHAR  pkt[2100];
+    USHORT total = build_tcp(pkt, PEER_IP, HOME_IP, c->cport, c->lport, seq,
+                             c->srv_next, (UCHAR)(TCP_FL_ACK | extra), 0x2000u,
+                             pay, n);
+    inject(dev, pkt, total);
+}
+
+/* Build a SEND / RECV request; retcode starts at REQ_PENDING so a parked (not
+ * yet completed) request is detectable after dispatch. */
+static void req_send(NSFRQE *r, UINT desc, const void *buf, UINT len, USHORT flags)
+{
+    rqe_init(r, RQ_SEND, desc);
+    r->ubuf = (void *)buf; r->ulen = len; r->flags = flags;
+    r->retcode = REQ_PENDING;
+}
+static void req_recv(NSFRQE *r, UINT desc, void *buf, UINT len, USHORT flags)
+{
+    rqe_init(r, RQ_RECV, desc);
+    r->ubuf = buf; r->ulen = len; r->flags = flags;
+    r->retcode = REQ_PENDING;
+}
+
+/* Tear a connection down abruptly (a peer RST at RCV.NXT) so a test that leaves
+ * it mid-transfer still returns the pools to baseline. */
+static void conn_reset(NETDEV *dev, CONN *c)
+{
+    UCHAR  pkt[64];
+    USHORT total = build_tcp(pkt, PEER_IP, HOME_IP, c->cport, c->lport,
+                             peer_seq(c), c->srv_next, (UCHAR)TCP_FL_RST,
+                             0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+}
+
+/* 6a. Segmentation: 4096 bytes over MSS 1460 -> 1460 + 1460 + 1176 with correct
+ *     seqs; sndq_bytes tracks; progressive ACKs free the sndq (partial head). */
+static void test_data_segmentation(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[4096];
+    UCHAR  fl;
+    UINT   sq0, sq1, sq2;
+    USHORT l0, l1, l2;
+
+    fill_pattern(src, sizeof(src), 0x41u);
+    establish_active_opt(dev, 8100u, 0x2000u, 1460u, &c);
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 4096L, "seg: send buffered all 4096 bytes");
+    CHECK_EQ((long)g_capcount, 3L, "seg: 4096 over MSS 1460 -> 3 segments");
+    cap_seg(0, &fl, &sq0, NULL, NULL, &l0);
+    cap_seg(1, NULL, &sq1, NULL, NULL, &l1);
+    cap_seg(2, NULL, &sq2, NULL, NULL, &l2);
+    CHECK_EQ((long)l0, 1460L, "seg[0] len 1460");
+    CHECK_EQ((long)l1, 1460L, "seg[1] len 1460");
+    CHECK_EQ((long)l2, 1176L, "seg[2] len 1176 (remainder)");
+    CHECK_EQ((long)sq0, (long)c.srv_next,          "seg[0] seq = snd_nxt");
+    CHECK_EQ((long)sq1, (long)(c.srv_next + 1460u), "seg[1] seq contiguous");
+    CHECK_EQ((long)sq2, (long)(c.srv_next + 2920u), "seg[2] seq contiguous");
+    CHECK(memcmp(cap_seg(0, NULL, NULL, NULL, NULL, NULL), src, 1460) == 0,
+          "seg[0] payload byte-exact");
+    CHECK_EQ((long)tcb_sndq(c.desc), 4096L, "seg: sndq holds all 4096 unacked");
+
+    /* Partial ACK inside the first sndq PBUF -> buf_trim_head the front. */
+    inject_ack_win(dev, &c, c.srv_next + 1000u, 0x2000u);
+    CHECK_EQ((long)tcb_sndq(c.desc), 3096L, "seg: partial ACK freed 1000 (head adjust)");
+    /* ACK the rest -> the sndq empties. */
+    inject_ack_win(dev, &c, c.srv_next + 4096u, 0x2000u);
+    CHECK_EQ((long)tcb_sndq(c.desc), 0L, "seg: full ACK drained the sndq");
+
+    conn_close(c.desc);
+    inject_ack_win(dev, &c, c.srv_next + 4097u, 0x2000u);   /* ACK our FIN        */
+    conn_reset(dev, &c);                                    /* drop any TIME_WAIT */
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "seg: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "seg: BUFLARGE baseline");
+}
+
+/* 6b. Sliding window: peer window = 1 MSS -> one segment in flight; zero window
+ *     pauses the sender; a window update resumes it. */
+static void test_send_window(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[4096];
+    USHORT l0;
+
+    fill_pattern(src, sizeof(src), 0x61u);
+    establish_active_opt(dev, 8101u, 1460u, 1460u, &c);     /* peer window = 1 MSS */
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 4096L, "win: send buffered all 4096");
+    CHECK_EQ((long)g_capcount, 1L, "win: 1-MSS window -> exactly one segment");
+    cap_seg(0, NULL, NULL, NULL, NULL, &l0);
+    CHECK_EQ((long)l0, 1460L, "win: the in-flight segment is 1 MSS");
+
+    /* ACK it + re-advertise 1 MSS -> the next segment goes. */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next + 1460u, 1460u);
+    CHECK_EQ((long)g_capcount, 1L, "win: ACK + window -> next segment");
+
+    /* Zero window -> the sender pauses (no segment). */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next + 2920u, 0u);
+    CHECK_EQ((long)g_capcount, 0L, "win: zero window pauses the sender");
+    CHECK_EQ((long)tcb_sndq(c.desc), 1176L, "win: the remainder waits on the sndq");
+
+    /* Window update (no new data acked) -> the sender resumes. */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next + 2920u, 1176u);
+    CHECK_EQ((long)g_capcount, 1L, "win: window update resumes the sender");
+    cap_seg(0, NULL, NULL, NULL, NULL, &l0);
+    CHECK_EQ((long)l0, 1176L, "win: the resumed segment carries the remainder");
+
+    conn_reset(dev, &c);
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "win: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "win: BUFLARGE baseline");
+}
+
+/* 6c. Blocking send larger than the budget: parks, drains as ACKs free space,
+ *     completes with the full count. */
+static void test_send_block(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[5000];
+
+    fill_pattern(src, sizeof(src), 0x30u);
+    establish_active_opt(dev, 8102u, 0x4000u, 1460u, &c);   /* wide peer window   */
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);             /* 5000 > SNDBUF 4096 */
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)REQ_PENDING, "block: 5000 > budget -> parked");
+    CHECK_EQ((long)tcb_sndq(c.desc), 4096L, "block: 4096 buffered, 904 pending");
+
+    /* ACK the first 4096 sent -> budget frees, the parked send buffers the rest
+     * and completes with the full 5000. */
+    inject_ack_win(dev, &c, c.srv_next + 4096u, 0x4000u);
+    CHECK_EQ((long)r.retcode, 5000L, "block: parked send completes with the full count");
+
+    /* Drain the tail + close. */
+    inject_ack_win(dev, &c, c.srv_next + 5000u, 0x4000u);
+    CHECK_EQ((long)tcb_sndq(c.desc), 0L, "block: sndq fully drained");
+    conn_reset(dev, &c);
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "block: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "block: BUFLARGE baseline");
+}
+
+/* 6d. In-order receive to a parked RECV (byte-exact) + the ACK. */
+static void test_recv_inorder(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  pay[100], out[256];
+    UINT   ack;
+
+    fill_pattern(pay, sizeof(pay), 0x50u);
+    establish_active_opt(dev, 8103u, 0x2000u, 1460u, &c);
+
+    memset(out, 0, sizeof(out));
+    req_recv(&r, c.desc, out, sizeof(out), 0u);
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)REQ_PENDING, "recv: empty rxq -> parked");
+
+    g_capcount = 0;
+    inject_seg(dev, &c, c.cli_next, pay, 100u, 0u);
+    CHECK_EQ((long)r.retcode, 100L, "recv: parked RECV completes with 100 bytes");
+    CHECK(memcmp(out, pay, 100) == 0, "recv: delivered bytes are byte-exact");
+    CHECK_EQ((long)g_capcount, 1L, "recv: one ACK for the accepted data");
+    cap_tcp(NULL, &ack, NULL, NULL, NULL, NULL);
+    CHECK_EQ((long)ack, (long)(c.cli_next + 100u), "recv: ACK advanced RCV.NXT by 100");
+
+    conn_reset(dev, &c);
+    CHECK_EQ((long)tcb_inuse(), 0L, "recv: TCB pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "recv: BUFSMALL baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "recv: BUFLARGE baseline");
+}
+
+/* 6e. Retransmission overlap (head-trim), pure duplicate (ACK-only), and a gap
+ *     (drop + oooseg + dup-ACK carrying the old RCV.NXT). */
+static void test_recv_overlap_dup_gap(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  a[100], b[100], out[256];
+    UINT   oo0, ack;
+
+    fill_pattern(a, sizeof(a), 0x41u);          /* first 100 bytes               */
+    fill_pattern(b, sizeof(b), 0x80u);          /* the retransmission's payload  */
+    establish_active_opt(dev, 8104u, 0x2000u, 1460u, &c);
+
+    /* In order: 100 bytes at RCV.NXT -> queued (no reader). */
+    inject_seg(dev, &c, c.cli_next, a, 100u, 0u);
+    CHECK_EQ((long)tcb_rcvwnd(c.desc), (long)(NSFTCP_RCVWND_DEFAULT - 100),
+             "overlap: window shrank by the queued 100");
+
+    /* A retransmission overlapping below RCV.NXT (seq = cli_next+50, 100 bytes):
+     * the first 50 are already received, the last 50 are new. */
+    g_capcount = 0;
+    inject_seg(dev, &c, c.cli_next + 50u, b, 100u, 0u);
+    CHECK_EQ((long)g_capcount, 1L, "overlap: an ACK for the accepted tail");
+
+    /* Pure duplicate (exactly the first segment again) -> ACK only, no re-queue. */
+    oo0 = ctr_get("NSFTCP", "oooseg");
+    g_capcount = 0;
+    inject_seg(dev, &c, c.cli_next, a, 100u, 0u);
+    CHECK_EQ((long)g_capcount, 1L, "dup: pure duplicate draws an ACK");
+    CHECK_EQ((long)ctr_get("NSFTCP", "oooseg"), (long)oo0, "dup: not counted as oooseg");
+
+    /* A gap above RCV.NXT (RCV.NXT is now cli_next+150): seq = cli_next+300. */
+    g_capcount = 0;
+    inject_seg(dev, &c, c.cli_next + 300u, b, 40u, 0u);
+    CHECK_EQ((long)ctr_get("NSFTCP", "oooseg"), (long)oo0 + 1, "gap: counted oooseg");
+    CHECK_EQ((long)g_capcount, 1L, "gap: a dup-ACK is emitted");
+    cap_tcp(NULL, &ack, NULL, NULL, NULL, NULL);
+    CHECK_EQ((long)ack, (long)(c.cli_next + 150u), "gap: dup-ACK carries the old RCV.NXT");
+
+    /* Drain: 150 in-order bytes (a[0..100] then b's fresh tail b[50..100]). */
+    memset(out, 0, sizeof(out));
+    req_recv(&r, c.desc, out, sizeof(out), 0u);
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 150L, "overlap: reader drains 150 contiguous bytes");
+    CHECK(memcmp(out, a, 100) == 0, "overlap: first 100 = the original segment");
+    CHECK(memcmp(out + 100, b + 50, 50) == 0, "overlap: next 50 = the fresh tail");
+
+    conn_reset(dev, &c);
+    CHECK_EQ((long)tcb_inuse(), 0L, "overlap: TCB pool baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "overlap: BUFSMALL baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "overlap: BUFLARGE baseline");
+}
+
+/* 6f. rxq fills the advertised window (reaches 0), then a recv drains it and the
+ *     pure window-update ACK is emitted (the deadlock rule). */
+static void test_recv_window_update(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  chunk[1024], out[4096];
+    USHORT win;
+    int    i;
+
+    fill_pattern(chunk, sizeof(chunk), 0x21u);
+    establish_active_opt(dev, 8105u, 0x2000u, 1460u, &c);
+
+    /* Four 1024-byte segments fill the 4096 window without a reader. */
+    for (i = 0; i < 4; i++) {
+        inject_seg(dev, &c, c.cli_next + (UINT)(i * 1024), chunk, 1024u, 0u);
+    }
+    CHECK_EQ((long)tcb_rcvwnd(c.desc), 0L, "wndupd: advertised window reached 0");
+
+    /* A segment at the closed window is rejected (ACK, no accept). */
+    g_capcount = 0;
+    inject_seg(dev, &c, c.cli_next + 4096u, chunk, 100u, 0u);
+    CHECK_EQ((long)tcb_rcvwnd(c.desc), 0L, "wndupd: still 0 (segment rejected)");
+
+    /* Drain all 4096 -> window reopens from 0 -> a pure window-update ACK. */
+    memset(out, 0, sizeof(out));
+    req_recv(&r, c.desc, out, sizeof(out), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 4096L, "wndupd: recv drained the full 4096");
+    CHECK_EQ((long)tcb_rcvwnd(c.desc), (long)NSFTCP_RCVWND_DEFAULT, "wndupd: window fully reopened");
+    CHECK_EQ((long)g_capcount, 1L, "wndupd: a pure window-update ACK is emitted");
+    cap_tcp(NULL, NULL, NULL, NULL, NULL, NULL);
+    win = get16(g_cap + 20 + 14);
+    CHECK_EQ((long)win, (long)NSFTCP_RCVWND_DEFAULT, "wndupd: the update advertises the full window");
+    CHECK(memcmp(out, chunk, 1024) == 0, "wndupd: first drained chunk is byte-exact");
+
+    conn_reset(dev, &c);
+    CHECK_EQ((long)tcb_inuse(), 0L, "wndupd: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "wndupd: BUFLARGE baseline");
+}
+
+/* 6g. EOF matrix: data+FIN in one segment (data first, then EOF sticky); a pure
+ *     FIN then a recv (rc=0); a recv parked before a pure FIN (completes rc=0). */
+static void test_eof_matrix(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  pay[50], out[64];
+
+    /* --- data + FIN in one segment --- */
+    fill_pattern(pay, sizeof(pay), 0x70u);
+    establish_active_opt(dev, 8106u, 0x2000u, 1460u, &c);
+    memset(out, 0, sizeof(out));
+    req_recv(&r, c.desc, out, sizeof(out), 0u);
+    dispatch(&r);                               /* parks (empty rxq)             */
+    inject_seg(dev, &c, c.cli_next, pay, 50u, (UCHAR)TCP_FL_FIN);
+    CHECK_EQ((long)r.retcode, 50L, "eof: data+FIN delivers the data first");
+    CHECK(memcmp(out, pay, 50) == 0, "eof: the pre-FIN data is byte-exact");
+    /* the next recv sees EOF, and it is sticky */
+    req_recv(&r, c.desc, out, sizeof(out), 0u);
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 0L, "eof: recv after the FIN returns 0 (EOF)");
+    req_recv(&r, c.desc, out, sizeof(out), 0u);
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 0L, "eof: EOF is sticky");
+    conn_close(c.desc);                         /* CLOSE_WAIT -> LAST_ACK (FIN)   */
+    inject_ack_win(dev, &c, c.srv_next + 1u, 0x2000u);   /* ACK our FIN -> gone   */
+    CHECK_EQ((long)tcb_inuse(), 0L, "eof: connection torn down");
+
+    /* --- recv parked, then a pure FIN completes it rc=0 --- */
+    establish_active_opt(dev, 8107u, 0x2000u, 1460u, &c);
+    req_recv(&r, c.desc, out, sizeof(out), 0u);
+    dispatch(&r);                               /* parks                          */
+    CHECK_EQ((long)r.retcode, (long)REQ_PENDING, "eof: recv parked on empty rxq");
+    inject_seg(dev, &c, c.cli_next, NULL, 0u, (UCHAR)TCP_FL_FIN);   /* pure FIN    */
+    CHECK_EQ((long)r.retcode, 0L, "eof: a pure FIN completes the parked recv rc=0");
+    conn_close(c.desc);
+    inject_ack_win(dev, &c, c.srv_next + 1u, 0x2000u);
+    CHECK_EQ((long)tcb_inuse(), 0L, "eof: second connection torn down");
+    CHECK_EQ((long)large_inuse(), 0L, "eof: BUFLARGE baseline");
+    CHECK_EQ((long)small_inuse(), 0L, "eof: BUFSMALL baseline");
+}
+
+/* 6h. Copy-on-transmit recovery: a transmit failure leaves SND.NXT unmoved and
+ *     the data on the sndq; the next ACK event retries successfully. */
+static void test_xmit_failure(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[1000];
+    USHORT l0;
+
+    fill_pattern(src, sizeof(src), 0x11u);
+    establish_active_opt(dev, 8108u, 0x2000u, 1460u, &c);
+
+    dev->state = (UCHAR)NSFDEV_S_DOWN;          /* force dev_send rejection       */
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 1000L, "xmit: send buffered the 1000 bytes");
+    CHECK_EQ((long)g_capcount, 0L, "xmit: nothing reached the wire (device down)");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)c.srv_next, "xmit: SND.NXT not advanced past the failed segment");
+    CHECK_EQ((long)tcb_sndq(c.desc), 1000L, "xmit: the data survives on the sndq");
+
+    dev->state = (UCHAR)NSFDEV_S_UP;            /* recover the link               */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next, 0x2000u);   /* a window-update event       */
+    CHECK_EQ((long)g_capcount, 1L, "xmit: the next event retransmits the segment");
+    cap_seg(0, NULL, NULL, NULL, NULL, &l0);
+    CHECK_EQ((long)l0, 1000L, "xmit: the retried segment carries all 1000 bytes");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)(c.srv_next + 1000u), "xmit: SND.NXT advanced on the retry");
+
+    inject_ack_win(dev, &c, c.srv_next + 1000u, 0x2000u);
+    conn_reset(dev, &c);
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "xmit: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "xmit: BUFLARGE baseline");
+}
+
+/* 6i. ENOTCONN / EWOULDBLOCK error paths. */
+static void test_data_errors(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  buf[128];
+    UINT   desc;
+
+    /* SEND / RECV on an unconnected (fresh) socket -> ENOTCONN. */
+    desc = tcp_socket();
+    req_send(&r, desc, buf, 16u, 0u);
+    dispatch(&r);
+    CHECK_EQ((long)r.errno_, (long)NSF_ENOTCONN, "err: SEND on a CLOSED socket -> ENOTCONN");
+    req_recv(&r, desc, buf, sizeof(buf), 0u);
+    dispatch(&r);
+    CHECK_EQ((long)r.errno_, (long)NSF_ENOTCONN, "err: RECV on a CLOSED socket -> ENOTCONN");
+    tcp_close(desc);
+
+    /* Non-blocking RECV on an empty rxq -> EWOULDBLOCK. */
+    establish_active_opt(dev, 8109u, 0u, 1460u, &c);        /* peer window 0       */
+    req_recv(&r, c.desc, buf, sizeof(buf), (USHORT)RQ_F_NONBLOCK);
+    dispatch(&r);
+    CHECK_EQ((long)r.errno_, (long)NSF_EWOULDBLOCK, "err: non-blocking RECV empty -> EWOULDBLOCK");
+
+    /* Fill the send budget (window 0 -> nothing transmits, all buffered), then a
+     * non-blocking SEND with no room -> EWOULDBLOCK. */
+    {
+        static UCHAR big[4096];
+        fill_pattern(big, sizeof(big), 0x01u);
+        req_send(&r, c.desc, big, sizeof(big), 0u);
+        dispatch(&r);
+        CHECK_EQ((long)r.retcode, 4096L, "err: send buffered the whole budget");
+        CHECK_EQ((long)tcb_sndq(c.desc), 4096L, "err: sndq at the budget");
+        req_send(&r, c.desc, buf, 16u, (USHORT)RQ_F_NONBLOCK);
+        dispatch(&r);
+        CHECK_EQ((long)r.errno_, (long)NSF_EWOULDBLOCK, "err: non-blocking SEND, budget full -> EWOULDBLOCK");
+    }
+
+    conn_reset(dev, &c);
+    CHECK_EQ((long)tcb_inuse(), 0L, "err: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "err: BUFLARGE baseline");
+}
+
 int main(void)
 {
     DEVCFG  cfg;
     NETDEV *dev;
 
-    printf("=== nsf370 NSFTCP tests (M4-1 + M4-2) ===\n");
+    printf("=== nsf370 NSFTCP tests (M4-1 + M4-2 + M4-3) ===\n");
 
     sts_init();
     mm_init(NULL);
@@ -1158,6 +1683,18 @@ int main(void)
     test_malformed_options(dev);
     test_timewait_reclaim(dev);
 
+    /* M4-3: data path -- segmentation, sliding window, in-order receive, EOF,
+     * copy-on-transmit recovery, and the error paths. */
+    test_data_segmentation(dev);
+    test_send_window(dev);
+    test_send_block(dev);
+    test_recv_inorder(dev);
+    test_recv_overlap_dup_gap(dev);
+    test_recv_window_update(dev);
+    test_eof_matrix(dev);
+    test_xmit_failure(dev);
+    test_data_errors(dev);
+
     {
         NSFRQE rt;
         rqe_init(&rt, RQ_TERMAPI, 0u); rt.apptok = g_apptok;
@@ -1169,6 +1706,7 @@ int main(void)
     CHECK_EQ((long)tcb_inuse(), 0L, "final: TCPTCB pool fully returned");
     CHECK_EQ((long)sock_inuse(), 0L, "final: SOCKET pool fully returned");
     CHECK_EQ((long)small_inuse(), 0L, "final: BUFSMALL fully returned");
+    CHECK_EQ((long)large_inuse(), 0L, "final: BUFLARGE fully returned");
     CHECK_EQ((long)nsfevt_inuse(), 0L, "final: EVT pool at baseline");
 
     mm_shutdown();

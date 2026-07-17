@@ -48,10 +48,14 @@
 #define SOC_ST_CONNECTED  4     /* connected / has a peer                     */
 #define SOC_ST_CLOSING    5     /* teardown in progress                       */
 
-/* Parked-request slot selector for soc_park. */
+/* Parked-request slot selector for soc_park. SOC_PEND_SEND (M4-3) is the fourth
+ * peer of the three original slots: a blocking TCP SEND parks here when the send
+ * budget is full, and soc_destroy completes it like the others so no app task
+ * waits forever (ADR-0032). */
 #define SOC_PEND_RECV     0
 #define SOC_PEND_ACCEPT   1
 #define SOC_PEND_CONNECT  2
+#define SOC_PEND_SEND     3
 
 /* Address family / socket type (EZASOKET/BSD numbering; stored bytes only in
  * M3-1 -- the protocol layers interpret them from M3-3). */
@@ -119,10 +123,11 @@ struct sockcb {
     NSFRQE  *pend_recv;         /*  4  @52  parked blocking RECV, or NULL       */
     NSFRQE  *pend_accept;       /*  4  @56  parked blocking ACCEPT              */
     NSFRQE  *pend_connect;      /*  4  @60  parked blocking CONNECT             */
-    UINT     owner_ascb;        /*  4  @64  Phase-2 client identity / cleanup   */
-    STSCTR  *ctr;               /*  4  @68  reserved (global counters, 10.2)    */
-};                              /* 72 bytes */
-NSF_SIZE_ASSERT(SOCKCB, 72);
+    NSFRQE  *pend_send;         /*  4  @64  parked blocking SEND (TCP, M4-3)    */
+    UINT     owner_ascb;        /*  4  @68  Phase-2 client identity / cleanup   */
+    STSCTR  *ctr;               /*  4  @72  reserved (global counters, 10.2)    */
+};                              /* 76 bytes */
+NSF_SIZE_ASSERT(SOCKCB, 76);
 
 /* asm() external-symbol aliases (CLAUDE.md 3, "External symbols"): cc370 folds an
  * external name to 8 chars after upcasing and '_'->'@', so e.g. soc_destroy and

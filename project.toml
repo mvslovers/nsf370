@@ -508,6 +508,20 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tsttcph.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M4-3 NSFTCP on MVS: the data path over the real CTCI pair (live gate) -----
+# MVS-only (host = false): a TCP echo server over CTCI (0500/0501) + IP + the
+# request path, with a cthread APP SUBTASK receiving in 1 KB slices and echoing
+# each back. A host `nc 192.168.200.1 3010` proves recv + send byte-exact; a
+# transfer LARGER than the 4096 receive window (e.g. 16 KB) proves the ADR-0032
+# window-update-on-drain rule live -- the scenario that deadlocks if it is wrong.
+# Same MVS source set as TSTTCPH. Built + run with
+# -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
+[[test]]
+name = "TSTTCPD"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tsttcpd.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is

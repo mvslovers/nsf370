@@ -44,11 +44,15 @@
  * (which then owns it) or frees it on an early error -- never both, never
  * neither.
  *
- * SEND-QUEUE DIRECTION PIN (the copy-on-transmit rule, ADR lands with M4-3 when
- * the code exists to pin it). sndq holds application payload PBUFs until they
- * are ACKed; every (re)transmission builds a FRESH wire PBUF and COPIES the
- * slice being sent -- PBUFs stay single-owner, no reference counting (spec 3).
- * Nothing in M4-1 may be designed to hand an sndq PBUF straight to dev_send.
+ * DATA PATH (M4-3, ADR-0032). SEND is copy-on-transmit: sndq holds application
+ * payload PBUFs until they are ACKed; every (re)transmission builds a FRESH wire
+ * PBUF and COPIES the slice being sent -- PBUFs stay single-owner, no reference
+ * counting (spec 3), and a transmit failure loses only the copy (the retry seam
+ * M4-4's RTO plugs into). RECEIVE is trim-in-place: the inbound PBUF is trimmed
+ * past its headers and queued on the socket rxq AS-IS (ownership transfers), so
+ * nsftcp_input's free of `b` is now CONDITIONAL on an ownership flag threaded
+ * down the handler chain (set only on a successful rxq enqueue). An sndq PBUF is
+ * NEVER handed straight to dev_send.
  */
 
 #include "nsf.h"
@@ -70,9 +74,17 @@
 
 /* Default MSS when no MSS option is negotiated (RFC 1122 §4.2.2.6 / RFC 879:
  * 536 = 576-byte minimum reassembly buffer - 40 bytes of IP+TCP headers) and
- * the default receive window (spec 13.2: "default rcv_wnd 4096"). */
+ * the default receive window (spec 13.2: "default rcv_wnd 4096"). The receive
+ * budget IS the default window base: rcv_wnd is the LIVE advertised window,
+ * base - bytes queued on the socket rxq (M4-3, ADR-0032). */
 #define NSFTCP_MSS_DEFAULT     536
 #define NSFTCP_RCVWND_DEFAULT  4096
+
+/* Send budget (M4-3, ADR-0032): the byte ceiling on the sndq -- unsent + unacked
+ * application data held for a connection. A blocking SEND that would overflow it
+ * parks until ACKs free space; a non-blocking SEND takes what fits. TCPCONFIG
+ * SENDBUFRSIZE tunes it later (M5); a named constant for now (spec 13.2). */
+#define NSFTCP_SNDBUF          4096
 
 /* MSS clamp (M4-2). A peer-announced MSS is bounded to a sane range: never below
  * the RFC 879 floor, never above what one BUFLARGE data area can carry as a TCP
@@ -103,6 +115,9 @@
  * the M5 socket options NODELAY/KEEPALIVE, which will take the high bits). */
 #define TCB_F_APPCLOSED  0x01u  /* app issued CLOSE: the TCB owns its own death  */
 #define TCB_F_ONACCEPTQ  0x02u  /* linked on a listener's acceptq (via acceptlink)*/
+#define TCB_F_FINQ       0x04u  /* app closed: send our FIN after the sndq drains */
+#define TCB_F_RCVFIN     0x08u  /* peer's FIN consumed: recv returns EOF (sticky) */
+#define TCB_F_FINSENT    0x10u  /* our FIN is on the wire: never re-emit it        */
 
 /* TCP connection states (TCB.state), RFC 793 §3.2 order. CLOSED is 0 so a
  * freshly memset TCB is CLOSED. */
