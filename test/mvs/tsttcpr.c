@@ -4,38 +4,48 @@
  * TCP + the request path) driven by a cthread APP SUBTASK (the tsttcpd/tsttcph
  * pattern). ONE scenario, chosen because it needs no root on the host:
  *
- *   GUEST STREAMS to a host `nc` that gets kill -STOP'd mid-transfer. The guest
- *   accepts a connection and sends a large stream (STREAM_TOTAL) in slices. When
- *   the operator `kill -STOP`s the receiving `nc`, the host kernel keeps ACKing
- *   into its receive buffer until it fills, then advertises `win 0`. The guest
- *   has nothing in flight (everything ACKed) + a zero send window + data still to
- *   send -> the PERSIST timer arms and probes one byte beyond the window at
- *   backing-off intervals (RFC 1122 §4.2.2.17). `kill -CONT` drains the buffer,
- *   the peer re-advertises a window, the buffered data flows, and the parked
- *   blocking SEND completes -- the transfer finishes.
+ *   GUEST STREAMS to a host receiver that stops reading. The guest accepts a
+ *   connection and sends a large stream (STREAM_TOTAL) in slices. The receiver
+ *   uses a TINY SO_RCVBUF and simply does not recv for a while, so the host
+ *   advertises a small window, ACKs the little the guest sends, and closes the
+ *   window to 0. The guest has nothing in flight (everything ACKed) + a zero send
+ *   window + data still to send -> the PERSIST timer arms and probes one byte
+ *   beyond the window (RFC 1122 §4.2.2.17). When the receiver resumes reading the
+ *   window reopens, the buffered data flows, and the parked blocking SEND
+ *   completes -- the transfer finishes.
  *
- * This is the LIVE proof that the persist path works against a real stack: the
- * window probes are visible in tcpdump at backing-off intervals, and `wndprobe`
- * is non-zero in the stats. It also re-proves the M4-4 timer wiring does not
- * disturb the lossless path: `rexmit` MUST stay 0 (a zero-window stall arms
- * persist, never rexmit -- nothing is in flight; and the un-stalled stream is
- * ACKed well inside the 1 s base RTO). Genuine-loss RTO firing cannot be induced
- * on the lossless CTCI link without root on mvsdev, so the RTO behaviour is
- * HOST-proven (test/tsttcp.c) -- this gate does not approximate it.
+ * WHY A TINY SO_RCVBUF, NOT `kill -STOP` ON A BULK STREAM: with a default
+ * (autotuned) receive buffer, a bulk sender fills the window and typically leaves
+ * a segment in flight when the buffer goes full -- the host drops it and the guest
+ * REXMITs (SND.UNA < SND.NXT), so you observe rexmit, NOT persist. A tiny window
+ * lets the guest send only a little, get it ALL ACKed, then hit win 0 with nothing
+ * in flight and more queued -> clean persist. Drive it with a Python receiver:
+ *   s = socket.socket(); s.setsockopt(SOL_SOCKET, SO_RCVBUF, 2048)
+ *   s.connect(("192.168.200.1", 3020)); time.sleep(45)   # do NOT recv
+ *   ... then recv-drain to EOF.
+ *
+ * This proves the persist path works live: a one-byte zero-window probe is on the
+ * wire (`length 1` guest->host), `wndprobe` is non-zero, the guest RESPECTS the
+ * window (no over-send), and the transfer completes. `rexmit` MUST stay 0.
+ *
+ * KNOWN LIMIT (issue #40): the multi-tick BACKOFF CADENCE is NOT faithfully
+ * visible live -- the executive advances the clock one tick per STIMER wake while
+ * the STIMER is armed for the head delta, so a delta-N timer fires after
+ * N(N+1)/2 ticks (probe #2 lands ~21 s out, not ~2 s). The persist/RTO backoff is
+ * HOST-proven (test/tsttcp.c, deterministic nsftmr_run); the live cadence follows
+ * issue #40 (a foundational NSFTMR/NSFEVT fix, out of scope for this TCP work).
  *
  * Gated behind -DNSFCTCI_CUU (a live pair), like TSTTCPD. Build with
  * -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
  * Without it, a device-free skeleton that only proves the machinery links.
  *
- * Live procedure (host mvsdev, `tcpdump -ni tun0 tcp` up FIRST):
- *   1. `nc -N 192.168.200.1 3020 >/dev/null &`  -- connect + discard the stream.
- *   2. Within ~1 s (before the whole stream drains) `kill -STOP %1` (or the nc
- *      PID). tcpdump now shows the guest's window probes -- single-byte segments
- *      at 1 s, 2 s, 4 s, 8 s ... backing-off intervals, each drawing a `win 0`
- *      ACK from the STOP'd host.
- *   3. `kill -CONT %1` -- the host drains, re-advertises a window, and the
- *      transfer completes. The job spool prints `STREAM sent=... wndprobe=...`.
- *   Watch tcpdump; be ready to `P NSF` if a leftover STC holds the CTCI pair.
+ * Live procedure (host mvsdev; drive with plain FOREGROUND ssh -- a `setsid ... &`
+ * under ssh dies 255; use `ssh -f` for a detached tcpdump):
+ *   1. `ssh -f mvsdev "timeout 75 tcpdump -ni tun0 -tt tcp port 3020 > /tmp/f.txt"`
+ *   2. run the Python receiver above (foreground) -- it stalls ~45 s then drains.
+ *   3. read the job spool `STREAM sent=... wndprobe=... rexmit=...` and grep the
+ *      capture for `length 1` (the probe). Be ready to `P NSF` if a leftover STC
+ *      holds the CTCI pair.
  */
 #include "nsftcp.h"
 #include "nsfreq.h"
@@ -275,9 +285,14 @@ int main(void)
         /* A substantial transfer completed through the window mechanism ... */
         CHECK(g_stream_sent > (UINT)NSFTCP_RCVWND_DEFAULT,
               "stream: more than one window transferred");
-        /* ... and the STOP/CONT stall drove the PERSIST path (the new behaviour). */
+        /* ... and the stall drove the PERSIST path (the new behaviour). Asserted
+         * `> 0`, not `>= N`: the sustained backing-off cadence is host-proven
+         * (test/tsttcp.c), but live the executive tick-advance bug (issue #40)
+         * makes multi-tick timers fire after N(N+1)/2 ticks, so only ~1-2 probes
+         * land in a bounded stall. A single live probe + a completing transfer is
+         * the most this gate can honestly claim until #40 is fixed. */
         CHECK(sts_value("NSFTCP", "wndprobe") > 0u,
-              "persist: zero-window probes fired during the STOP (wndprobe > 0)");
+              "persist: a zero-window probe fired (wndprobe > 0; cadence per #40)");
     }
     /* The lossless link never loses a segment, so the retransmit timer must never
      * fire -- a zero-window stall arms PERSIST, not rexmit (nothing in flight). */

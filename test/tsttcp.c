@@ -2051,6 +2051,54 @@ static void test_timer_exclusive(NETDEV *dev)
     CHECK_EQ((long)tcb_inuse(), 0L, "excl: pool baseline");
 }
 
+/* 7i. Flow control: an ACK that advances SND.UNA while SHRINKING the window
+ *     (right edge fixed) must NOT let the sender transmit past the edge. The bug
+ *     (found live via the M4-4 persist trace) was tcp_process_ack running
+ *     tcp_output -- via send_resume -- with the advanced SND.UNA but the STALE
+ *     window, so the right edge appeared to slide right by the acked amount and
+ *     the sender over-sent. The window must be updated BEFORE any transmit. */
+static void test_flowctl_no_oversend(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[5000];
+
+    fill_pattern(src, sizeof(src), 0x41u);
+    establish_active_opt(dev, 8128u, 1460u, 1460u, &c);    /* peer window = 1 MSS */
+
+    /* A blocking send larger than the send budget PARKS (pend_send set) -- this is
+     * the path the bug lives on: an ACK's send_resume runs tcp_output, and it must
+     * see the UPDATED window. (A send that fits completes at once and never calls
+     * send_resume, so the bug hides -- exactly why M4-3's tests missed it.) */
+    req_send(&r, c.desc, src, sizeof(src), 0u);            /* 5000 > SNDBUF -> parks */
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)REQ_PENDING, "flowctl: blocking send parked");
+    CHECK_EQ((long)g_capcount, 1L, "flowctl: one MSS in flight under the 1460 window");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)(c.srv_next + 1460u),
+             "flowctl: SND.NXT at the window right edge");
+
+    /* ACK +1024 and shrink the window to 436: 1024 + 436 == 1460, so the right
+     * edge is UNCHANGED. Correct: send_resume refills the parked send but nothing
+     * new goes on the wire. The bug ran tcp_output with the advanced SND.UNA and
+     * the STALE 1460 window -> right edge slid to 2484 -> over-sent 1024 bytes. */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next + 1024u, 436u);
+    CHECK_EQ((long)g_capcount, 0L, "flowctl: ACK+shrunk window must NOT send past the edge");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)(c.srv_next + 1460u),
+             "flowctl: SND.NXT unchanged (no over-send beyond the window)");
+
+    /* A genuine window opening (same ack, larger window) resumes the sender. */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next + 1024u, 1460u);
+    CHECK_EQ((long)g_capcount, 1L, "flowctl: a genuine window opening resumes the sender");
+
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "flowctl: pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "flowctl: BUFLARGE baseline");
+}
+
 int main(void)
 {
     DEVCFG  cfg;
@@ -2138,6 +2186,7 @@ int main(void)
     test_persist(dev);
     test_partial_ack_backoff(dev);
     test_timer_exclusive(dev);
+    test_flowctl_no_oversend(dev);
 
     {
         NSFRQE rt;

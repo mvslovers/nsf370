@@ -1644,13 +1644,21 @@ algorithm details follow RFC 793/1122 directly.
 > MAXTRIES give-up (parked SEND → `ETIMEDOUT`), SYN loss (active + passive,
 > byte-identical incl. the MSS option), FIN loss (`SND.NXT` not re-incremented),
 > persist probe/backoff/window-reopen (`wndprobe` exact), partial-ACK-resets-
-> backoff, and the rexmit⊕persist invariant. **Validated live on MVSCE**
-> (`test/mvs/tsttcpr.c`, real 0500/0501): a guest stream stalled by `kill -STOP`
-> on the host `nc` drives visible backing-off window probes in tcpdump and
-> `wndprobe > 0`; the M4-3 regression (`test/mvs/tsttcpd.c`) re-runs green with
-> `rexmit == 0`. Genuine-loss RTO firing cannot be induced on the lossless CTCI
-> link without root, so the RTO/backoff/give-up path is host-proven; the
-> drop/dup/reorder matrix is M4-6.
+> backoff, the rexmit⊕persist invariant, and (found live, fixed) a latent **M4-3**
+> flow-control over-send — advancing `SND.UNA` before the window update let the
+> sender transmit past a peer's shrunk window; `tcp_update_window` now precedes the
+> transmit (`test_flowctl_no_oversend`). **Live state (MVSCE, real 0500/0501):**
+> the M4-3 lossless regression re-runs green with `rexmit == 0`
+> (`test/mvs/tsttcpd.c`, batch CC 0); persist was driven live
+> (`test/mvs/tsttcpr.c`, a tiny-`SO_RCVBUF` host receiver → `win 0`) — the guest
+> respects the window, a one-byte zero-window probe fires (`wndprobe > 0`), the
+> connection survives and the full 4 MB completes on reopen. The multi-tick
+> **backoff cadence is NOT faithfully visible live** (probes sparse, intervals
+> distorted) due to a foundational executive tick-advance bug — **issue #40**
+> (`nsftmr_run(1u)` per wake vs. a head-delta-armed STIMER → a delta-N timer fires
+> after N(N+1)/2 ticks; also mis-times the production 2MSL). The persist/RTO
+> **policy + backoff** are host-proven; live cadence follows issue #40.
+> Genuine-loss RTO firing needs root; the drop/dup/reorder matrix is M4-6.
 
 ### 13.1 Responsibilities
 
@@ -2166,11 +2174,16 @@ to free the TCB from a callback). Persist never gives up while the peer answers
 give-up. Fixed RTO only — Karn + adaptive RTT (`srtt`/`rttvar`) and fast
 retransmit (`dupacks` counts only) are M5. TCB unchanged (200 B — the RTO-state
 fields pre-existed; one new flag bit); no new external symbols. §13.1 + the §13
-M4-4 status note. Host: TSTTCP 529→678 (lost-segment/backoff-giveup/SYN-loss/
-establish-resets-backoff/FIN-loss/persist/partial-ACK/invariant), ASan+UBSan
-clean; suite 1791→1940.
-Live: TSTTCPR (persist STOP/CONT, `wndprobe > 0`, probes visible in tcpdump),
-TSTTCPD M4-3 regression with `rexmit == 0`. Conformance: `ETIMEDOUT` now live.
+M4-4 status note. Also fixes a latent **M4-3** flow-control over-send found live
+(`tcp_update_window` now precedes the ACK-driven transmit, RFC 793 p.72 step 5;
+`test_flowctl_no_oversend`). Host: TSTTCP 529→692 (lost-segment/backoff-giveup/
+SYN-loss/establish-resets-backoff/FIN-loss/persist/partial-ACK/invariant/
+flowctl-no-oversend), ASan+UBSan clean; suite 1791→1954.
+Live: TSTTCPD M4-3 regression green with `rexmit == 0`; TSTTCPR persist driven
+live (tiny-`SO_RCVBUF` receiver → `win 0`, window respected, one-byte probe, 4 MB
+completes) — the multi-tick backoff **cadence** is distorted live by a foundational
+executive tick-advance bug (**issue #40**), so persist/RTO backoff is host-proven
+and the live cadence follows #40. Conformance: `ETIMEDOUT` now live.
 
 **v1.31: M4-3 — TCP data path (segmentation, sliding window, in-order receive).**
 ESTABLISHED carries payload (ADR-0032). **Send = copy-on-transmit** — `sndq`

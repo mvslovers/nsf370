@@ -1192,6 +1192,15 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
         tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* ACKs something unsent -> ACK+drop*/
         return 0;
     }
+    /* Update the send window BEFORE any transmit below (RFC 793 p.72 step 5). The
+     * progress branch advances SND.UNA and immediately re-clocks the sender
+     * (send_resume -> tcp_output); if the window were still stale there, advancing
+     * SND.UNA past a SHRUNK window would slide the right edge right and the sender
+     * would transmit beyond it (found live via the M4-4 persist trace: a segment
+     * sent past the peer's window, dropped, then retransmitted -- rexmit instead of
+     * persist; test_flowctl_no_oversend). */
+    tcp_update_window(tcb, seg);
+
     if (TCP_SEQ_GT(seg->ack, tcb->snd_una)) {
         UINT acked = seg->ack - tcb->snd_una;   /* new data / our FIN acknowledged */
         tcb->snd_una = seg->ack;
@@ -1211,7 +1220,6 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
         tcb->dupacks = (UCHAR)(tcb->dupacks + 1u);   /* run length (counting only) */
         tcpc(tcp_dupack);                       /* a received duplicate ACK (M4-3)  */
     }
-    tcp_update_window(tcb, seg);
 
     /* Clock out data / the FIN with the possibly-opened window (states that still
      * transmit; a closing/destroying state is a no-op here or handled below). */

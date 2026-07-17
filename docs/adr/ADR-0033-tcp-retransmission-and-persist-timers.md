@@ -84,6 +84,23 @@ refactored to share `tcp_conn_abort`), then drives the ADR-0031 end-of-life path
 A SYN_SENT give-up is the classic connect timeout; a SYN_RCVD give-up reclaims the
 embryonic child. A progress ACK resets `backoff`/`rto` to base and `dupacks` to 0.
 
+### 3a. Window update must precede the send (an over-send fix found live)
+
+The live persist gate surfaced a latent **M4-3** flow-control bug in
+`tcp_process_ack`: the progress branch advanced `SND.UNA` and immediately
+re-clocked the sender (`tcp_send_resume` → `tcp_output`) **before**
+`tcp_update_window` ran. With the window still stale, advancing `SND.UNA` past a
+peer's **shrunk** window slid the right edge (`SND.UNA + SND.WND`) rightward, and
+the sender transmitted beyond it. On the wire: the guest sent a segment past the
+peer's advertised window, the peer dropped it and advertised `win 0`, and the
+guest retransmitted — surfacing as **rexmit instead of persist**. The bug hid on
+the host until now because it only fires on the **parked-send** path
+(`send_resume` early-returns when `pend_send == NULL`), which M4-3's tests never
+combined with a shrinking window, and M4-3's live gate had the guest *receiving*,
+never sending under flow control. Fix: `tcp_update_window` moves **before** the
+`SND.UNA` advance / any transmit (RFC 793 p.72 step 5 order). Reproduced +
+guarded by `test_flowctl_no_oversend` (fails pre-fix: over-sends 1024 bytes).
+
 ### 4. Persist: never gives up while the peer answers (the documented choice)
 
 On a persist expiry `tcp_persist_expire` sends ONE byte of sndq data beyond the
@@ -123,12 +140,20 @@ ACK (which would hide the backoff the live test is meant to show).
 - **TCB unchanged (200 B):** the RTO-state fields (`rto`, `backoff`, `dupacks`)
   already existed for M4-4; the only new state is one flag bit (`TCB_F_PROBEACK`).
   No new external symbols — every M4-4 helper is `static`.
-- **Live coverage:** the persist path is proven live (`test/mvs/tsttcpr.c`: a
-  guest stream stalled by `kill -STOP` on the host `nc`, probes visible in
-  tcpdump, `wndprobe > 0`); the M4-3 lossless regression re-runs green with
-  `rexmit == 0` (`test/mvs/tsttcpd.c`). Genuine-loss RTO firing cannot be induced
-  on the lossless link without root on mvsdev, so the RTO/backoff/give-up
-  behaviour is **host-proven** (`test/tsttcp.c`) — the systematic
+- **Live coverage (honest state).** The M4-3 lossless regression re-runs green
+  live with `rexmit == 0` (`test/mvs/tsttcpd.c`, batch CC 0). The persist path was
+  driven live (`test/mvs/tsttcpr.c`: a guest stream against a host receiver with a
+  tiny `SO_RCVBUF` that stops reading → `win 0`): the guest **respects the window**
+  (no over-send, the §3a fix), a genuine one-byte zero-window probe fires
+  (`wndprobe > 0`), the connection survives, and the full 4 MB transfer completes
+  on window reopen. **But the multi-tick backoff cadence is NOT faithfully visible
+  live** — probes are sparse and the intervals distorted by a foundational
+  executive tick-advance bug (**issue #40**: `nsftmr_run(1u)` per wake while the
+  STIMER is armed for the head delta → a delta-N timer fires after N(N+1)/2 ticks;
+  this also mis-times the production 2MSL). So the persist **policy + backoff** and
+  the rexmit **RTO/backoff/give-up** are **host-proven** (`test/tsttcp.c`,
+  deterministic `nsftmr_run`); the live cadence follows issue #40. Genuine-loss
+  RTO firing on a truly lossless link needs root — the systematic
   drop/dup/reorder matrix is M4-6.
 - `NSF_ETIMEDOUT` (60) is now actively returned (connect and rexmit give-up) —
   noted in `docs/ezasoket-conformance.md`.
