@@ -28,6 +28,13 @@
  * wire (`length 1` guest->host), `wndprobe` is non-zero, the guest RESPECTS the
  * window (no over-send), and the transfer completes. `rexmit` MUST stay 0.
  *
+ * VACUOUS-GREEN WARNING: the persist assertions are gated by `if (g_conns >= 1)`.
+ * An UNDRIVEN run (no receiver connected during the accept window) ends with
+ * conns=0 and passes WITHOUT exercising persist at all -- a green that proves
+ * nothing. A real persist pass requires the tiny-SO_RCVBUF receiver connected
+ * during the accept window; confirm `wndprobe` is NON-ZERO and `conns=1` in the
+ * spool before treating a run as a persist gate.
+ *
  * KNOWN LIMIT (issue #40): the multi-tick BACKOFF CADENCE is NOT faithfully
  * visible live -- the executive advances the clock one tick per STIMER wake while
  * the STIMER is armed for the head delta, so a delta-N timer fires after
