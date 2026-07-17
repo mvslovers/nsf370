@@ -1133,6 +1133,37 @@ static UINT tcb_sndq(UINT desc)   { TCB *t = tcb_of(desc); return (t != NULL) ? 
 static UINT tcb_rcvwnd(UINT desc) { TCB *t = tcb_of(desc); return (t != NULL) ? t->rcv_wnd : 0u; }
 static UINT tcb_sndnxt(UINT desc) { TCB *t = tcb_of(desc); return (t != NULL) ? t->snd_nxt : 0u; }
 
+/* M4-4 timer peeks: is a TCB's retransmit / persist timer armed, and its current
+ * RTO / backoff (all public TCB / TMR fields, nsftcp.h / nsftmr.h). */
+static int  tcb_rexmit_on(UINT desc)  { TCB *t = tcb_of(desc); return (t != NULL) && t->t_rexmit.state == (UCHAR)TMR_PENDING; }
+static int  tcb_persist_on(UINT desc) { TCB *t = tcb_of(desc); return (t != NULL) && t->t_persist.state == (UCHAR)TMR_PENDING; }
+static UINT tcb_rto(UINT desc)        { TCB *t = tcb_of(desc); return (t != NULL) ? (UINT)t->rto : 0u; }
+static UINT tcb_backoff(UINT desc)    { TCB *t = tcb_of(desc); return (t != NULL) ? (UINT)t->backoff : 0u; }
+
+/* Drive `ticks` logical ticks, then flush any segment a fired timer emitted into
+ * the capture (the timer path has no dispatch/inject wrapper of its own). */
+static void tick(UINT ticks)
+{
+    nsftmr_run(ticks);
+    nsfdev_kick_output();
+}
+
+/* The interval the retransmit/persist timer is armed for after k no-progress
+ * expiries: base << min(k, 6), capped at the 64 s max. k=0 is the first arming. */
+static UINT rexmit_interval(int k)
+{
+    UINT shift = (k > 6) ? 6u : (UINT)k;
+    UINT t     = (UINT)NSFTCP_RTO_TICKS << shift;
+    return (t > (UINT)NSFTCP_RTO_MAX_TICKS) ? (UINT)NSFTCP_RTO_MAX_TICKS : t;
+}
+
+/* The invariant that keeps the give-up teardown safe (ADR-0033): the retransmit
+ * and persist timers are NEVER armed at the same time. */
+static void check_excl(UINT desc, const char *tag)
+{
+    CHECK(!(tcb_rexmit_on(desc) && tcb_persist_on(desc)), tag);
+}
+
 /* Fill n bytes with a recognizable, position-dependent pattern. */
 static void fill_pattern(UCHAR *buf, USHORT n, UCHAR base)
 {
@@ -1618,12 +1649,414 @@ static void test_data_errors(NETDEV *dev)
     CHECK_EQ((long)large_inuse(), 0L, "err: BUFLARGE baseline");
 }
 
+/* ==========================================================================
+ * 7. M4-4: retransmission (fixed RTO + exponential backoff) and zero-window
+ *    persist probes (ADR-0033). The loop is still NOT running; a lost segment
+ *    is simply a captured wire PBUF whose ACK is never injected, and the timer
+ *    seam is driven by nsftmr_run(ticks) -- no threads. Every retransmission is
+ *    asserted byte-identical, every backoff interval and counter is exact.
+ * ========================================================================== */
+
+/* 7a. Lost data segment: retransmit EXACTLY ONE segment at SND.UNA (go-back-N
+ *     restraint), byte-identical; a progress ACK resets backoff and re-arms the
+ *     timer for the remainder. */
+static void test_rexmit_lost_data(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[300], fl;
+    UINT   seq0, r0;
+    USHORT len0;
+
+    fill_pattern(src, sizeof(src), 0x41u);
+    establish_active_opt(dev, 8120u, 0x2000u, 100u, &c);   /* MSS 100, wide window */
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 300L, "rxt: 300 bytes buffered");
+    CHECK_EQ((long)g_capcount, 3L, "rxt: 300 over MSS 100 -> 3 segments in flight");
+    CHECK(tcb_rexmit_on(c.desc), "rxt: rexmit armed for in-flight data");
+    check_excl(c.desc, "rxt: rexmit XOR persist (data in flight)");
+
+    /* The three wire PBUFs were captured + freed (dropped: no ACK). Tick to RTO:
+     * ONE segment retransmitted starting at SND.UNA (RFC 1122 §4.2.3.1). */
+    r0 = ctr_get("NSFTCP", "rexmit");
+    g_capcount = 0;
+    tick(NSFTCP_RTO_TICKS);
+    CHECK_EQ((long)g_capcount, 1L, "rxt: RTO retransmits exactly ONE segment");
+    CHECK_EQ((long)ctr_get("NSFTCP", "rexmit"), (long)r0 + 1, "rxt: rexmit counted");
+    cap_seg(0, &fl, &seq0, NULL, NULL, &len0);
+    CHECK_EQ((long)seq0, (long)c.srv_next, "rxt: retransmit seq = SND.UNA");
+    CHECK_EQ((long)len0, 100L, "rxt: retransmit len = one MSS from SND.UNA");
+    CHECK(memcmp(cap_seg(0, NULL, NULL, NULL, NULL, NULL), src, 100) == 0,
+          "rxt: retransmitted payload byte-identical to the original");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)(c.srv_next + 300u),
+             "rxt: SND.NXT unchanged by a retransmit");
+    CHECK_EQ((long)tcb_backoff(c.desc), 1L, "rxt: backoff doubled once");
+
+    /* A progress ACK (first 100) resets backoff and re-arms the timer at base for
+     * the remaining 200. */
+    inject_ack_win(dev, &c, c.srv_next + 100u, 0x2000u);
+    CHECK_EQ((long)tcb_sndq(c.desc), 200L, "rxt: 100 acked, 200 remain");
+    CHECK(tcb_rexmit_on(c.desc), "rxt: timer re-armed for the remainder");
+    CHECK_EQ((long)tcb_backoff(c.desc), 0L, "rxt: progress reset the backoff");
+    CHECK_EQ((long)tcb_rto(c.desc), (long)NSFTCP_RTO_TICKS, "rxt: RTO back to base");
+
+    inject_ack_win(dev, &c, c.srv_next + 300u, 0x2000u);   /* ACK the rest */
+    CHECK(!tcb_rexmit_on(c.desc), "rxt: all acked -> rexmit cancelled");
+
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "rxt: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "rxt: BUFLARGE baseline");
+}
+
+/* 7b. Backoff to the cap + MAXTRIES give-up: the parked SEND completes ETIMEDOUT
+ *     and the connection is torn down (leak gate). */
+static void test_rexmit_giveup(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[6000];
+    UINT   r0;
+    int    k;
+
+    fill_pattern(src, sizeof(src), 0x30u);
+    establish_active_opt(dev, 8121u, 1460u, 1460u, &c);    /* window = 1 MSS */
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);            /* 6000 > SNDBUF -> parks */
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)REQ_PENDING, "giveup: blocking send parked");
+    CHECK_EQ((long)g_capcount, 1L, "giveup: one segment on the wire");
+    CHECK(tcb_rexmit_on(c.desc), "giveup: rexmit armed");
+
+    /* No ACK ever. Each expiry retransmits one segment and doubles the backoff
+     * (capped at NSFTCP_RTO_MAX_TICKS). */
+    r0 = ctr_get("NSFTCP", "rexmit");
+    for (k = 0; k < NSFTCP_RTO_MAXTRIES; k++) {
+        UINT rto = tcb_rto(c.desc);
+        CHECK_EQ((long)rto, (long)rexmit_interval(k), "giveup: RTO backed off as expected");
+        tick(rto);
+    }
+    CHECK_EQ((long)ctr_get("NSFTCP", "rexmit"), (long)r0 + NSFTCP_RTO_MAXTRIES,
+             "giveup: exactly MAXTRIES retransmissions");
+    CHECK(tcb_of(c.desc) != NULL, "giveup: alive through MAXTRIES retransmits");
+
+    tick(tcb_rto(c.desc));                                  /* the give-up expiry */
+    CHECK_EQ((long)r.errno_, (long)NSF_ETIMEDOUT, "giveup: parked SEND -> ETIMEDOUT");
+    CHECK_EQ((long)tcb_inuse(), 0L, "giveup: TCB pool baseline after teardown");
+    CHECK_EQ((long)large_inuse(), 0L, "giveup: BUFLARGE baseline");
+}
+
+/* 7c. SYN loss (active open): the SYN is retransmitted byte-identical (incl the
+ *     MSS option); the connect gives up with ETIMEDOUT (the classic connect
+ *     timeout). */
+static void test_rexmit_syn_active(NETDEV *dev)
+{
+    NSFRQE r;
+    UINT   desc, synseq, r0;
+    UCHAR  fl, syn0[24];
+    USHORT sport, len0;
+    int    k;
+
+    (void)dev;                                  /* active open uses the route, not dev */
+    desc = tcp_socket();
+    CHECK(desc != 0u, "syn-rxt: socket");
+    rqe_init(&r, RQ_CONNECT, desc);
+    r.p1 = PEER_IP; r.p2 = 8122u;
+    r.retcode = REQ_PENDING;                    /* detectable if it does not park  */
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)g_capcount, 1L, "syn-rxt: connect sent one SYN");
+    CHECK_EQ((long)r.retcode, (long)REQ_PENDING, "syn-rxt: connect parked");
+    cap_tcp(&synseq, NULL, &fl, &sport, NULL, NULL);
+    CHECK_EQ((long)fl, (long)TCP_FL_SYN, "syn-rxt: SYN only");
+    memcpy(syn0, g_cap + 20, 24);          /* TCP header + MSS option (byte-exact) */
+    CHECK(tcb_rexmit_on(desc), "syn-rxt: rexmit armed for the SYN");
+
+    r0 = ctr_get("NSFTCP", "rexmit");
+    g_capcount = 0;
+    tick(NSFTCP_RTO_TICKS);
+    CHECK_EQ((long)g_capcount, 1L, "syn-rxt: RTO retransmits the SYN");
+    CHECK_EQ((long)ctr_get("NSFTCP", "rexmit"), (long)r0 + 1, "syn-rxt: rexmit counted");
+    cap_seg(0, &fl, NULL, NULL, NULL, &len0);
+    CHECK_EQ((long)fl, (long)TCP_FL_SYN, "syn-rxt: retransmit is SYN only");
+    CHECK_EQ((long)len0, 0L, "syn-rxt: SYN carries no payload");
+    CHECK(memcmp(g_cap + 20, syn0, 24) == 0,
+          "syn-rxt: SYN retransmit byte-identical (seq + MSS option)");
+
+    for (k = 0; k < NSFTCP_RTO_MAXTRIES + 2 && tcb_of(desc) != NULL; k++) {
+        tick(tcb_rto(desc));
+    }
+    CHECK(tcb_of(desc) == NULL, "syn-rxt: connection torn down after give-up");
+    CHECK_EQ((long)r.errno_, (long)NSF_ETIMEDOUT, "syn-rxt: connect completed ETIMEDOUT");
+    CHECK_EQ((long)tcb_inuse(), 0L, "syn-rxt: pool baseline");
+}
+
+/* 7c'. Establishment resets the backoff: a SYN that was retransmitted must NOT
+ *      carry its grown backoff/RTO into the data phase (the handshake converges on
+ *      tcp_enter_established, which neither ACK-progress path resets otherwise). */
+static void test_rexmit_estab_resets_backoff(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64], src[100];
+    USHORT total, sport;
+    UINT   desc, synseq;
+    UCHAR  flags;
+    UINT   peerISS = 0x51000000u;
+
+    desc = tcp_socket();
+    CHECK(desc != 0u, "estab-rst: socket");
+    rqe_init(&r, RQ_CONNECT, desc);
+    r.p1 = PEER_IP; r.p2 = 8127u;
+    r.retcode = REQ_PENDING;
+    g_capcount = 0;
+    dispatch(&r);
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+
+    tick(NSFTCP_RTO_TICKS);                      /* retransmit the SYN once */
+    CHECK_EQ((long)tcb_backoff(desc), 1L, "estab-rst: SYN retransmit grew the backoff");
+
+    /* Complete the handshake -> ESTABLISHED must reset backoff/RTO to base. */
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 8127u, sport, peerISS, synseq + 1u,
+                      (UCHAR)(TCP_FL_SYN | TCP_FL_ACK), 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(desc), (long)TCP_ESTABLISHED, "estab-rst: ESTABLISHED");
+    CHECK_EQ((long)tcb_backoff(desc), 0L, "estab-rst: establishment reset the backoff");
+    CHECK_EQ((long)tcb_rto(desc), (long)NSFTCP_RTO_TICKS, "estab-rst: RTO reset to base");
+
+    /* The first data send must arm rexmit at the BASE interval, not the grown one.*/
+    fill_pattern(src, sizeof(src), 0x41u);
+    req_send(&r, desc, src, sizeof(src), 0u);
+    dispatch(&r);
+    CHECK(tcb_rexmit_on(desc), "estab-rst: first data send armed rexmit");
+    CHECK_EQ((long)tcb_rto(desc), (long)NSFTCP_RTO_TICKS, "estab-rst: first-send RTO at base");
+
+    {
+        CONN c;
+        memset(&c, 0, sizeof(c));
+        c.desc = desc; c.lport = sport; c.cport = 8127u;
+        c.srv_next = synseq + 1u; c.cli_next = peerISS + 1u;
+        conn_reset(dev, &c);
+    }
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "estab-rst: pool baseline");
+}
+
+/* 7d. SYN|ACK loss (passive open): the embryonic child retransmits its SYN|ACK
+ *     byte-identical; after give-up the child is reclaimed and the listener
+ *     survives. */
+static void test_rexmit_synack(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64], synack0[24];
+    USHORT total, lport = g_listen_port++;
+    USHORT cport = 42000u;
+    UINT   cliISS = 0x70000000u, r0;
+    UINT   ldesc;
+    int    k;
+
+    ldesc = tcp_socket();
+    CHECK(ldesc != 0u, "synack-rxt: listen socket");
+    rqe_init(&r, RQ_BIND, ldesc); r.p1 = HOME_IP; r.p2 = (UINT)lport; dispatch(&r);
+    rqe_init(&r, RQ_LISTEN, ldesc); r.p1 = 4u; dispatch(&r);
+
+    g_capcount = 0;
+    total = build_tcp(pkt, PEER_IP, HOME_IP, cport, lport, cliISS, 0u,
+                      (UCHAR)TCP_FL_SYN, 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)g_capcount, 1L, "synack-rxt: SYN -> SYN|ACK");
+    memcpy(synack0, g_cap + 20, 24);       /* the child's SYN|ACK (TCP hdr + MSS) */
+    CHECK_EQ((long)(g_cap[33] & (TCP_FL_SYN | TCP_FL_ACK)),
+             (long)(TCP_FL_SYN | TCP_FL_ACK), "synack-rxt: SYN|ACK");
+    CHECK_EQ((long)tcb_inuse(), 2L, "synack-rxt: listener + embryonic child");
+
+    r0 = ctr_get("NSFTCP", "rexmit");
+    g_capcount = 0;
+    tick(NSFTCP_RTO_TICKS);
+    CHECK_EQ((long)g_capcount, 1L, "synack-rxt: RTO retransmits the SYN|ACK");
+    CHECK_EQ((long)ctr_get("NSFTCP", "rexmit"), (long)r0 + 1, "synack-rxt: rexmit counted");
+    CHECK(memcmp(g_cap + 20, synack0, 24) == 0,
+          "synack-rxt: SYN|ACK retransmit byte-identical (incl MSS)");
+
+    /* Continue to give-up using the deterministic backoff sequence (no child
+     * descriptor to peek); the child is reclaimed, the listener survives. */
+    for (k = 1; k <= NSFTCP_RTO_MAXTRIES + 2 && tcb_inuse() > 1u; k++) {
+        tick(rexmit_interval(k));
+    }
+    CHECK_EQ((long)tcb_inuse(), 1L, "synack-rxt: child reclaimed, listener survives");
+
+    conn_close(ldesc);
+    CHECK_EQ((long)tcb_inuse(), 0L, "synack-rxt: listener closed -> pool baseline");
+}
+
+/* 7e. FIN loss: the FIN is re-emitted at its own sequence and SND.NXT is NOT
+ *     re-incremented (the FINSENT regression); the late ACK completes teardown. */
+static void test_rexmit_fin(NETDEV *dev)
+{
+    CONN   c;
+    UINT   nxt0, r0, rseq;
+    UCHAR  fl;
+    USHORT len0;
+
+    establish_active_opt(dev, 8123u, 0x2000u, 1460u, &c);
+    conn_close(c.desc);                        /* FIN sent, FIN_WAIT_1 */
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_FIN_WAIT_1, "fin-rxt: FIN_WAIT_1");
+    CHECK(tcb_rexmit_on(c.desc), "fin-rxt: rexmit armed for the FIN");
+    nxt0 = tcb_sndnxt(c.desc);                 /* = srv_next + 1 */
+
+    r0 = ctr_get("NSFTCP", "rexmit");
+    g_capcount = 0;
+    tick(NSFTCP_RTO_TICKS);
+    CHECK_EQ((long)g_capcount, 1L, "fin-rxt: RTO retransmits the FIN");
+    CHECK_EQ((long)ctr_get("NSFTCP", "rexmit"), (long)r0 + 1, "fin-rxt: rexmit counted");
+    cap_seg(0, &fl, &rseq, NULL, NULL, &len0);
+    CHECK_EQ((long)(fl & TCP_FL_FIN), (long)TCP_FL_FIN, "fin-rxt: retransmit carries FIN");
+    CHECK_EQ((long)len0, 0L, "fin-rxt: FIN retransmit has no payload");
+    CHECK_EQ((long)rseq, (long)c.srv_next, "fin-rxt: FIN seq = its original sequence");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)nxt0,
+             "fin-rxt: SND.NXT NOT re-incremented (FINSENT stays set)");
+
+    inject_ack_win(dev, &c, c.srv_next + 1u, 0x2000u);     /* ACK the FIN */
+    CHECK_EQ((long)tcb_state(c.desc), (long)TCP_FIN_WAIT_2, "fin-rxt: FIN acked -> FIN_WAIT_2");
+    CHECK(!tcb_rexmit_on(c.desc), "fin-rxt: FIN acked -> rexmit cancelled");
+
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "fin-rxt: pool baseline");
+}
+
+/* 7f. Zero-window persist: probe one byte beyond the window at backing-off
+ *     intervals; a window update resumes the full send; wndprobe exact; rexmit
+ *     and persist never armed together. */
+static void test_persist(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[500], fl;
+    UINT   pseq;
+    USHORT plen;
+
+    fill_pattern(src, sizeof(src), 0x61u);
+    establish_active_opt(dev, 8124u, 0u, 1460u, &c);       /* peer window 0 */
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 500L, "persist: 500 buffered (window 0 -> nothing sent)");
+    CHECK_EQ((long)g_capcount, 0L, "persist: zero window -> no data segment");
+    CHECK(tcb_persist_on(c.desc), "persist: persist armed (zero window, data waiting)");
+    CHECK(!tcb_rexmit_on(c.desc), "persist: rexmit NOT armed (nothing in flight)");
+    check_excl(c.desc, "persist: rexmit XOR persist");
+
+    /* First probe at the base interval: ONE byte beyond the window at SND.NXT. */
+    g_capcount = 0;
+    tick(NSFTCP_RTO_TICKS);
+    CHECK_EQ((long)g_capcount, 1L, "persist: base interval -> one probe");
+    CHECK_EQ((long)ctr_get("NSFTCP", "wndprobe"), 1L, "persist: wndprobe counted");
+    cap_seg(0, &fl, &pseq, NULL, NULL, &plen);
+    CHECK_EQ((long)plen, 1L, "persist: probe carries exactly one byte");
+    CHECK_EQ((long)pseq, (long)c.srv_next, "persist: probe seq = first unsent byte");
+    CHECK_EQ((long)(*cap_seg(0, NULL, NULL, NULL, NULL, NULL)), (long)src[0],
+             "persist: probe byte = sndq[0]");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)c.srv_next,
+             "persist: probe did NOT advance SND.NXT");
+    CHECK_EQ((long)tcb_backoff(c.desc), 1L, "persist: backoff after one probe");
+
+    /* A zero-window ACK keeps persist armed (peer alive); the interval backs off. */
+    inject_ack_win(dev, &c, c.srv_next, 0u);
+    CHECK(tcb_persist_on(c.desc), "persist: still armed after a zero-window ACK");
+    CHECK(!tcb_rexmit_on(c.desc), "persist: still no rexmit");
+    CHECK_EQ((long)tcb_rto(c.desc), (long)(2 * NSFTCP_RTO_TICKS), "persist: interval backed off 2x");
+
+    g_capcount = 0;
+    tick(tcb_rto(c.desc));
+    CHECK_EQ((long)g_capcount, 1L, "persist: second probe after backoff");
+    CHECK_EQ((long)ctr_get("NSFTCP", "wndprobe"), 2L, "persist: second wndprobe counted");
+
+    /* Window reopens -> persist cancelled, the buffered data flows, backoff reset. */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next, 0x2000u);
+    CHECK(!tcb_persist_on(c.desc), "persist: window update cancels persist");
+    CHECK(tcb_rexmit_on(c.desc), "persist: data now in flight -> rexmit armed");
+    CHECK_EQ((long)g_capcount, 1L, "persist: buffered data sent on the window update");
+    cap_seg(0, NULL, NULL, NULL, NULL, &plen);
+    CHECK_EQ((long)plen, 500L, "persist: full buffered payload resumes");
+    CHECK_EQ((long)tcb_backoff(c.desc), 0L, "persist: backoff reset on resume");
+    check_excl(c.desc, "persist: rexmit XOR persist after resume");
+
+    inject_ack_win(dev, &c, c.srv_next + 500u, 0x2000u);   /* ACK the data */
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "persist: pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "persist: BUFLARGE baseline");
+}
+
+/* 7g. Partial ACK during backoff: progress resets the backoff and RTO but the
+ *     timer stays armed for the unacked remainder. */
+static void test_partial_ack_backoff(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[300];
+
+    fill_pattern(src, sizeof(src), 0x41u);
+    establish_active_opt(dev, 8125u, 0x2000u, 100u, &c);   /* MSS 100 */
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)g_capcount, 3L, "partial: 3 segments in flight");
+
+    tick(NSFTCP_RTO_TICKS);                                /* one no-progress expiry */
+    CHECK_EQ((long)tcb_backoff(c.desc), 1L, "partial: backoff after one expiry");
+    CHECK_EQ((long)tcb_rto(c.desc), (long)(2 * NSFTCP_RTO_TICKS), "partial: RTO doubled");
+
+    inject_ack_win(dev, &c, c.srv_next + 100u, 0x2000u);   /* partial ACK -> progress */
+    CHECK_EQ((long)tcb_backoff(c.desc), 0L, "partial: progress reset the backoff");
+    CHECK_EQ((long)tcb_rto(c.desc), (long)NSFTCP_RTO_TICKS, "partial: RTO back to base");
+    CHECK(tcb_rexmit_on(c.desc), "partial: timer still armed for the remainder");
+    CHECK_EQ((long)tcb_sndq(c.desc), 200L, "partial: 200 bytes remain");
+
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "partial: pool baseline");
+}
+
+/* 7h. Invariant: the retransmit and persist timers are NEVER armed together --
+ *     walk zero-window -> window-open -> all-acked. */
+static void test_timer_exclusive(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[200];
+
+    fill_pattern(src, sizeof(src), 0x41u);
+    establish_active_opt(dev, 8126u, 0u, 1460u, &c);       /* zero window */
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    dispatch(&r);
+    CHECK(tcb_persist_on(c.desc) && !tcb_rexmit_on(c.desc), "excl: zero window -> persist only");
+    check_excl(c.desc, "excl: never both (persisting)");
+
+    inject_ack_win(dev, &c, c.srv_next, 0x2000u);          /* window opens */
+    CHECK(tcb_rexmit_on(c.desc) && !tcb_persist_on(c.desc), "excl: window open -> rexmit only");
+    check_excl(c.desc, "excl: never both (transmitting)");
+
+    inject_ack_win(dev, &c, c.srv_next + 200u, 0x2000u);   /* all acked */
+    CHECK(!tcb_rexmit_on(c.desc) && !tcb_persist_on(c.desc), "excl: all acked -> neither armed");
+
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "excl: pool baseline");
+}
+
 int main(void)
 {
     DEVCFG  cfg;
     NETDEV *dev;
 
-    printf("=== nsf370 NSFTCP tests (M4-1 + M4-2 + M4-3) ===\n");
+    printf("=== nsf370 NSFTCP tests (M4-1 + M4-2 + M4-3 + M4-4) ===\n");
 
     sts_init();
     mm_init(NULL);
@@ -1694,6 +2127,17 @@ int main(void)
     test_eof_matrix(dev);
     test_xmit_failure(dev);
     test_data_errors(dev);
+
+    /* M4-4: retransmission (fixed RTO + backoff) + zero-window persist. */
+    test_rexmit_lost_data(dev);
+    test_rexmit_giveup(dev);
+    test_rexmit_syn_active(dev);
+    test_rexmit_estab_resets_backoff(dev);
+    test_rexmit_synack(dev);
+    test_rexmit_fin(dev);
+    test_persist(dev);
+    test_partial_ack_backoff(dev);
+    test_timer_exclusive(dev);
 
     {
         NSFRQE rt;

@@ -129,7 +129,7 @@ below and pinned in `include/nsfreq.h`: **`ECONNRESET = 54`** (a RST in a
 synchronized state completes a parked request with it), **`EISCONN = 56`** (a
 second CONNECT on a connecting/connected socket), **`ENOTCONN = 57`** (reserved
 for the M4-3 data-path "not connected" callers), **`ETIMEDOUT = 60`** (reserved
-for the M4-4 connect/rexmit timeout), and **`ECONNREFUSED = 61`** (a RST in
+at M4-2, now **live** at M4-4 — see below), and **`ECONNREFUSED = 61`** (a RST in
 SYN_SENT refuses the connect). As with the M3 set, only the NSFRQE *layout* is
 frozen — these errno values stay provisional until the M6 relink audit.
 
@@ -143,6 +143,15 @@ nonblocking mode and buffers are not available" / "data is not available" — "n
 an error condition"). A stream SEND returns the byte count (or a partial count
 for a non-blocking short write); a stream RECV returns the bytes read, or **0 at
 EOF** (the peer's FIN — a normal end of stream, not an errno).
+
+**M4-4 TCP timeout errno (no new value; now live).** The retransmission and
+persist timers (ADR-0033) make **`ETIMEDOUT = 60`** — reserved at M4-2 — an
+actively-returned value: `NSFTCP_RTO_MAXTRIES` (8) no-progress retransmit expiries
+(or an all-silent zero-window peer past the same escalation) complete any parked
+request with it and tear the connection down. On a SYN_SENT socket this is the
+classic **connect timeout** (Table 67: "the connection timed out before it was
+completed"); on an ESTABLISHED socket it aborts a parked SEND / RECV. No new
+`NSF_E*` values (the NSFRQE freeze holds).
 
 **Extended (10xxx) codes.** NSF emits **none** in M3-4 (the facade-level
 IUCV/interface diagnostics in Table 68 have no analog in the Phase-1 same-AS

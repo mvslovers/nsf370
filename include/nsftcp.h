@@ -106,6 +106,17 @@
 #define NSFTCP_MSL_TICKS       300  /* 30 s per MSL (100 ms ticks)              */
 #define NSFTCP_2MSL_TICKS      (2 * NSFTCP_MSL_TICKS)
 
+/* Retransmission / persist timing (M4-4). A FIXED RTO with basic exponential
+ * backoff -- Karn's algorithm and adaptive RTT (srtt/rttvar) are M5 (spec 13.1),
+ * so srtt/rttvar stay 0. The base RTO is 1 s (10 ticks at the 100 ms tick, spec
+ * 6.3), doubled on each expiry that makes no progress, capped at 64 s. After
+ * NSFTCP_RTO_MAXTRIES consecutive expiries with no progress the connection is
+ * declared dead (NSF_ETIMEDOUT + teardown). The persist (zero-window probe) timer
+ * shares the same base/backoff constants. */
+#define NSFTCP_RTO_TICKS       10   /* base RTO: 1 s                            */
+#define NSFTCP_RTO_MAX_TICKS   640  /* backoff cap: 64 s                        */
+#define NSFTCP_RTO_MAXTRIES    8    /* give up after this many no-progress tries */
+
 /* Ephemeral local-port range for an active open without an explicit BIND (the
  * IANA dynamic range, as NSFUDP uses). */
 #define NSFTCP_EPHEM_LO        49152u
@@ -117,7 +128,10 @@
 #define TCB_F_ONACCEPTQ  0x02u  /* linked on a listener's acceptq (via acceptlink)*/
 #define TCB_F_FINQ       0x04u  /* app closed: send our FIN after the sndq drains */
 #define TCB_F_RCVFIN     0x08u  /* peer's FIN consumed: recv returns EOF (sticky) */
-#define TCB_F_FINSENT    0x10u  /* our FIN is on the wire: never re-emit it        */
+#define TCB_F_FINSENT    0x10u  /* our FIN occupies sequence space: don't re-count */
+#define TCB_F_PROBEACK   0x20u  /* a segment arrived since persist armed (peer alive,
+                                 * M4-4): keeps a live zero-window connection from
+                                 * hitting the rexmit-style give-up on probes */
 
 /* TCP connection states (TCB.state), RFC 793 §3.2 order. CLOSED is 0 so a
  * freshly memset TCB is CLOSED. */
