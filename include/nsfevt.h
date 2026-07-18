@@ -65,7 +65,7 @@ typedef void (*EVHANDLER)(EVT *ev);
  *   nsfevt_alloc NSFEVAL   nsfevt_ticks NSFEVTK   nsfevt_drops NSFEVDRP
  *   nsfevt_inuse NSFEVIU   evt_set_operator NSFEVOPR
  *   evt_set_devices NSFEVDEV   nsfevt_wake NSFEVWK
- *   evt_set_request NSFEVRQ
+ *   evt_set_request NSFEVRQ   nsfevt_tickadv NSFEVTKA
  */
 
 /* Create the EVT pool and reset the loop state (event queue, handoff stack,
@@ -159,6 +159,10 @@ UINT nsfevt_inuse(void) asm("NSFEVIU");
 /* Number of timer wakes the loop has processed (introspection; the M0-8 operator
  * DISPLAY reuses it). */
 UINT nsfevt_ticks(void) asm("NSFEVTK");
+/* Cumulative ticks the loop advanced the timer queue via nsftmr_wake -- the
+ * arming/consumption accounting (issue #40). A wake with armed=K adds K; the
+ * cadence tests assert this matches the armed amounts, not one-per-wake. */
+UINT nsfevt_tickadv(void) asm("NSFEVTKA");
 /* Number of events dropped by evt_post because the EVT pool was exhausted. */
 UINT nsfevt_drops(void) asm("NSFEVDRP");
 #endif

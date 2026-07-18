@@ -37,6 +37,7 @@ static void    (*g_reqdrain)(void);     /* drain the request queue (M3-2)     */
 static int     (*g_reqpending)(void);   /* request awaits service? (M3-2)     */
 static int       g_stop;                /* orderly-stop flag                  */
 static UINT      g_ticks;               /* timer wakes serviced               */
+static UINT      g_tickadv;             /* ticks advanced by nsftmr_wake (#40) */
 static UINT      g_drops;               /* evt_post pool-exhaustion drops     */
 
 /* ECBLIST capacity: {timer, handoff, wake} + up to NSFDEV_MAX device ECBs +
@@ -67,6 +68,7 @@ int nsfevt_init(void)
     g_reqpending = NULL;
     g_stop       = 0;
     g_ticks      = 0u;
+    g_tickadv    = 0u;
     g_drops      = 0u;
 
     /* Create the pool once (init window); later calls only reset the loop state
@@ -302,10 +304,15 @@ void evt_mainloop(void)
             mm_free(g_evtpool, ev);
         }
 
-        /* 4. Run due timers on a timer wake, then signal the tick. */
+        /* 4. Run due timers on a timer wake, then signal the tick. Advance the
+         *    queue by nsftmr_wake() -- the exact tick count the fired STIMER
+         *    interval was armed for -- NOT nsftmr_run(1u) (ADR-0034 / issue #40:
+         *    the STIMER is re-armed to the head delta, so consuming 1 per wake
+         *    made a delta-N timer fire after N(N+1)/2 ticks). g_ticks counts
+         *    wakes; g_tickadv accumulates the ticks advanced (NSF_DEBUG probe). */
         if (*timerecb & NSFECB_POSTED) {
             *timerecb = 0u;
-            nsftmr_run(1u);
+            g_tickadv += nsftmr_wake();
             g_ticks++;
             evt_dispatch_timer();
         }
@@ -335,6 +342,7 @@ UINT nsfevt_inuse(void)
 }
 
 #if NSF_DEBUG
-UINT nsfevt_ticks(void) { return g_ticks; }
-UINT nsfevt_drops(void) { return g_drops; }
+UINT nsfevt_ticks(void)   { return g_ticks; }
+UINT nsfevt_tickadv(void) { return g_tickadv; }
+UINT nsfevt_drops(void)   { return g_drops; }
 #endif

@@ -177,6 +177,17 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
 
+# NSFTMR/NSFEVT timer CADENCE on MVS (host = false): the issue #40 regression --
+# the exact live measurement that found it. Arm a delta-20 timer through the full
+# loop path (tmr_start -> STIMER exit -> nsftmr_wake) and time when it fires: the
+# bug fired it after 210 ticks (21.0 s), the ADR-0034 fix after ~2.0 s. Re-arms
+# delta-20 three times so the cadence is pinned at 2.0/4.0/6.0 s.
+[[test]]
+name = "TSTTMCAD"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tsttmcad.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
+
 # -- M0-7 configuration parser (NSFCFG) --------------------------------
 # NSFCFG: the PROFILE.TCPIP parser + immutable NSFCFG output struct, driven
 # against the test/cfg/ corpus (valid + one broken profile per error class) via

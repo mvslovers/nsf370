@@ -36,10 +36,14 @@
  *     the successor's delta already measures from the head's fire.
  *
  * DRIVING THE CLOCK. nsftmr_run(ticks) advances the queue by `ticks` elapsed
- * ticks. On MVS the executive passes the number of ticks the expired STIMER
- * represented (the head delta it was armed for); on the host, tests inject the
- * elapsed ticks directly -- there is no STIMER (spec 6.3 refined at M0-5: the
- * published `nsftmr_run(void)` gains the elapsed-ticks argument the host needs).
+ * ticks. On MVS the executive does NOT call nsftmr_run directly on a timer wake;
+ * it calls nsftmr_wake(), which advances by the exact tick count the fired
+ * STIMER interval was armed for (the arming/consumption contract, ADR-0034).
+ * This closes issue #40: the old loop consumed nsftmr_run(1u) per wake while
+ * nsftmr_run re-armed for the whole head delta, so a delta-N timer fired after
+ * N(N+1)/2 ticks. On the host there is no STIMER, so tests inject elapsed ticks
+ * directly via nsftmr_run (spec 6.3 refined at M0-5: the published
+ * `nsftmr_run(void)` gains the elapsed-ticks argument the host needs).
  *
  * OWNERSHIP / LIFETIME. A TMR lives exactly as long as its owner CB. tmr_cancel
  * is idempotent and mandatory in every owner-teardown path (spec 6.4): a stale
@@ -78,7 +82,8 @@ NSF_SIZE_ASSERT(TMR, 24);
  * external truncation (upcased, '_' -> '@') can never fold two into one on MVS.
  * Scheme NSFTM + verb:
  *   nsftmr_init NSFTMINI   tmr_start NSFTMSTR   tmr_cancel NSFTMCAN
- *   nsftmr_run NSFTMRUN    nsftmr_count NSFTMCNT   nsftmr_peek NSFTMPEK
+ *   nsftmr_run NSFTMRUN    nsftmr_wake NSFTMWAK   nsftmr_count NSFTMCNT
+ *   nsftmr_peek NSFTMPEK
  */
 
 /* Reset the timer service: empty the queue and disarm the platform timer. Safe
@@ -105,8 +110,18 @@ void tmr_cancel(TMR *t) asm("NSFTMCAN");
  * timer for the new head delta -- or disarm it if the queue drained. Does
  * nothing when the queue is empty on entry. Each fired timer is detached and
  * marked IDLE before its callback runs (callbacks may re-arm/cancel safely).
- * Called by the executive main loop (NSFEVT, M0-6); tests call it directly. */
+ * Tests call it directly with an explicit elapsed count; the executive main loop
+ * (NSFEVT) drives it through nsftmr_wake, never nsftmr_run(1u) (ADR-0034). */
 void nsftmr_run(UINT ticks) asm("NSFTMRUN");
+
+/* Service a timer wake from the executive main loop (NSFEVT). Advances the queue
+ * by the exact tick count the fired STIMER interval was armed for and returns
+ * that count (0 on a spurious wake with nothing armed). This is the arming/
+ * consumption contract that fixes issue #40 -- the loop must call THIS on a
+ * timer-ECB post, never nsftmr_run(1u), or a delta-N timer fires after
+ * N(N+1)/2 ticks. Host tests drive nsftmr_run directly (no STIMER), so this is
+ * exercised through the loop path (tstevt) and the on-MVS cadence gates. */
+UINT nsftmr_wake(void) asm("NSFTMWAK");
 
 /* Inspection seam (always available, like nsftrc_count/peek; reused by the M0-8
  * operator DISPLAY and by the host tests). nsftmr_count is the number of armed

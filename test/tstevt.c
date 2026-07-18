@@ -21,6 +21,7 @@
 #include "nsfstim.h"            /* nsftmr_plat_ecb */
 #include "nsfmm.h"
 #include <mbtcheck.h>
+#include <string.h>            /* memset (scenario 5 stack TMR) */
 #ifndef __MVS__
 #include <pthread.h>            /* host-only: the pthread-simulated exit */
 #endif
@@ -92,6 +93,16 @@ static void h_ev4(EVT *ev)
         nsfevt_stop();
     }
 }
+
+/* ---- scenario 5: a timer wake advances the ARMED amount (#40) ---- *
+ * The timer callback stops the loop so exactly one wake is serviced. */
+#if NSF_DEBUG
+static void tmr_stop_fn(void *arg)
+{
+    (void)arg;
+    nsfevt_stop();
+}
+#endif
 
 int main(void)
 {
@@ -169,6 +180,28 @@ int main(void)
     CHECK(g_ev4 >= 3u, "handler requested stop");
     CHECK_EQ((long)nsfevt_inuse(), 0,
              "shutdown freed every pending event (leak gate)");
+
+    /* ---- 5. the loop advances the queue by the ARMED tick count (#40) ---- *
+     * Arm a delta-8 timer, then post the timer ECB once (as the STIMER exit
+     * would after 8 ticks). The loop's step 4 must call nsftmr_wake(), which
+     * advances 8 and fires the timer -- NOT nsftmr_run(1u), which would advance
+     * 1 and leave the timer pending. nsfevt_tickadv() reads back the ticks the
+     * loop advanced. (NSF_DEBUG-gated: nsfevt_tickadv is the debug probe.) */
+#if NSF_DEBUG
+    {
+        TMR t;
+        nsfevt_init();
+        nsftmr_init();
+        memset(&t, 0, sizeof(t));
+        tmr_start(&t, 8u, tmr_stop_fn, NULL);   /* g_armed = 8 */
+        nsfevt_plat_post((NSFECB *)nsftmr_plat_ecb());  /* one STIMER post */
+        evt_mainloop();
+        CHECK_EQ((long)nsfevt_tickadv(), 8,
+                 "one timer wake advanced the armed 8 ticks (not 1)");
+        CHECK_EQ((long)nsfevt_ticks(), 1, "exactly one timer wake serviced");
+        CHECK_EQ((long)nsftmr_count(), 0, "the delta-8 timer fired in that wake");
+    }
+#endif
 
     mm_shutdown();
     return mbt_test_summary("TSTEVT");

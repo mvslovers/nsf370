@@ -277,22 +277,37 @@ int main(int argc, char **argv)
 
     nsfmsg("NSF001I NSF INITIALIZATION COMPLETE");
 
-    /* 7. Arm the liveness heartbeat, then run the executive until STOP / P NSF
-     *    (evt_mainloop runs the §5.4 shutdown sequence internally).
-     *    The heartbeat: the ADR-0017 async STIMER exit is SELF-RE-ARMING
-     *    (validated on MVS, TSTEVTM), so one arm gives the loop a guaranteed
-     *    periodic wake for as long as it runs. Without it the loop is woken by
-     *    real POSTs alone, and an operator MODIFY arriving while the stack is
-     *    IDLE (no device completions -- an idle network stack is the normal
-     *    state) can sit undrained until the next completion. 1 tick = 100 ms,
-     *    the exact TSTEVTM-validated arm; it also keeps the loop's
-     *    nsftmr_run(1) tick accounting correct once real timers exist (M2+).
-     *    Cost: 10 interrupts/s -- ADR-0011's "an idle stack takes zero timer
-     *    interrupts" is consciously traded for operator liveness here.
-     *    (The WAIT itself also has a 1 s ecb_timed_waitlist bound, but under
-     *    the STC's TIME=1440 that STIMER-timeout was not observed to tick --
-     *    the self-re-arming exit is the proven mechanism.) evt_shutdown
-     *    disarms it (nsftmr_plat_disarm). */
+    /* 7. Arm the idle-liveness heartbeat, then run the executive until STOP /
+     *    P NSF (evt_mainloop runs the §5.4 shutdown sequence internally).
+     *
+     *    WHAT THIS PROVIDES UNDER THE ADR-0034 CONTRACT. It is ONLY an
+     *    operator-liveness wake while the timer queue is empty. It does NOT
+     *    affect timer cadence any more: under the fixed contract nsftmr owns the
+     *    STIMER (tmr_start arms on the empty->nonempty bootstrap; the loop calls
+     *    nsftmr_wake, which advances the ARMED tick count), so a real timer
+     *    cleanly displaces this 1-tick arm with its own delta and the queue
+     *    drives itself. The old comment here claimed this arm "keeps the loop's
+     *    nsftmr_run(1) tick accounting correct" -- that was the issue #40
+     *    misconception; the accounting is now correct via nsftmr_wake regardless.
+     *
+     *    The arm is a DIRECT platform call, deliberately outside nsftmr's
+     *    g_armed bookkeeping: it is harmless because it only operates when the
+     *    queue is empty (g_armed == 0), where nsftmr_wake advances 0 -- a no-op
+     *    that just wakes the loop so an operator MODIFY arriving while the stack
+     *    is IDLE (an idle network stack is the normal state) is serviced. The
+     *    async STIMER exit is self-re-arming (ADR-0017), so one arm gives the
+     *    idle heartbeat; a real timer's arm replaces the interval, and drain
+     *    disarms (spec 6.3). Cost while idle: 10 interrupts/s -- ADR-0011's
+     *    "idle stack takes zero timer interrupts" is consciously traded for
+     *    operator liveness here (unchanged from prior behaviour).
+     *
+     *    KEPT, not removed: removing it would restore true zero-idle-interrupts,
+     *    but whether the console CIB ECB alone wakes the WAIT on a MODIFY when
+     *    idle is an EMPIRICAL question, and the existing TSTEVTM only counts
+     *    heartbeats over an empty queue -- it does NOT issue an idle MODIFY, so
+     *    it cannot prove redundancy. ADR-0034 forbids removing on reasoning
+     *    alone; a proper idle-MODIFY liveness test is the gate for that (future
+     *    work). evt_shutdown disarms it (nsftmr_plat_disarm). */
     nsftmr_plat_arm(1u);
     evt_mainloop();
 

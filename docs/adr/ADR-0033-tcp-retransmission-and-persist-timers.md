@@ -155,6 +155,11 @@ ACK (which would hide the backoff the live test is meant to show).
   deterministic `nsftmr_run`); the live cadence follows issue #40. Genuine-loss
   RTO firing on a truly lossless link needs root — the systematic
   drop/dup/reorder matrix is M4-6.
+  **RESOLVED (ADR-0034, issue #40 fixed):** the executive now advances the timer
+  queue by the ARMED tick count via `nsftmr_wake` (not `nsftmr_run(1u)`), so a
+  delta-N timer fires after N ticks. The persist/RTO backoff intervals are now
+  faithfully visible live (delta-20 at ~2.0 s, not 21 s — `test/mvs/tsttmcad.c`),
+  and the production 2MSL is 60 s. The host-proven policy/backoff is unchanged.
 - `NSF_ETIMEDOUT` (60) is now actively returned (connect and rexmit give-up) —
   noted in `docs/ezasoket-conformance.md`.
 - NSFTCP stays OUT of the `NSF` production load module (unreachable until the

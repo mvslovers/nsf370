@@ -36,7 +36,11 @@ by `nsftmr_run`.**
 - NSFTMR only ever needs **one** active interval (the soonest deadline), so the
   single-interval `STIMER` is not a limitation: after firing, `nsftmr_run`
   re-arms for the new head; an idle queue takes zero timer interrupts. This
-  reproduces exactly the behaviour the `STIMERM` wording intended.
+  reproduces exactly the behaviour the `STIMERM` wording intended. (The arming is
+  correct as stated; how the executive **consumes** an armed interval — advance
+  the ARMED tick count, not one per wake — is pinned separately in ADR-0034,
+  which fixes issue #40. The 100 ms timebase accuracy this ADR froze is
+  unaffected.)
 - The timer exit does nothing but `POST` the timer ECB; all timer processing
   runs on the executive task (spec §6.1). `TTIMER CANCEL` disarms.
 - The arming is isolated behind the `nsfstim.h` platform seam

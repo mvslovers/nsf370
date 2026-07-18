@@ -38,6 +38,23 @@ static void arm(TMR *t, UINT ticks, int id)
     tmr_start(t, ticks, rec_fn, (void *)(long)id);
 }
 
+/* Self-re-arming callback for the persist/backoff cadence test: on each fire it
+ * doubles the interval and re-arms itself, up to `g_rearm_cap` fires. This is the
+ * exact shape of the TCP zero-window persist probe -- the pattern that surfaced
+ * issue #40 live. `g_rearm_iv` carries the next interval. */
+static TMR *g_rearm_t;
+static UINT g_rearm_iv;
+static int  g_rearm_cap;
+static void rearm_fn(void *arg)
+{
+    (void)arg;
+    fire_n++;
+    if (fire_n < g_rearm_cap) {
+        g_rearm_iv *= 2u;
+        tmr_start(g_rearm_t, g_rearm_iv, rearm_fn, NULL);
+    }
+}
+
 int main(void)
 {
     TMR a, b, c, d;
@@ -135,8 +152,76 @@ int main(void)
     CHECK_EQ((long)nsftmr_count(), 0, "second cancel is a no-op");
     CHECK_EQ((long)a.state, TMR_IDLE, "double-cancelled timer stays IDLE");
 
+    /* ---- 6. wake accounting: a wake advances the ARMED amount, not 1 ---- *
+     * The #40 regression. nsftmr_wake() is what the executive loop calls on each
+     * STIMER post; it advances the queue by the exact tick count the STIMER
+     * interval was armed for and RETURNS it. Asserting the sequence of return
+     * values captures the cadence precisely: a delta-N timer must fire in ONE
+     * wake of N ticks (the old loop consumed 1 per wake and re-armed for N-1, so
+     * a delta-N timer fired after N(N+1)/2 ticks). These are portable (no STIMER
+     * needed -- g_armed is tracked in nsftmr.c), so they run on host AND MVS. */
+    nsftmr_init();
+    memset(&a, 0, sizeof(a));
+    fire_n = 0;
+    arm(&a, 20, 1);                        /* the delta-20 that found #40 live */
+    CHECK_EQ((long)nsftmr_wake(), 20, "single delta-20 wake advances 20 (not 1)");
+    CHECK_EQ((long)fire_n, 1, "the delta-20 timer fired in that one wake");
+    CHECK_EQ((long)nsftmr_count(), 0, "queue drained");
+    /* The bug would have fired it after 20*21/2 = 210 ticks across 20 wakes. */
+
+    /* ---- 7. two staggered timers fire at their own absolute deadlines ---- *
+     * a=5, b=20. Wake 1 advances 5 (a fires), wake 2 advances 15 (b fires) --
+     * cumulative 5 then 20, each timer on its own deadline. */
+    nsftmr_init();
+    memset(&a, 0, sizeof(a)); memset(&b, 0, sizeof(b));
+    fire_n = 0;
+    arm(&a, 5, 1);
+    arm(&b, 20, 2);
+    CHECK_EQ((long)nsftmr_wake(), 5, "wake 1 advances 5 (a's delta)");
+    CHECK(fire_n == 1 && fire_log[0] == 1, "a fired at cumulative 5");
+    CHECK_EQ((long)nsftmr_wake(), 15, "wake 2 advances 15 (b's remaining, cum 20)");
+    CHECK(fire_n == 2 && fire_log[1] == 2, "b fired at cumulative 20");
+    CHECK_EQ((long)nsftmr_count(), 0, "both drained");
+
+    /* ---- 8. re-arm-in-callback (the persist/backoff pattern, #40 live shape) --- *
+     * A timer that doubles its interval and re-arms itself each fire: intervals
+     * 10, 20, 40, 80. Each wake advances exactly the armed interval, so the
+     * inter-probe deltas are 10, 20, 40, 80 -- NOT the quadratic blow-up that
+     * put persist probe #2 at 210 ticks on MVSCE. */
+    nsftmr_init();
+    memset(&a, 0, sizeof(a));
+    fire_n = 0;
+    g_rearm_t = &a; g_rearm_iv = 10u; g_rearm_cap = 4;
+    tmr_start(&a, g_rearm_iv, rearm_fn, NULL);
+    CHECK_EQ((long)nsftmr_wake(), 10, "probe 1 interval = 10");
+    CHECK_EQ((long)fire_n, 1, "probe 1 fired");
+    CHECK_EQ((long)nsftmr_wake(), 20, "probe 2 interval = 20 (NOT 210: #40 regress)");
+    CHECK_EQ((long)fire_n, 2, "probe 2 fired");
+    CHECK_EQ((long)nsftmr_wake(), 40, "probe 3 interval = 40");
+    CHECK_EQ((long)nsftmr_wake(), 80, "probe 4 interval = 80");
+    CHECK_EQ((long)fire_n, 4, "four probes fired");
+    CHECK_EQ((long)nsftmr_count(), 0, "queue drained (cap reached, no re-arm)");
+
+    /* ---- 9. head-shortening: a nearer timer inserted under a long one ---- *
+     * a=100 (a 2MSL-like long timer), then b=10 (a rexmit-like near timer). b
+     * becomes the head, so tmr_start re-arms for 10: the near timer fires in one
+     * 10-tick wake, on time -- it does NOT wait out a's 100. (The real-time
+     * "a fires safe-late by the forgotten sub-interval" is an MVS property with
+     * no host STIMER to elapse; the live cadence pin validates the timing. Here
+     * we prove the re-arm and the near timer's on-time fire.) */
+    nsftmr_init();
+    memset(&a, 0, sizeof(a)); memset(&b, 0, sizeof(b));
+    fire_n = 0;
+    arm(&a, 100, 1);
+    arm(&b, 10, 2);
+    CHECK(nsftmr_peek(0) == &b, "the nearer timer b is the head");
+    CHECK_EQ((long)nsftmr_wake(), 10, "head-shortened wake advances 10, not 100");
+    CHECK(fire_n == 1 && fire_log[0] == 2, "b fired first, on time (cum 10)");
+    CHECK_EQ((long)nsftmr_wake(), 90, "a fires on the next wake (cum 100)");
+    CHECK(fire_n == 2 && fire_log[1] == 1, "a fired second");
+
 #if NSF_DEBUG
-    /* ---- 6. nsftmr_run re-arms only the head, disarms on drain, no-op empty --- *
+    /* ---- 10. nsftmr_run re-arms only the head, disarms on drain, no-op empty -- *
      * The platform seam is observable only through the host probe. */
     nsftmr_init();
     nsftmr_plat_probe_reset();
@@ -161,6 +246,44 @@ int main(void)
     nsftmr_run(3);             /* b fires; queue drains */
     CHECK_EQ((long)nsftmr_count(), 0, "queue drained");
     CHECK(nsftmr_plat_disarm_count() >= 1, "draining the queue disarms the platform timer");
+
+    /* ---- 11. tmr_start arms on the empty->nonempty bootstrap (ADR-0034 #2) --- *
+     * Before the fix, tmr_start into an empty queue did NOT arm -- the timer
+     * fired only if something else woke the loop (the "bootstrap hole" the
+     * nsfmain heartbeat papered over). Now the first insert arms the STIMER for
+     * its own delta. */
+    nsftmr_init();
+    memset(&a, 0, sizeof(a));
+    nsftmr_plat_probe_reset();
+    arm(&a, 7, 1);
+    CHECK_EQ((long)nsftmr_plat_arm_count(), 1, "insert into empty queue arms once");
+    CHECK_EQ((long)nsftmr_plat_last_arm(), 7, "armed for the new timer's delta (7)");
+
+    /* ---- 12. tmr_cancel disarms when it empties the queue (ADR-0034 #3) ---- *
+     * The blocker: without this, the self-re-arming STIMER exit keeps firing on
+     * an empty queue (spec 6.3 "zero idle interrupts" violated). Cancelling a
+     * non-last timer must NOT disarm; cancelling the last one must. */
+    nsftmr_init();
+    memset(&a, 0, sizeof(a)); memset(&b, 0, sizeof(b));
+    arm(&a, 4, 1);
+    arm(&b, 9, 2);
+    nsftmr_plat_probe_reset();
+    tmr_cancel(&b);            /* queue not empty (a remains) */
+    CHECK_EQ((long)nsftmr_plat_disarm_count(), 0, "cancel with a timer left does not disarm");
+    tmr_cancel(&a);            /* now empties the queue */
+    CHECK_EQ((long)nsftmr_plat_disarm_count(), 1, "cancel that empties the queue disarms");
+
+    /* ---- 13. head-shortening tmr_start re-arms for the nearer delta (#3) ---- *
+     * a=100 armed; b=10 inserted becomes the head, so the STIMER is re-armed
+     * from 100 down to 10 -- the near timer will fire on time, not after 100. */
+    nsftmr_init();
+    memset(&a, 0, sizeof(a)); memset(&b, 0, sizeof(b));
+    arm(&a, 100, 1);
+    CHECK_EQ((long)nsftmr_plat_last_arm(), 100, "armed for a's delta (100)");
+    nsftmr_plat_probe_reset();
+    arm(&b, 10, 2);
+    CHECK_EQ((long)nsftmr_plat_arm_count(), 1, "head-shortening insert re-arms once");
+    CHECK_EQ((long)nsftmr_plat_last_arm(), 10, "re-armed for b's nearer delta (10)");
 #endif
 
     return mbt_test_summary("TSTTMR");
