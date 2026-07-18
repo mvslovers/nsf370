@@ -32,3 +32,4 @@ out as they are revisited. ADR-0014 onward are authored directly here.
 | 0024 | IPv4 host model: not-for-us→inaddrerr, TTL parsed-not-gated, routing from HOME/GATEWAY (peer=next-hop 0), addresses UINT + byte-wise wire | ADR-0024-ipv4-host-model-routing-and-address-convention.md |
 | 0025 | Timed cross-task waits (timeout ECB in the waitlist) + CTCI pair sequencing (read re-arm behind the write pipeline) | ADR-0025-timed-waits-and-ctci-pair-sequencing.md |
 | 0026 | nsffmt: safe vsnprintf/snprintf seam — libc370 does not NUL-terminate on truncation (issue #25) | ADR-0026-nsffmt-safe-formatting-seam.md |
+| 0034 | Timer arming/consumption contract: nsftmr_wake advances the armed ticks (fixes #40 tick-advance); empty⟺disarmed⟺g_armed==0; head-shortening re-arms without residual | ADR-0034-timer-arming-consumption-contract.md |

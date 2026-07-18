@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.32 — Draft for implementation. Companion document to the frozen
+*Version 1.33 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -672,7 +672,8 @@ NSF_SIZE_ASSERT(TMR, 24);
 void  nsftmr_init(void);                                   /* reset / disarm    */
 void  tmr_start (TMR *t, UINT ticks, TMRFN fn, void *arg); /* restart ok        */
 void  tmr_cancel(TMR *t);                                  /* idempotent        */
-void  nsftmr_run(UINT ticks);      /* advance by elapsed ticks (main loop)      */
+void  nsftmr_run(UINT ticks);      /* advance by elapsed ticks (tests, internal)*/
+UINT  nsftmr_wake(void);           /* main loop: advance by the ARMED ticks     */
 UINT       nsftmr_count(void);     /* inspection seam (operator DISPLAY, tests) */
 const TMR *nsftmr_peek (UINT i);   /* i==0 = head/soonest; NULL past the tail   */
 ```
@@ -685,8 +686,18 @@ const TMR *nsftmr_peek (UINT i);   /* i==0 = head/soonest; NULL past the tail   
 - TMR structures are **embedded** in their owner control blocks (a TCB
   carries its four timers inline) — timer arming can therefore never fail
   and never allocates.
-- `nsftmr_run` re-arms `STIMER` for the head delta only when the queue is
-  non-empty; an idle stack takes zero timer interrupts.
+- `STIMER` is armed for the head delta only when the queue is non-empty; an idle
+  stack takes zero timer interrupts. The **arming/consumption contract**
+  (ADR-0034) pins this: `nsftmr` owns the seam through one word (`g_armed`) equal
+  to what the `STIMER` is armed for, so the invariant **queue empty ⟺ `STIMER`
+  disarmed ⟺ `g_armed == 0`** holds — enforced at both drain points
+  (`nsftmr_run` on a fire, `tmr_cancel` on a cancel). On a timer wake the
+  executive calls **`nsftmr_wake()`**, which advances the queue by exactly the
+  armed tick count (NOT one tick per wake — that was issue #40, where a delta-N
+  timer fired after N(N+1)/2 ticks). `tmr_start` arms the `STIMER` whenever the
+  inserted timer becomes the head (the empty→nonempty bootstrap and
+  head-shortening); re-arming from "now" is safe-late for timers already queued
+  and needs no `TTIMER`-residual read.
 
 **M0-5 implementation notes** (folded in; the interface above is refined):
 - **`STIMER`, not `STIMERM`.** MVS 3.8j / TK4- provides the single-interval
@@ -695,11 +706,12 @@ const TMR *nsftmr_peek (UINT i);   /* i==0 = head/soonest; NULL past the tail   
   delta reproduces the intended behaviour, and NSFTMR only ever needs one
   active interval. The published `STIMERM` in this chapter, ADR-0016 and the
   Brief is corrected here and in ADR-0011.
-- **`nsftmr_run(UINT ticks)`** takes the elapsed tick count. On MVS the
-  executive passes the number of ticks the expired `STIMER` represented (the
-  head delta it was armed for); the host has no `STIMER`, so tests inject
-  elapsed ticks directly. (Refines the published `nsftmr_run(void)`; §5.3's
-  main loop passes the elapsed count.)
+- **`nsftmr_run(UINT ticks)`** takes the elapsed tick count. Tests inject
+  elapsed ticks directly (the host has no `STIMER`). The executive main loop does
+  NOT call `nsftmr_run` on a wake; it calls **`nsftmr_wake()`** (ADR-0034), which
+  advances by the exact armed tick count and returns it. (Refines the published
+  `nsftmr_run(void)`; the M0-6-era plan to have §5.3 pass an elapsed count from
+  the loop is superseded by `nsftmr_wake` owning the accounting — issue #40.)
 - **Added helpers.** `nsftmr_init` resets the queue and disarms the platform
   timer (startup / test reset). `nsftmr_count` / `nsftmr_peek` are the
   always-on inspection seam (the M0-8 operator DISPLAY and the host tests read
@@ -707,9 +719,13 @@ const TMR *nsftmr_peek (UINT i);   /* i==0 = head/soonest; NULL past the tail   
 - **Platform seam `nsfstim.h`.** Arming lives behind `nsftmr_plat_arm` /
   `_disarm` / `_ecb`: `asm/nsfstim.asm` on MVS (STIMER + the POST exit),
   `src/nsfstim_host.c` on the host (no-op that records arms for the tests),
-  swapped by `[host].replace` — the NSFXQ / NSFTIME pattern. Per this chapter,
-  only `nsftmr_run` re-arms at M0-5; tmr_start/tmr_cancel that shorten the head
-  re-arm once the executive loop owns the pending-timer state (M0-6).
+  swapped by `[host].replace` — the NSFXQ / NSFTIME pattern. **Superseded at
+  M4-4 by ADR-0034:** the M0-5 plan ("only `nsftmr_run` re-arms; `tmr_start`
+  head-shortening re-arms once the loop owns the pending-timer state") left the
+  bootstrap/head-shortening arming unowned, which is issue #40. `tmr_start` now
+  arms whenever the inserted timer becomes the head, `tmr_cancel` disarms when it
+  empties the queue, and the loop consumes via `nsftmr_wake` — all through the
+  `g_armed` word so the queue clock and the `STIMER` never diverge.
 - **`nsftmr_run` semantics.** Detaches and marks each due timer IDLE before its
   callback runs (a callback may safely re-arm the timer that fired); a cancel
   hands its delta to the successor while a fire consumes it; `tmr_start` clamps
@@ -2156,6 +2172,26 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.33: Timer arming/consumption contract (fixes the executive tick-advance,
+issue #40).** Foundation fix in NSFTMR/NSFEVT (ADR-0034); no TCP/driver/API
+behaviour change. The executive consumed `nsftmr_run(1u)` per STIMER wake while
+the STIMER was armed for the head delta, so a delta-N timer fired after
+N(N+1)/2 ticks (a delta-20 persist probe at 21 s live; the production 2MSL at
+~5 h). Now the loop calls **`nsftmr_wake()`**, which advances the queue by the
+exact armed tick count. NSFTMR owns the `nsfstim.h` seam through one word
+(`g_armed`) equal to what the STIMER is armed for, so the invariant **queue empty
+⟺ STIMER disarmed ⟺ `g_armed == 0`** holds, enforced at both drain points
+(`nsftmr_run` on a fire, `tmr_cancel` on a cancel — the latter was the gap that
+let the self-re-arming exit keep firing on an empty queue). `tmr_start` arms
+whenever the inserted timer becomes the head (the empty→nonempty bootstrap and
+head-shortening), re-arming from "now" — safe-late for queued timers, no
+`TTIMER`-residual read (the audit shows v1's 2MSL tolerates it and the urgent
+rexmit/persist fire on time). `nsftmr_run` and the delta-queue local rules are
+unchanged, so the M4-4 TCP tests pass verbatim. The `nsfmain` `nsftmr_plat_arm(1u)`
+heartbeat is kept as the idle-liveness wake only (its bootstrap role is gone;
+removal is gated on a proper idle-MODIFY test, not the vacuous TSTEVTM). §6.3
+updated; ADR-0011/0023/0033 annotated where they described the old cadence.
 
 **v1.32: M4-4 — TCP retransmission (fixed RTO + exponential backoff) + zero-window
 persist probes.** Connections survive loss and a zero-window peer (ADR-0033).

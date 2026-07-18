@@ -16,10 +16,28 @@
  *            the successor's delta already measures from the head's fire, so it
  *            is NOT handed back (this is the one place cancel and fire differ).
  *
- * Platform arming (nsfstim.h seam) is touched only by nsftmr_init (disarm, clean
- * slate) and nsftmr_run (re-arm the head, or disarm on drain). Per spec 6.3 at
- * M0-5, tmr_start / tmr_cancel that shorten the head do NOT re-arm STIMER; that
- * belongs with the executive loop that owns the pending-STIMER state (M0-6).
+ * PLATFORM ARMING CONTRACT (ADR-0034). Every touch of the nsfstim.h seam goes
+ * through the two helpers below (tmr_arm / tmr_disarm) so a single module word,
+ * g_armed, always equals what the STIMER is physically armed for. The seam
+ * clears+re-arms on every arm, so g_armed and the hardware can never diverge;
+ * the STIMER therefore fires exactly g_armed ticks after it was armed, and
+ * nsftmr_wake advances the queue by exactly g_armed -- the queue clock stays
+ * locked to real time (never early, never late at the wake). The three
+ * arming responsibilities the contract pins:
+ *   1. Wake accounting: the executive calls nsftmr_wake() (NOT nsftmr_run(1u)),
+ *      which advances by g_armed -- the ticks the fired STIMER interval covered.
+ *   2. Empty->nonempty bootstrap AND head-shortening: tmr_start arms whenever
+ *      the inserted timer becomes the head (an empty queue, or a nearer deadline
+ *      than the current head). Re-arming from "now" is always safe-late for the
+ *      timers already queued (their forgotten sub-interval only delays them, and
+ *      v1's long timers -- 2MSL -- tolerate that; the shortened timer, the one
+ *      that matters, fires on time). No TTIMER-residual seam change (ADR-0034).
+ *   3. Drain: BOTH drain points disarm -- nsftmr_run when a fire empties the
+ *      queue, and tmr_cancel when a cancel empties it. INVARIANT: queue empty
+ *      <=> STIMER disarmed <=> g_armed == 0. This is what preserves spec 6.3's
+ *      "an idle stack takes zero timer interrupts": the async STIMER exit
+ *      self-re-arms unconditionally, so a queue emptied WITHOUT a disarm would
+ *      keep firing forever.
  */
 #include "nsftmr.h"
 #include "nsfstim.h"
@@ -29,10 +47,28 @@
  * population is bounded by the embedded TMRs across a bounded set of CBs. */
 static QUEUE g_tmrq;
 
+/* Ticks the platform STIMER is currently armed for (0 == disarmed). Mutated
+ * ONLY by tmr_arm / tmr_disarm, which also drive the seam, so g_armed and the
+ * hardware never diverge (see the contract note above). */
+static UINT  g_armed;
+
+/* The single owners of the nsfstim.h seam: keep g_armed and the STIMER in step. */
+static void tmr_arm(UINT ticks)
+{
+    g_armed = ticks;
+    nsftmr_plat_arm(ticks);             /* seam clears the ECB, then arms */
+}
+
+static void tmr_disarm(void)
+{
+    g_armed = 0u;
+    nsftmr_plat_disarm();               /* TTIMER CANCEL (idempotent) */
+}
+
 void nsftmr_init(void)
 {
     q_init(&g_tmrq, 0);
-    nsftmr_plat_disarm();               /* clean slate: nothing armed */
+    tmr_disarm();                       /* clean slate: nothing armed */
 }
 
 void tmr_start(TMR *t, UINT ticks, TMRFN fn, void *arg)
@@ -75,6 +111,17 @@ void tmr_start(TMR *t, UINT ticks, TMRFN fn, void *arg)
     cur->prev       = &t->q;
     g_tmrq.count++;
     t->state = TMR_PENDING;
+
+    /* If `t` is now the head, the soonest deadline changed: (re-)arm the STIMER
+     * for its delta (ADR-0034 responsibility 2). This covers both the
+     * empty->nonempty bootstrap (t is the only timer) and head-shortening (t's
+     * deadline is nearer than the old head's). A tail insert leaves the head --
+     * and g_armed -- unchanged. Re-arming clears the old interval and starts
+     * afresh from now, so no timer ever fires early; only timers already queued
+     * lose the elapsed sub-interval (safe-late, immaterial for v1). */
+    if (g_tmrq.head.next == &t->q) {
+        tmr_arm(t->delta);
+    }
 }
 
 void tmr_cancel(TMR *t)
@@ -94,6 +141,17 @@ void tmr_cancel(TMR *t)
     q_remove(&g_tmrq, &t->q);
     t->state = TMR_IDLE;
     t->delta = 0u;
+
+    /* Cancel-drain (ADR-0034 responsibility 3): if this emptied the queue,
+     * disarm -- the async STIMER exit self-re-arms unconditionally, so an
+     * emptied queue left armed would keep taking timer interrupts forever
+     * (spec 6.3 "an idle stack takes zero timer interrupts"). Cancelling a
+     * non-head or a head-with-successor does NOT re-arm: the successor's
+     * deadline is >= the cancelled timer's, so the armed interval fires no later
+     * than needed and the next wake reconciles -- never early. */
+    if (Q_EMPTY(&g_tmrq)) {
+        tmr_disarm();
+    }
 }
 
 void nsftmr_run(UINT ticks)
@@ -127,13 +185,28 @@ void nsftmr_run(UINT ticks)
     }
 
     /* Re-arm the platform timer for the new head, or disarm if the queue
-     * drained (spec 6.3: an idle stack takes zero timer interrupts). */
+     * drained (the fire-drain point of the ADR-0034 invariant; spec 6.3: an idle
+     * stack takes zero timer interrupts). Both go through the helpers so g_armed
+     * tracks the hardware. */
     if (!Q_EMPTY(&g_tmrq)) {
         TMR *nh = Q_ENTRY(g_tmrq.head.next, TMR, q);
-        nsftmr_plat_arm(nh->delta);
+        tmr_arm(nh->delta);
     } else {
-        nsftmr_plat_disarm();
+        tmr_disarm();
     }
+}
+
+UINT nsftmr_wake(void)
+{
+    UINT n = g_armed;                   /* ticks the fired STIMER interval covered */
+
+    /* Advance the queue by exactly what the STIMER was armed for -- NOT 1
+     * (ADR-0034 responsibility 1: the #40 fix). nsftmr_run re-arms the new head
+     * through tmr_arm, so g_armed is refreshed for the next wake. A spurious
+     * wake with nothing armed (g_armed == 0, e.g. a stray POST) advances 0 and
+     * is a no-op; the caller counts it. */
+    nsftmr_run(n);
+    return n;
 }
 
 UINT nsftmr_count(void)

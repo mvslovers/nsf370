@@ -129,6 +129,12 @@ completion. Two candidate fixes, one survivor:
   picks up any queued CIB within a tick. Costs 10 interrupts/s and consciously
   trades ADR-0011's "an idle stack takes zero timer interrupts" for operator
   liveness; keeps `nsftmr_run(1)` tick accounting correct for M2+ timers.
+  **Correction (ADR-0034, issue #40):** the claim that the 1-tick heartbeat
+  "keeps `nsftmr_run(1)` tick accounting correct for M2+ timers" was the tick-
+  advance misconception — `nsftmr_run(1u)` per wake while the STIMER was armed for
+  the head delta made a delta-N timer fire after N(N+1)/2 ticks. The accounting is
+  now correct via `nsftmr_wake` (advance the ARMED count) regardless of the
+  heartbeat; the heartbeat is retained only as the idle-liveness wake.
 - **Corollary (documented in nsfthr.h):** `nsfthr_timed_wait`/`nsfthr_join` use
   `ecb_timed_waitlist` and therefore TTIMER-CANCEL the **calling** task's timer.
   Fine on the subtasks (they own theirs); on the executive they may run only
