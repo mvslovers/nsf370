@@ -11,6 +11,14 @@ Scenarios (subcommands):
   echo    N sequence-numbered datagrams, every reply verified byte-for-byte.
           The CTCI link is lossless (the M2 gate proved 1000/1000), so this
           asserts 100% replies -- UDP loss is NOT excused here.
+          RUNBOOK: run the rapid 1000/1000 echo on a FRESH/IDLE 0500/0501 pair
+          (the M3-5 idle-link condition). The full-rate echo has a UDP-echo
+          throughput ceiling (the app-subtask round-trip per datagram); on a pair
+          left MIH-degraded by prior heavy CTCI runs (a 4 MB TCP stream, sustained
+          ping) the reply rate falls behind and the run mismatches -- a pair-state
+          artifact, NOT a stack bug (paced echo and ping stay clean; issues #35 /
+          #40 live gates). Restart the STC / let the pair settle before a rapid
+          run; `sizes`/`kill9`/`quit` are rate-insensitive and unaffected.
   sizes   A payload sweep across the boundaries: 1 byte, a mid size, and the
           v1 maximum (MTU - 28). One oversize datagram (max + 1) must NOT be
           echoed -- it exceeds the v1 no-fragmentation limit and is dropped.
