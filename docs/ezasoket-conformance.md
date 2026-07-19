@@ -1,8 +1,8 @@
 # EZASOKET Conformance — NSF vs. IBM TCP/IP for MVS V3R2 (SC31-7187-03)
 
-**Status:** Initial version (M3-4). This document is the acceptance artifact
-for the M6 completeness audit (Architecture Spec §15.2). Updated per
-milestone.
+**Status:** M4-5 (the EZASOKET M4 verb set + SELECT). This document is the
+acceptance artifact for the M6 completeness audit (Architecture Spec §15.2).
+Updated per milestone.
 
 **Primary source:** IBM SC31-7187-03, *TCP/IP for MVS: Application
 Programming Interface Reference* (V3R2). Chapter 5 (CALL Instruction API)
@@ -108,6 +108,59 @@ socket entries use to call C from a hand-written asm entry — NOT `FUNHEAD`,
 which never sets the DSANAB the C callee's prologue reads and would corrupt
 the save chain (the issue-#8 S0C6 class). See `asm/ezasoh03.asm`.
 
+### 2.2 M4-5 call formats (verified against SC31-7187-03 §5.4)
+
+The EZASOKET M4 verb set (`CALL 'EZASOKET' USING ...`), same source and
+conventions as §2 (S halfword; ERRNO/RETCODE last, fullwords; SOC-FUNCTION
+CL16 blank-padded).
+
+| Function | CALL 'EZASOKET' USING ... | §5.4 |
+|---|---|---|
+| CONNECT | SOC-FUNCTION, S, NAME, ERRNO, RETCODE | .4 |
+| LISTEN | SOC-FUNCTION, S, BACKLOG, ERRNO, RETCODE | .18 |
+| ACCEPT | SOC-FUNCTION, S, NAME, ERRNO, RETCODE — NAME returns the peer; RETCODE = the NEW socket descriptor (≥ 0) | .1 |
+| SEND | SOC-FUNCTION, S, FLAGS, NBYTE, BUF, ERRNO, RETCODE | .26 |
+| RECV | SOC-FUNCTION, S, FLAGS, NBYTE, BUF, ERRNO, RETCODE | .21 |
+| SHUTDOWN | SOC-FUNCTION, S, HOW, ERRNO, RETCODE (HOW: 0=read, 1=write, 2=both) | .30 |
+| GETPEERNAME | SOC-FUNCTION, S, NAME, ERRNO, RETCODE | .12 |
+| SETSOCKOPT / GETSOCKOPT | SOC-FUNCTION, S, OPTNAME, OPTVAL, OPTLEN, ERRNO, RETCODE | .29/.14 |
+| FCNTL | SOC-FUNCTION, S, COMMAND, REQARG, ERRNO, RETCODE | .5 |
+| IOCTL | SOC-FUNCTION, S, COMMAND, REQARG/RETARG, ERRNO, RETCODE (FIONBIO: REQARG fullword 0/1) | .17 |
+| SELECT | SOC-FUNCTION, MAXSOC, TIMEOUT, RSNDMSK, WSNDMSK, ESNDMSK, RRETMSK, WRETMSK, ERETMSK, ERRNO, RETCODE | .24 |
+
+**SELECT semantics (§5.4.24 — the part everyone gets wrong; ADR-0035).**
+- **Bit strings in 32-bit fullwords, numbered RIGHT TO LEFT**: the right-most
+  bit of the first fullword = descriptor 0, left-most = descriptor 31; word 2
+  covers 32–63. Mask length = `((maxdesc + 32) / 32) * 4` bytes (drop the
+  remainder). NSF reads/writes each fullword byte-wise (the M2 big-endian
+  discipline) so host and target agree, and asserts the 0/31/32
+  fullword-boundary vectors literally.
+- **MAXSOC** (fullword) = the highest descriptor number to test; only bits
+  0..MAXSOC−1 are examined.
+- **TIMEOUT** = two fullwords (seconds, microseconds). Timeout elapsed with no
+  event → RETCODE = 0. Negative seconds = wait forever; zero/zero = poll.
+  RETCODE > 0 = the number of ready sockets, −1 = error.
+- **Read-ready**: data buffered, EOF (a RECV would return 0), or a pending
+  connection on a listener (ACCEPT counts as a read op). **Write-ready**:
+  output space available, or a nonblocking CONNECT's completion (its ERRNO at
+  issue time is 36 EINPROGRESS). **Exception (ESNDMSK)**: TAKESOCKET only —
+  **not supported in NSF v1, so ERETMSK is always returned zero** (documented).
+- Zero send-masks + MAXSOC ≤ 0 → "SELECT used as a timer."
+- **Numbering / phase:** the masks are socket NUMBERS; NSFEZA translates them to
+  internal descriptors through the per-app mapping table and passes a
+  descriptor/interest item array by `NSFRQE.ubuf` (same-space Phase 1, a keyed
+  cross-memory move in Phase 2). The frozen NSFRQE is unchanged (ADR-0035).
+
+**New EZASOH03 function codes.** Shelby's TYPE list covers CONN, LIST, ACCE,
+SEND, RECV, SHUT, GETP, SELE, IOCT — NSF reuses those codes. SETSOCKOPT /
+GETSOCKOPT have **no** code in his set, and their first four characters would
+collide with GETS(OCKNAME), so NSF pins **`SOPT`** (SETSOCKOPT) / **`GOPT`**
+(GETSOCKOPT), documented beside SNDT/RCVF. FCNTL has no TYPE in Shelby's set
+either (IOCTL/`IOCT` covers FIONBIO for the macro surface); the C API exposes
+`nsf_fcntl`, and the facade maps FCNTL(F_GETFL/F_SETFL of O_NONBLOCK) and
+IOCTL(FIONBIO) both onto the same per-app non-blocking bit. New codes ship in
+`maclib/nsfezasm.mac` (Shelby's shipped macro stays untouched, ADR-0029).
+
 ## 3. ERRNO policy (NSF)
 
 NSF returns the classic Table 67 numbers (BSD-derived, verified identical
@@ -153,6 +206,24 @@ classic **connect timeout** (Table 67: "the connection timed out before it was
 completed"); on an ESTABLISHED socket it aborts a parked SEND / RECV. No new
 `NSF_E*` values (the NSFRQE freeze holds).
 
+**M4-5 EZASOKET M4 set (added; ADR-0035).** One new provisional `NSF_E*` value,
+Table-67-verified: **`EINPROGRESS = 36`** — a nonblocking CONNECT returns
+RETCODE −1 / ERRNO 36 and the connection proceeds; SELECT-for-write reports its
+completion (Table 67: "the socket is nonblocking and the connection cannot be
+completed immediately"). The M4 verbs otherwise reuse existing values: SELECT
+overflow (a 5th concurrent parked SELECT) → **`EMFILE = 24`**; GETPEERNAME on an
+unconnected socket → **`ENOTCONN = 57`**; an unsupported SETSOCKOPT/GETSOCKOPT
+option, and FCNTL commands other than F_GETFL/F_SETFL, → **`EOPNOTSUPP = 45`**
+with the option/command number in the trace. **SETSOCKOPT/GETSOCKOPT minimal
+set:** GET returns `SO_RCVBUF`/`SO_SNDBUF` actuals (the fixed 4096 window /
+send budget); SET accepts `SO_REUSEADDR` (recorded; its only v1 effect is that
+BIND may take a local port whose sole holder is in TIME_WAIT) and `TCP_NODELAY`
+(recorded no-op — no Nagle until M5). **SHUTDOWN HOW:** 1 (write) drives the
+existing FIN path (RFC CLOSE / graceful teardown); 0 (read) marks EOF locally
+(a subsequent RECV returns 0) without a wire action; 2 (both) does both. As with
+the M3/M4-2 sets, only the NSFRQE *layout* is frozen — these values stay
+provisional until the M6 relink audit.
+
 **Extended (10xxx) codes.** NSF emits **none** in M3-4 (the facade-level
 IUCV/interface diagnostics in Table 68 have no analog in the Phase-1 same-AS
 transport). The subset NSF will emit — e.g. the 10108/10200 "first call not
@@ -188,6 +259,38 @@ subtasks × 50 consecutive calls with correct R15/RETCODE/ERRNO, plus the full
 lifecycle through the veneer). The veneer uses the cc370 C prologue (PDPPRLG),
 not FUNHEAD (see ADR-0029); a live column-72 assembler trap that swallowed one
 veneer instruction was found and fixed during that run.
+
+### 3.2 NSF status of the M4-5 function set (ADR-0035)
+
+| Function | Code | NSF status |
+|---|---|---|
+| CONNECT | CONN | Implemented (TCP); non-blocking (FIONBIO) returns -1 / EINPROGRESS and proceeds (SELECT-for-write reports completion) |
+| LISTEN | LIST | Implemented (TCP); backlog clamped to the accept-queue bound |
+| ACCEPT | ACCE | Implemented (TCP); RETCODE = a NEW 0-based socket number, NAME = the peer |
+| SEND | SEND | Implemented (TCP); byte count / partial (non-blocking) / EWOULDBLOCK |
+| RECV | RECV | Implemented (TCP); byte count, 0 at EOF, EWOULDBLOCK (non-blocking) |
+| SHUTDOWN | SHUT | Implemented (TCP); HOW 1/2 send FIN, HOW 0/2 mark local EOF |
+| GETPEERNAME | GETP | Implemented; ENOTCONN when there is no peer |
+| SELECT | SELE | Implemented (NSFSEL); right-to-left fullword masks, RETCODE = ready count / 0 on timeout; ERETMSK always zero (no TAKESOCKET); ≤ 4 concurrent parked SELECTs (5th → EMFILE) |
+| SETSOCKOPT | SOPT | Minimal set: SO_REUSEADDR / TCP_NODELAY accepted (no v1 effect); else EOPNOTSUPP |
+| GETSOCKOPT | GOPT | Minimal set: SO_RCVBUF / SO_SNDBUF return 4096; else EOPNOTSUPP |
+| FCNTL | (facade) | F_GETFL / F_SETFL of O_NONBLOCK — the per-app non-blocking bit (facade, no stack round-trip) |
+| IOCTL(FIONBIO) | IOCT | The per-app non-blocking bit (facade); FIONBIO value X'8004A77E' |
+
+Host-proven (`test/host/tsteza.c` 156 assertions — the verbs, FIONBIO
+persistence, the sockopt set, the EZASOH03 M4 codes, and the SELECT mask
+byte-exactness for descriptors 0/31/32; `test/tstsel.c` 47 — the SELECT engine;
+`test/tsttcp.c` — `tcp_poll` readiness + non-blocking connect; ASan+UBSan clean).
+The MVS live gate is `test/mvs/tstezat.c` (the M4 verbs over the real CTCI pair —
+LISTEN / FIONBIO-accept / SELECT-timeout deterministic, accept-echo +
+non-blocking-connect host-coordinated) and the `telnet`-driven `NSFTECHO` TCP echo
+sample — **pending Mike's countersign**.
+
+**SETSOCKOPT/GETSOCKOPT plist note.** The EZASMI SET/GETSOCKOPT plist carries no
+explicit LEVEL (IBM encodes it in OPTNAME); NSF's EZASOH03 SOPT/GOPT path defaults
+`SOL_SOCKET` — the level-aware surface is the C API (`nsf_setsockopt`/
+`nsf_getsockopt` take an explicit level). Reconciled with IBM's OPTNAME namespace
+at the M6 audit.
 
 ## 4. Appendix D Table 67 — System Error Return Codes (complete)
 

@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.33 — Draft for implementation. Companion document to the frozen
+*Version 1.34 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1881,6 +1881,27 @@ and the full EZASOH03 plist ABI live in `docs/ezasoket-conformance.md`.
 | M4 (TCP) | CONNECT, LISTEN, ACCEPT, SEND/WRITE, RECV/READ, SELECT, SHUTDOWN, SETSOCKOPT, GETSOCKOPT, FCNTL/IOCTL(FIONBIO), GETPEERNAME |
 | M6 | Completeness pass driven by what HTTPD and mvsMF actually call (audit against Shelby Beach's EZASMI and Jason Winter's x75.c usage); GETHOSTBYNAME et al. with the DNS resolver |
 
+> **Status (M4-5, v1.34): the M4 verb set + SELECT are in place** (ADR-0035).
+> NSFEZA gains the C API verbs `nsf_connect`/`listen`/`accept`/`send`/`recv`/
+> `shutdown`/`getpeername`/`select`/`setsockopt`/`getsockopt`/`fcntl`/`ioctl`,
+> and the EZASOH03 decoder + `maclib/nsfezasm.mac` (SOPT/GOPT) grow to match.
+> **SELECT** is one request over N sockets: its own small engine (**NSFSEL**, a
+> fixed static pool of 4 parked SELECTs with embedded timeout TMRs), reached
+> through registration seams (`soc_set_select_notify` / `nsfreq_register_select`)
+> so it adds no dependency to a build that omits it. Readiness is a side-effect-
+> free `PROTOPS.poll` probe (a precise `tcp_poll`; a generic fallback for UDP);
+> a readiness change is a single poke (`soc_notify_ready`) at the queue/state
+> edge (never gated on a `pend_*` slot). Socket teardown pokes `SEL_DEAD` so a
+> parked SELECT on a dying socket completes `ECONNABORTED` rather than hanging.
+> The EZASOKET masks (socket numbers, right-to-left fullword bits) are translated
+> to internal descriptors in the facade and carried as a descriptor/interest item
+> array via the frozen NSFRQE's `ubuf` — the layout is unchanged. **FIONBIO** is a
+> facade attribute (a per-app bit next to the descriptor; the SOCKCB stays spec-
+> exact, no flags field). **TCP and UDP join the `NSF` load module**, so an
+> inbound SYN to a closed port now draws a correct RST and an inbound UDP datagram
+> to an unbound port a port-unreachable — instead of the IP layer's blanket ICMP
+> protocol-unreachable. `NSFTECHO` (a TCP echo server) is the M4 exit-gate sample.
+
 ERRNO values follow the IBM EZASOKET documentation (not Unix `errno.h`
 values where they differ). A conformance table lives in `docs/ezasoket-
 conformance.md` and is updated per milestone — it is the acceptance
@@ -2172,6 +2193,47 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.34: M4-5 — the EZASOKET M4 verb set + SELECT (ADR-0035).** NSFEZA gains the
+stream/control verbs (`nsf_connect`/`listen`/`accept`/`send`/`recv`/`shutdown`/
+`getpeername`/`select`/`setsockopt`/`getsockopt`/`fcntl`/`ioctl`), the EZASOH03
+decoder + `maclib/nsfezasm.mac` grow to match (new codes SOPT/GOPT), and TCP +
+UDP join the `NSF` load module (a SYN to a closed port now draws a RST, a UDP
+datagram to an unbound port a port-unreachable, instead of the IP layer's blanket
+ICMP protocol-unreachable — which also clears the host-kernel ENOPROTOOPT caching
+noted in the live-run friction). **SELECT** is the one verb that is one request
+over N sockets, so it gets its own engine, **NSFSEL**: a fixed static pool of 4
+parked SELECTs each with an embedded timeout TMR, reached only through
+registration seams (`soc_set_select_notify` in NSFSOC, `nsfreq_register_select` in
+NSFREQ) so a build without it is byte-for-byte unchanged. Readiness is a
+side-effect-free `PROTOPS.poll` probe (a precise `tcp_poll`; a generic
+rxq/acceptq/write-always fallback for UDP); a readiness change pokes
+`soc_notify_ready` at the queue/state edge (never gated on a `pend_*` slot, which
+is NULL exactly when a SELECT is the waiter), and `soc_destroy` pokes `SEL_DEAD` so
+a parked SELECT on a dying socket completes `ECONNABORTED` rather than hanging. The
+right-to-left fullword masks are translated (socket number ↔ internal descriptor)
+in the facade and carried as an item array via the frozen NSFRQE's `ubuf` — no
+layout change (a new provisional errno, `EINPROGRESS = 36`, is added). FIONBIO's
+non-blocking flag is a facade attribute (a per-app bit; the SOCKCB stays spec-exact
+with no flags field). `NSFTECHO` (a TCP echo server) is the M4 exit-gate sample.
+Host **1985→2152** (TSTSEL 47 engine + tcp_poll/non-blocking-connect in TSTTCP +
+mask byte-exactness/verbs/FIONBIO/sockopt/EZASOH03-incl-SELE in TSTEZA), ASan+UBSan
+clean;
+NSF + NSFECHO + NSFTECHO + 40 test modules cross-link clean, alias scan clean.
+Spec §15.2 status + ADR-0035 + conformance §2.2/§3. **Validated live on MVSCE:**
+`S NSF` clean startup (regression), ping 1000/1000, the new closed-port RST
+byte-exact on the wire, TSTEZAT M4 verbs, and the NSFTECHO telnet echo gate (3WHS
++ echo + FIN + sequential accept + QUIT, clean shutdown CC 0). **A foundational
+NSFEVT bug fell out of the live NSFTECHO shutdown:** `nsfevt_stop` posted the
+stopECB with the BIT-ONLY `nsfevt_plat_post`, which on MVS does not wake a task
+already committed to the SVC-1 WAIT; NSFECHO's STIMER heartbeat masked it, but
+NSFTECHO's TCP timers **drain-disarm** the STIMER at teardown (`tmr_cancel`, §6.3 /
+ADR-0034), so the standalone cross-task stop deadlocked the executive — exactly
+ADR-0034's flagged "does the loop wake on an idle event without the heartbeat"
+question, answered NO. Fixed by a new **`nsfevt_plat_wake`** seam (a real SVC-2
+`ecb_post` on MVS, the cond-broadcast on host) used by `nsfevt_stop`; the bit-only
+post stays for posts always accompanied by a real device/request wake. Same lesson
+as `soc_complete`.
 
 **v1.33: Timer arming/consumption contract (fixes the executive tick-advance,
 issue #40).** Foundation fix in NSFTMR/NSFEVT (ADR-0034); no TCP/driver/API

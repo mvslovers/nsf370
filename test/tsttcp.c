@@ -2099,6 +2099,119 @@ static void test_flowctl_no_oversend(NETDEV *dev)
     CHECK_EQ((long)large_inuse(), 0L, "flowctl: BUFLARGE baseline");
 }
 
+/* M4-5: non-blocking CONNECT. RQ_F_NONBLOCK completes EINPROGRESS immediately (not
+ * parked) and the connection proceeds; SYN|ACK -> ESTABLISHED (success), or a RST ->
+ * the socket is destroyed (the SEL_DEAD teardown poke is what aborts a parked
+ * select-for-write on it -- proven in tstsel S9). No parked request either way. */
+static void test_nonblock_connect(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64];
+    USHORT total, sport;
+    UINT   synseq;
+    UCHAR  flags;
+    UINT   desc;
+
+    /* success path */
+    desc = tcp_socket();
+    rqe_init(&r, RQ_CONNECT, desc);
+    r.p1 = PEER_IP; r.p2 = 3500u; r.flags = (USHORT)RQ_F_NONBLOCK;
+    r.retcode = 0x5A5A;
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETERR, "nbconnect: RETCODE -1");
+    CHECK_EQ((long)r.errno_, (long)NSF_EINPROGRESS, "nbconnect: errno EINPROGRESS");
+    CHECK_EQ((long)g_capcount, 1L, "nbconnect: SYN sent (proceeds)");
+    CHECK_EQ((long)tcb_state(desc), (long)TCP_SYN_SENT, "nbconnect: SYN_SENT");
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 3500u, sport, 0x60000000u,
+                      synseq + 1u, (UCHAR)(TCP_FL_SYN | TCP_FL_ACK), 0x2000u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(desc), (long)TCP_ESTABLISHED, "nbconnect: SYN|ACK -> ESTABLISHED");
+    /* tear it down with a RST (no parked request to abort). The RST must sit at
+     * RCV.NXT (peerISS+1) to be acceptable in a synchronized state. */
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 3500u, sport, 0x60000001u,
+                      0u, TCP_FL_RST, 0u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(desc), -1L, "nbconnect: RST tore the socket down");
+
+    /* failure path: a refused non-blocking connect (RST in SYN_SENT) destroys the
+     * socket -- no parked request, no leak. */
+    desc = tcp_socket();
+    rqe_init(&r, RQ_CONNECT, desc);
+    r.p1 = PEER_IP; r.p2 = 3501u; r.flags = (USHORT)RQ_F_NONBLOCK;
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.errno_, (long)NSF_EINPROGRESS, "nbconnect: refused starts EINPROGRESS");
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+    total = build_tcp(pkt, PEER_IP, HOME_IP, 3501u, sport, 0u,
+                      synseq + 1u, (UCHAR)(TCP_FL_RST | TCP_FL_ACK), 0u, NULL, 0u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(desc), -1L, "nbconnect: refused RST destroyed the socket");
+    CHECK_EQ((long)tcb_inuse(), 0L, "nbconnect: no TCB leaked");
+}
+
+/* M4-5: tcp_poll -- the REAL SELECT readiness logic behind the PROTOPS vtable, each
+ * ADR-0035 source asserted directly (a dummy poll in the SELECT-engine test would
+ * prove only that the engine CALLS poll, not that poll is right). States and queues
+ * are set by hand; poll is side-effect-free so nothing else moves. */
+static void test_tcp_poll(void)
+{
+    PROTOPS *ops  = nsftcp_protops();
+    UINT     desc = tcp_socket();
+    SOCKCB  *s    = sock_lookup(desc);
+    TCB     *tcb;
+    PBUF    *b;
+
+    CHECK(s != NULL && s->pcb != NULL, "poll: socket + TCB");
+    tcb = (TCB *)s->pcb;
+
+    /* fresh CLOSED socket: neither readable nor writable */
+    CHECK_EQ((long)ops->poll(s, (int)(SEL_READ | SEL_WRITE)), 0L,
+             "poll: CLOSED -> nothing ready");
+
+    /* ESTABLISHED, empty sndq -> write-ready, not read-ready */
+    tcb->state = (UCHAR)TCP_ESTABLISHED; tcb->sndq_bytes = 0u;
+    CHECK_EQ((long)ops->poll(s, (int)SEL_WRITE), (long)SEL_WRITE,
+             "poll: ESTABLISHED+room -> write-ready");
+    CHECK_EQ((long)ops->poll(s, (int)SEL_READ), 0L, "poll: no data -> not read-ready");
+
+    /* data on the rxq -> read-ready */
+    b = buf_alloc(0u);
+    CHECK(b != NULL, "poll: buf_alloc");
+    CHECK_EQ((long)q_enq(&s->rxq, &b->q), 0L, "poll: enqueue rxq");
+    CHECK_EQ((long)ops->poll(s, (int)SEL_READ), (long)SEL_READ, "poll: rxq data -> read-ready");
+    buf_free(Q_ENTRY(q_deq(&s->rxq), PBUF, q));     /* drain for the EOF check      */
+
+    /* EOF (peer FIN consumed) -> read-ready with an empty rxq */
+    tcb->flags |= (UCHAR)TCB_F_RCVFIN;
+    CHECK_EQ((long)ops->poll(s, (int)SEL_READ), (long)SEL_READ, "poll: EOF -> read-ready");
+    tcb->flags &= (UCHAR)~TCB_F_RCVFIN;
+
+    /* sndq full -> NOT write-ready */
+    tcb->sndq_bytes = (UINT)NSFTCP_SNDBUF;
+    CHECK_EQ((long)ops->poll(s, (int)SEL_WRITE), 0L, "poll: sndq full -> not write-ready");
+    tcb->sndq_bytes = 0u;
+
+    /* SYN_SENT (connecting) -> not write-ready yet */
+    tcb->state = (UCHAR)TCP_SYN_SENT;
+    CHECK_EQ((long)ops->poll(s, (int)SEL_WRITE), 0L, "poll: SYN_SENT -> not write-ready");
+
+    /* a listener with a pending connection on the acceptq -> read-ready */
+    tcb->state = (UCHAR)TCP_LISTEN;
+    {
+        QELEM child;
+        memset(&child, 0, sizeof(child));
+        CHECK_EQ((long)q_enq(&s->acceptq, &child), 0L, "poll: enqueue acceptq");
+        CHECK_EQ((long)ops->poll(s, (int)SEL_READ), (long)SEL_READ,
+                 "poll: acceptq pending -> listener read-ready");
+        (void)q_deq(&s->acceptq);                   /* unlink before teardown       */
+    }
+
+    tcp_close(desc);
+}
+
 int main(void)
 {
     DEVCFG  cfg;
@@ -2187,6 +2300,10 @@ int main(void)
     test_partial_ack_backoff(dev);
     test_timer_exclusive(dev);
     test_flowctl_no_oversend(dev);
+
+    /* M4-5: the SELECT readiness probe + non-blocking connect. */
+    test_tcp_poll();
+    test_nonblock_connect(dev);
 
     {
         NSFRQE rt;

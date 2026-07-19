@@ -116,3 +116,57 @@ NSFECHO: leak gate clean -- CC 0
 ```
 
 and the job ends with `COND CODE 0000`, no `SYSUDUMP`.
+
+---
+
+## NSFTECHO — a TCP echo server (M4-5)
+
+`nsftecho.c` is the stream sibling of NSFECHO — the M4 milestone's user-visible
+deliverable and its exit-gate demonstration. Same shape, TCP verbs:
+
+1. bring the Phase-1 stack up (CTCI device + IP + **TCP**) in the same address
+   space as the app;
+2. `nsf_initapi` → `nsf_socket(AF_INET, STREAM)` → `nsf_bind` → `nsf_listen`;
+3. **accept loop**: blocking `nsf_accept` → per-connection inner loop of blocking
+   `nsf_recv` → `nsf_send` the same bytes back, until `nsf_recv` returns `0`
+   (EOF: the peer closed) → `nsf_close` the connection → back to accept;
+4. stop cleanly when a received chunk begins with the raw bytes **`QUIT`** (reply
+   `BYE`, close, `nsf_termapi`), and print a leak gate.
+
+Connections are handled **one at a time** (sequential accept) — deliberately
+minimal, the same "read it top to bottom" intent as NSFECHO. The binary-
+transparency and Phase-1/Phase-2 notes above apply unchanged (`QUIT`/`BYE` are
+raw bytes, and the program relinks unchanged in M5).
+
+### Build, deploy, run
+
+```sh
+make modules      # cross-compile + link (NSFTECHO carries the full stack)
+make deploy       # upload into NSF.LINKLIB
+```
+
+Submit `jcl/NSFTECHO.jcl`; `PARM` is the TCP port (default `7`). Drive it from
+the host:
+
+```sh
+telnet 192.168.200.1 7        # type lines; they echo back
+                              # a line beginning "QUIT" ends the server
+```
+
+The device is wired to the mvsdev CTCI pair by constants at the top of
+`nsftecho.c` (`-DNSFTECHO_CUU=…` etc. for a different pair).
+
+### What a passing gate looks like
+
+Server side (`SYSPRINT`, at shutdown), after a telnet session that echoed a few
+lines and quit:
+
+```
+NSFTECHO: conns=2 echoed=<n> send_fail=0 quit=yes
+NSFTECHO:   NSFTCP established = 2
+NSFTECHO: leak gate clean -- CC 0
+```
+
+and the job ends with `COND CODE 0000`, no `SYSUDUMP`. On the wire (host
+`tcpdump -ni tun0`), each connection shows the 3-way handshake, the echoed
+segments, and a clean 4-way FIN on close.

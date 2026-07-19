@@ -82,6 +82,7 @@ enum {
 #define NSF_EINVAL          22      /* invalid argument / unsupported request   */
 #define NSF_EMFILE          24      /* socket table full (no free descriptor)   */
 #define NSF_EWOULDBLOCK     35      /* == EAGAIN: op would block, non-blocking   */
+#define NSF_EINPROGRESS     36      /* non-blocking CONNECT started (M4-5)       */
 #define NSF_EDESTADDRREQ    39      /* SEND with no peer (UDP: SENDTO required)  */
 #define NSF_EMSGSIZE        40      /* datagram larger than the interface MTU   */
 #define NSF_EPROTONOSUPPORT 43      /* protocol not supported                   */
@@ -107,6 +108,22 @@ enum {
  * errno_ set (spec 15.1). */
 #define NSF_RETOK       0
 #define NSF_RETERR    (-1)
+
+/* SETSOCKOPT/GETSOCKOPT level + option names NSF honours (M4-5, BSD numbering,
+ * docs/ezasoket-conformance.md §3). The request carries the level in p1, the
+ * option in p2, and the integer optval in p3 (SET) / returns it in p3 (GET).
+ * Everything outside this minimal set completes NSF_EOPNOTSUPP with the option in
+ * the trace. NSF_SO_DFLT_BUF is the fixed byte size GET reports for SO_RCVBUF /
+ * SO_SNDBUF -- it mirrors the TCP receive window / send budget (both 4096;
+ * NSFTCP_RCVWND_DEFAULT / NSFTCP_SNDBUF), fixed until TCPCONFIG makes them tunable
+ * (M5). */
+#define NSF_SOL_SOCKET     0xFFFF   /* level: socket-level options              */
+#define NSF_SO_REUSEADDR   0x0004   /* accepted (TIME_WAIT bind); no v1 effect  */
+#define NSF_SO_SNDBUF      0x1001   /* GET: the send budget                     */
+#define NSF_SO_RCVBUF      0x1002   /* GET: the receive window                  */
+#define NSF_IPPROTO_TCP    6        /* level: TCP options                       */
+#define NSF_TCP_NODELAY    0x0001   /* accepted no-op (no Nagle until M5)       */
+#define NSF_SO_DFLT_BUF    4096
 
 /* The request block (spec 10.4). 64-byte core on the S/370 target; the request
  * pool object size is 96 (NSFRQE_OBJSIZE) so the block has room to grow inside a
@@ -168,7 +185,7 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_init NSFRQINI   nsfreq_submit NSFRQSUB   nsfreq_wait NSFRQWT
  *   nsfreq_call NSFRQCAL   nsfreq_dispatch NSFRQDSP nsfreq_drain NSFRQDRN
  *   nsfreq_pending NSFRQPND nsfreq_ecb NSFRQECB
- *   nsfreq_register_proto NSFRQRPT
+ *   nsfreq_register_proto NSFRQRPT  nsfreq_register_select NSFRQRSL
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -181,6 +198,14 @@ void     nsfreq_init(void) asm("NSFRQINI");
  * (spec 10.2). M3-3 registers UDP (17); a test registers its dummy protocol.
  * Returns 0 on success, non-zero if the small protocol table is full. */
 int      nsfreq_register_proto(UCHAR proto, struct protops *ops) asm("NSFRQRPT");
+
+/* Register the RQ_SELECT handler (M4-5, ADR-0035). SELECT is one request over N
+ * sockets -- its own engine (NSFSEL) rather than a per-socket PROTOPS op -- so
+ * NSFREQ routes RQ_SELECT to the handler registered here if present, else completes
+ * it NSF_EOPNOTSUPP (the M3-2 behaviour, so a build without NSFSEL is unchanged).
+ * The handler either completes r (immediately ready / poll / timeout) or parks it
+ * in the SELECT engine; it never leaves r hanging. `fn` NULL unregisters. */
+void     nsfreq_register_select(void (*fn)(NSFRQE *r)) asm("NSFRQRSL");
 
 /* The requestECB the executive adds to its ECBLIST (spec 5.3). Owned by NSFREQ;
  * nsfreq_drain resets it before draining (reset-before-WAIT, ADR-0022). */

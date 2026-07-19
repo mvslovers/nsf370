@@ -23,8 +23,10 @@
 #include "nsfeza.h"
 #include "nsfreq.h"
 #include "nsfsoc.h"
+#include "nsfsel.h"
 #include "nsfevt.h"
 #include "nsfthr.h"
+#include "nsftmr.h"
 #include "nsfbuf.h"
 #include "nsfsts.h"
 #include "nsfmm.h"
@@ -40,12 +42,57 @@
 #define PEER_PORT    5555u
 
 /* ---- test-only dummy protocol (the TSTREQ PROTOPS shape) ------------------- */
+static PROTOPS dummy_ops;                    /* fwd: d_accept spawns a child      */
+
+/* Per-socket SELECT readiness, indexed by SOCKCB.id (set before an immediate-
+ * ready nsf_select so it never parks in the threaded harness). */
+static int g_ready[NSFSOC_MAX_DEFAULT];
+
 static int d_attach(SOCKCB *s)             { (void)s; return 0; }
 static int d_bind(SOCKCB *s)               { (void)s; return 0; }
-static int d_connect(SOCKCB *s, NSFRQE *r) { (void)s; (void)r; return 0; }
 static int d_listen(SOCKCB *s, int bl)     { (void)s; (void)bl; return 0; }
-static int d_close(SOCKCB *s, NSFRQE *r)   { (void)s; (void)r; return 0; }
 static int d_detach(SOCKCB *s)             { (void)s; return 0; }
+static int d_poll(SOCKCB *s, int want)     { return g_ready[s->id] & want; }
+
+/* CONNECT: record the peer (so GETPEERNAME can read it) and complete RETOK. */
+static int d_connect(SOCKCB *s, NSFRQE *r)
+{
+    s->faddr = r->p1;
+    s->fport = (USHORT)r->p2;
+    s->state = (UCHAR)SOC_ST_CONNECTED;
+    soc_complete(r, NSF_RETOK, 0);
+    return 0;
+}
+
+/* ACCEPT: spawn a child socket (scoped to the same app), hand its descriptor + a
+ * fixed peer back -- exercises the facade's accept->new-number mapping. */
+static int d_accept(SOCKCB *s, NSFRQE *r)
+{
+    SOCKCB *child = soc_create(s->domain, s->type, s->proto, &dummy_ops);
+
+    if (child == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_EMFILE);
+        return 0;
+    }
+    child->owner_ascb = s->owner_ascb;      /* TERMAPI mass-teardown finds it     */
+    child->faddr      = PEER_ADDR;
+    child->fport      = (USHORT)PEER_PORT;
+    child->state      = (UCHAR)SOC_ST_CONNECTED;
+    r->p1 = child->faddr;
+    r->p2 = (UINT)child->fport;
+    soc_complete(r, (INT)soc_desc(child), 0);
+    return 0;
+}
+
+/* SHUTDOWN: acknowledge (a UDP-shaped dummy has no FIN path). */
+static int d_shutdown(SOCKCB *s, NSFRQE *r)
+{
+    (void)s;
+    soc_complete(r, NSF_RETOK, 0);
+    return 0;
+}
+
+static int d_close(SOCKCB *s, NSFRQE *r)   { (void)s; (void)r; return 0; }
 
 /* Round-trip handshake: d_recv signals when it parks; a SENDTO trigger's d_send
  * completes the parked recv (the "datagram arrived" moment). */
@@ -98,7 +145,8 @@ static int d_send(SOCKCB *s, NSFRQE *r)
 }
 
 static PROTOPS dummy_ops = {
-    d_attach, d_bind, d_connect, d_listen, d_send, d_recv, d_close, d_detach
+    d_attach, d_bind, d_connect, d_listen, d_send, d_recv, d_close, d_detach,
+    d_accept, d_poll, d_shutdown
 };
 
 /* ---- harness --------------------------------------------------------------- */
@@ -339,12 +387,13 @@ static void test_decoder(void)
     CHECK_EQ((long)rcv, (long)NSF_RETERR, "unknown code -> RETCODE -1");
     CHECK_EQ((long)er, (long)NSF_EOPNOTSUPP, "unknown code -> ERRNO EOPNOTSUPP");
 
-    /* an unimplemented-but-known code (CONNECT) -> same clean EOPNOTSUPP */
+    /* a known-but-still-unimplemented code (GETHOSTBYNAME, M6/DNS) -> same clean
+     * EOPNOTSUPP (CONN et al. are implemented from M4-5; see test_decoder_m4). */
     er = 0; rcv = 0;
-    pl.func = "CONN";
+    pl.func = "GETH";
     (void)nsf_ezasoh03(&pl);
-    CHECK_EQ((long)rcv, (long)NSF_RETERR, "CONN (unsupported) -> RETCODE -1");
-    CHECK_EQ((long)er, (long)NSF_EOPNOTSUPP, "CONN (unsupported) -> ERRNO EOPNOTSUPP");
+    CHECK_EQ((long)rcv, (long)NSF_RETERR, "GETH (unsupported) -> RETCODE -1");
+    CHECK_EQ((long)er, (long)NSF_EOPNOTSUPP, "GETH (unsupported) -> ERRNO EOPNOTSUPP");
 
     /* INIT via the decoder */
     nsfeza_init();
@@ -381,6 +430,275 @@ static void test_decoder(void)
     CHECK_EQ((long)soc_count(), 0L, "decoder TERM emptied the app");
 }
 
+/* S7: the M4-5 verbs through the core -- CONNECT/GETPEERNAME, LISTEN/ACCEPT (the
+ * new-number mapping), SEND, SHUTDOWN, and the EBADF / ENOTCONN error matrix. */
+static void test_m4_verbs(void)
+{
+    NSF_SOCKADDR_IN peer, got;
+    INT s, l, a, rc, namelen;
+
+    nsfeza_init();
+
+    /* CONNECT records a peer; GETPEERNAME reads it back. */
+    s = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+    CHECK(s >= 0, "m4: stream socket");
+    mk_sa(&peer, PEER_ADDR, PEER_PORT);
+    rc = nsf_connect(s, &peer, (INT)sizeof(peer));
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "m4: CONNECT ok");
+    namelen = 0;
+    rc = nsf_getpeername(s, &got, &namelen);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "m4: GETPEERNAME ok");
+    CHECK_EQ((long)sa_addr(&got), (long)PEER_ADDR, "m4: peer addr");
+    CHECK_EQ((long)sa_port(&got), (long)PEER_PORT, "m4: peer port");
+
+    rc = nsf_send(s, "hello", 5, 0);
+    CHECK_EQ((long)rc, 5L, "m4: SEND byte count");
+    rc = nsf_shutdown(s, SHUT_WR);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "m4: SHUTDOWN(WR) ok");
+
+    /* LISTEN + ACCEPT hands back a NEW socket number (!= the listener). */
+    l = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+    rc = nsf_listen(l, 5);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "m4: LISTEN ok");
+    namelen = 0;
+    a = nsf_accept(l, &got, &namelen);
+    CHECK(a >= 0, "m4: ACCEPT -> a socket number");
+    CHECK(a != l, "m4: ACCEPT number differs from the listener");
+    CHECK_EQ((long)sa_addr(&got), (long)PEER_ADDR, "m4: ACCEPT peer addr");
+    CHECK_EQ((long)namelen, (long)sizeof(NSF_SOCKADDR_IN), "m4: ACCEPT namelen=16");
+
+    /* GETPEERNAME on an unconnected socket -> ENOTCONN. */
+    rc = nsf_getpeername(l, &got, &namelen);
+    CHECK_EQ((long)rc, (long)NSF_RETERR, "m4: GETPEERNAME on a listener -> -1");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_ENOTCONN, "  errno ENOTCONN");
+
+    /* EBADF matrix: every verb on a closed number. */
+    (void)nsf_close(s);
+    CHECK_EQ((long)nsf_connect(s, &peer, (INT)sizeof(peer)), (long)NSF_RETERR, "m4: CONNECT closed -> -1");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EBADF, "  CONNECT EBADF");
+    CHECK_EQ((long)nsf_send(s, "x", 1, 0), (long)NSF_RETERR, "m4: SEND closed -> -1");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EBADF, "  SEND EBADF");
+    CHECK_EQ((long)nsf_recv(s, &got, 4, 0), (long)NSF_RETERR, "m4: RECV closed -> -1");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EBADF, "  RECV EBADF");
+    CHECK_EQ((long)nsf_shutdown(s, SHUT_RDWR), (long)NSF_RETERR, "m4: SHUTDOWN closed -> -1");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EBADF, "  SHUTDOWN EBADF");
+    CHECK_EQ((long)nsf_listen(s, 1), (long)NSF_RETERR, "m4: LISTEN closed -> -1");
+    CHECK_EQ((long)nsf_accept(s, NULL, NULL), (long)NSF_RETERR, "m4: ACCEPT closed -> -1");
+    CHECK_EQ((long)nsf_getpeername(s, &got, &namelen), (long)NSF_RETERR, "m4: GETPEERNAME closed -> -1");
+
+    (void)nsf_termapi();
+    CHECK_EQ((long)soc_count(), 0L, "m4: TERMAPI emptied the app (listener + child)");
+}
+
+/* S8: FIONBIO / FCNTL persistence -- the flag threads RQ_F_NONBLOCK into every
+ * subsequent request (a non-blocking RECV on an empty socket -> EWOULDBLOCK). */
+static void test_fionbio(void)
+{
+    INT s, rc, on = 1, off = 0, fl;
+    char buf[8];
+
+    nsfeza_init();
+    s = nsf_socket(NSF_AF_INET, NSF_SOCK_DGRAM, 0);
+    CHECK(s >= 0, "fionbio: socket");
+
+    /* default blocking: F_GETFL has no O_NONBLOCK. */
+    fl = nsf_fcntl(s, NSF_F_GETFL, 0);
+    CHECK_EQ((long)(fl & NSF_O_NONBLOCK), 0L, "fionbio: default blocking");
+
+    /* IOCTL(FIONBIO, 1) -> a blocking RECV now returns EWOULDBLOCK. */
+    rc = nsf_ioctl(s, (INT)NSF_FIONBIO, &on);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "fionbio: IOCTL FIONBIO on");
+    fl = nsf_fcntl(s, NSF_F_GETFL, 0);
+    CHECK(fl & NSF_O_NONBLOCK, "fionbio: F_GETFL shows O_NONBLOCK");
+    rc = nsf_recv(s, buf, (INT)sizeof(buf), 0);         /* flags=0, but persistent */
+    CHECK_EQ((long)rc, (long)NSF_RETERR, "fionbio: non-blocking RECV -> -1");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EWOULDBLOCK, "  errno EWOULDBLOCK");
+
+    /* IOCTL(FIONBIO, 0) clears it; F_SETFL O_NONBLOCK sets it again. */
+    rc = nsf_ioctl(s, (INT)NSF_FIONBIO, &off);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "fionbio: IOCTL FIONBIO off");
+    fl = nsf_fcntl(s, NSF_F_GETFL, 0);
+    CHECK_EQ((long)(fl & NSF_O_NONBLOCK), 0L, "fionbio: cleared");
+    (void)nsf_fcntl(s, NSF_F_SETFL, NSF_O_NONBLOCK);
+    rc = nsf_recv(s, buf, (INT)sizeof(buf), 0);
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EWOULDBLOCK, "fionbio: F_SETFL path -> EWOULDBLOCK");
+
+    (void)nsf_close(s);
+    (void)nsf_termapi();
+}
+
+/* S9: SETSOCKOPT/GETSOCKOPT minimal set. */
+static void test_sockopt(void)
+{
+    INT s, rc, val, len, one = 1;
+
+    nsfeza_init();
+    s = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+
+    rc = nsf_setsockopt(s, NSF_SOL_SOCKET, NSF_SO_REUSEADDR, &one, (INT)sizeof(one));
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "sockopt: SET SO_REUSEADDR accepted");
+    rc = nsf_setsockopt(s, NSF_IPPROTO_TCP, NSF_TCP_NODELAY, &one, (INT)sizeof(one));
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "sockopt: SET TCP_NODELAY accepted");
+    rc = nsf_setsockopt(s, NSF_SOL_SOCKET, 0x7777, &one, (INT)sizeof(one));
+    CHECK_EQ((long)rc, (long)NSF_RETERR, "sockopt: SET unknown -> -1");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EOPNOTSUPP, "  errno EOPNOTSUPP");
+
+    val = 0; len = (INT)sizeof(val);
+    rc = nsf_getsockopt(s, NSF_SOL_SOCKET, NSF_SO_RCVBUF, &val, &len);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "sockopt: GET SO_RCVBUF ok");
+    CHECK_EQ((long)val, (long)NSF_SO_DFLT_BUF, "sockopt: SO_RCVBUF value");
+    val = 0; len = (INT)sizeof(val);
+    rc = nsf_getsockopt(s, NSF_SOL_SOCKET, NSF_SO_SNDBUF, &val, &len);
+    CHECK_EQ((long)val, (long)NSF_SO_DFLT_BUF, "sockopt: SO_SNDBUF value");
+    val = 0; len = (INT)sizeof(val);
+    rc = nsf_getsockopt(s, NSF_SOL_SOCKET, 0x7777, &val, &len);
+    CHECK_EQ((long)rc, (long)NSF_RETERR, "sockopt: GET unknown -> -1");
+
+    (void)nsf_close(s);
+    (void)nsf_termapi();
+}
+
+/* S10: SELECT mask byte-exactness -- the right-to-left fullword numbering built
+ * against the addendum LITERALLY (descriptors 0, 31, 32 -- the fullword boundary).
+ * Sockets are made ready BEFORE the call so nsf_select returns immediately (never
+ * parks in the threaded harness). */
+static void test_select_masks(void)
+{
+    UCHAR rmask[8], wmask[8];
+    INT   i, rc, s;
+
+    nsfeza_init();
+    /* create 33 sockets: numbers 0..32 (== SOCKCB.id for a fresh sequence). */
+    for (i = 0; i < 33; i++) {
+        s = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+        CHECK_EQ((long)s, (long)i, "selmask: socket number == i");
+    }
+    memset(g_ready, 0, sizeof(g_ready));
+    g_ready[0]  = (int)SEL_READ;                    /* number 0 read-ready         */
+    g_ready[31] = (int)SEL_WRITE;                   /* number 31 write-ready       */
+    g_ready[32] = (int)SEL_READ;                    /* number 32 read-ready        */
+
+    /* interest: read on 0 and 32, write on 31 (right-to-left, byte-wise). */
+    memset(rmask, 0, sizeof(rmask));
+    memset(wmask, 0, sizeof(wmask));
+    rmask[3] = 0x01u;                               /* bit 0  (LSB of word 0)      */
+    rmask[7] = 0x01u;                               /* bit 32 (LSB of word 1)      */
+    wmask[0] = 0x80u;                               /* bit 31 (MSB of word 0)      */
+
+    rc = nsf_select(33, rmask, wmask, NULL, 0, 0);  /* poll form -> immediate      */
+    CHECK_EQ((long)rc, 3L, "selmask: 3 sockets ready");
+
+    /* byte-exact output masks. */
+    CHECK(rmask[0] == 0x00u && rmask[1] == 0x00u && rmask[2] == 0x00u &&
+          rmask[3] == 0x01u, "selmask: read word0 = 0x00000001 (desc 0)");
+    CHECK(rmask[4] == 0x00u && rmask[5] == 0x00u && rmask[6] == 0x00u &&
+          rmask[7] == 0x01u, "selmask: read word1 = 0x00000001 (desc 32)");
+    CHECK(wmask[0] == 0x80u && wmask[1] == 0x00u && wmask[2] == 0x00u &&
+          wmask[3] == 0x00u, "selmask: write word0 = 0x80000000 (desc 31)");
+    CHECK(wmask[4] == 0x00u && wmask[5] == 0x00u && wmask[6] == 0x00u &&
+          wmask[7] == 0x00u, "selmask: write word1 empty");
+
+    memset(g_ready, 0, sizeof(g_ready));
+    (void)nsf_termapi();
+    CHECK_EQ((long)soc_count(), 0L, "selmask: TERMAPI closed all 33");
+}
+
+/* S11: the EZASOH03 decoder for the M4-5 codes (happy path per code). */
+static void test_decoder_m4(void)
+{
+    EZAPL_T pl;
+    INT     er, rcv, af, type, proto, val, optlen, how, backlog;
+    USHORT  snum, lnum;
+    NSF_SOCKADDR_IN peer, got;
+
+    memset(&pl, 0, sizeof(pl));
+    pl.errnop = &er; pl.retcodep = &rcv;
+    nsfeza_init();
+
+    /* INIT + SOCK a stream socket to operate on. */
+    { INT maxsoc = 0; char id[16], st[8];
+      memset(id, ' ', sizeof(id)); memset(st, ' ', sizeof(st));
+      pl.func = "INIT"; pl.arg[0] = &maxsoc; pl.arg[1] = id; pl.arg[2] = st;
+      pl.arg[3] = NULL; (void)nsf_ezasoh03(&pl); }
+    af = NSF_AF_INET; type = NSF_SOCK_STREAM; proto = 0;
+    pl.func = "SOCK"; pl.arg[0] = &af; pl.arg[1] = &type; pl.arg[2] = &proto;
+    (void)nsf_ezasoh03(&pl);
+    CHECK(rcv >= 0, "decm4: SOCK -> descriptor");
+    snum = (USHORT)rcv;
+
+    /* CONN via the decoder. */
+    mk_sa(&peer, PEER_ADDR, PEER_PORT);
+    pl.func = "CONN"; pl.arg[0] = &snum; pl.arg[1] = &peer;
+    er = -1; rcv = -1; (void)nsf_ezasoh03(&pl);
+    CHECK_EQ((long)rcv, (long)NSF_RETOK, "decm4: CONN -> RETCODE 0");
+
+    /* GETP via the decoder returns the peer. */
+    pl.func = "GETP"; pl.arg[0] = &snum; pl.arg[1] = &got;
+    er = -1; rcv = -1; (void)nsf_ezasoh03(&pl);
+    CHECK_EQ((long)rcv, (long)NSF_RETOK, "decm4: GETP -> RETCODE 0");
+    CHECK_EQ((long)sa_addr(&got), (long)PEER_ADDR, "decm4: GETP peer addr");
+
+    /* SHUT via the decoder. */
+    how = SHUT_WR;
+    pl.func = "SHUT"; pl.arg[0] = &snum; pl.arg[1] = &how;
+    er = -1; rcv = -1; (void)nsf_ezasoh03(&pl);
+    CHECK_EQ((long)rcv, (long)NSF_RETOK, "decm4: SHUT -> RETCODE 0");
+
+    /* GOPT SO_RCVBUF via the decoder. */
+    { INT optname = NSF_SO_RCVBUF; val = 0; optlen = (INT)sizeof(val);
+      pl.func = "GOPT"; pl.arg[0] = &snum; pl.arg[1] = &optname;
+      pl.arg[2] = &val; pl.arg[3] = &optlen;
+      er = -1; rcv = -1; (void)nsf_ezasoh03(&pl);
+      CHECK_EQ((long)rcv, (long)NSF_RETOK, "decm4: GOPT -> RETCODE 0");
+      CHECK_EQ((long)val, (long)NSF_SO_DFLT_BUF, "decm4: GOPT SO_RCVBUF value"); }
+
+    /* LIST + ACCE via the decoder (a fresh listener). */
+    af = NSF_AF_INET; type = NSF_SOCK_STREAM; proto = 0;
+    pl.func = "SOCK"; pl.arg[0] = &af; pl.arg[1] = &type; pl.arg[2] = &proto;
+    (void)nsf_ezasoh03(&pl);
+    lnum = (USHORT)rcv;
+    backlog = 4;
+    pl.func = "LIST"; pl.arg[0] = &lnum; pl.arg[1] = &backlog;
+    er = -1; rcv = -1; (void)nsf_ezasoh03(&pl);
+    CHECK_EQ((long)rcv, (long)NSF_RETOK, "decm4: LIST -> RETCODE 0");
+    pl.func = "ACCE"; pl.arg[0] = &lnum; pl.arg[1] = &got;
+    er = -1; rcv = -1; (void)nsf_ezasoh03(&pl);
+    CHECK(rcv >= 0, "decm4: ACCE -> a new socket number");
+
+    /* SELE via the decoder -- the one EZASOH03 path with real marshaling
+     * (copy send-masks into return-masks, run in place, clear ERETMSK). Socket 0
+     * (== snum, connected above) is made read-ready, so the poll (0/0) returns
+     * immediately: RETCODE 1, RRETMSK bit 0 set, WRETMSK/ERETMSK cleared. The
+     * 8-slot plist is MAXSOC, TIMEOUT(2 fullwords), RSND/WSND/ESND, RRET/WRET/ERET. */
+    {
+        INT   maxsoc = 1;
+        INT   tv[2];
+        UCHAR rsnd[4], wsnd[4], esnd[4], rret[4], wret[4], eret[4];
+
+        memset(g_ready, 0, sizeof(g_ready));
+        g_ready[0] = (int)SEL_READ;             /* SOCKCB id 0 == socket number 0 */
+        tv[0] = 0; tv[1] = 0;                   /* poll (0/0)                     */
+        memset(rsnd, 0, 4); memset(wsnd, 0, 4); memset(esnd, 0, 4);
+        memset(rret, 0xFF, 4); memset(wret, 0xFF, 4); memset(eret, 0xFF, 4); /* dirty */
+        rsnd[3] = 0x01u;                        /* interest: read on number 0     */
+        pl.func = "SELE";
+        pl.arg[0] = &maxsoc; pl.arg[1] = tv;
+        pl.arg[2] = rsnd; pl.arg[3] = wsnd; pl.arg[4] = esnd;
+        pl.arg[5] = rret; pl.arg[6] = wret; pl.arg[7] = eret;
+        er = -1; rcv = -1; (void)nsf_ezasoh03(&pl);
+        CHECK_EQ((long)rcv, 1L, "decm4: SELE -> RETCODE 1 (socket 0 ready)");
+        CHECK(rret[0] == 0x00u && rret[1] == 0x00u && rret[2] == 0x00u &&
+              rret[3] == 0x01u, "decm4: SELE RRETMSK = 0x00000001 (number 0)");
+        CHECK(wret[0] == 0x00u && wret[1] == 0x00u && wret[2] == 0x00u &&
+              wret[3] == 0x00u, "decm4: SELE WRETMSK cleared");
+        CHECK(eret[0] == 0x00u && eret[1] == 0x00u && eret[2] == 0x00u &&
+              eret[3] == 0x00u, "decm4: SELE ERETMSK always zero (no TAKESOCKET)");
+        memset(g_ready, 0, sizeof(g_ready));
+    }
+
+    (void)nsf_termapi();
+}
+
 int main(void)
 {
     pthread_t exec;
@@ -395,10 +713,14 @@ int main(void)
     mm_init_complete();
     CHECK_EQ((long)nsfthr_setup(), 0, "nsfthr_setup");
 
+    nsftmr_init();
     soc_init();
     nsfreq_init();
+    nsfsel_init();                          /* registers the SELECT engine (M4-5) */
     CHECK_EQ((long)nsfreq_register_proto((UCHAR)TEST_PROTO, &dummy_ops), 0L,
              "register dummy protocol at 17");
+    CHECK_EQ((long)nsfreq_register_proto(6u, &dummy_ops), 0L,
+             "register dummy protocol at 6 (STREAM verbs)");
     nsfeza_init();
     evt_set_request(nsfreq_ecb(), nsfreq_drain, nsfreq_pending);
 
@@ -410,6 +732,11 @@ int main(void)
     test_termapi_teardown();
     test_roundtrip();
     test_decoder();
+    test_m4_verbs();
+    test_fionbio();
+    test_sockopt();
+    test_select_masks();
+    test_decoder_m4();
 
     nsfevt_stop();
     pthread_join(exec, NULL);

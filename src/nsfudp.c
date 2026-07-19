@@ -508,6 +508,13 @@ void nsfudp_input(NETDEV *dev, PBUF *b, const IPHDR *ip)
         buf_free(b);
         return;
     }
+    /* Read-ready poke (ADR-0035): a datagram is now queued for RECVFROM, so a
+     * parked SELECT on this socket becomes read-ready. Only the queued path pokes;
+     * a datagram delivered straight to a parked RECV above (early return) leaves
+     * nothing on the rxq, so a concurrent SELECT correctly stays not-ready. UDP has
+     * no poll op -- the SELECT engine's generic fallback (read = rxq non-empty)
+     * applies. */
+    soc_notify_ready(s, (UCHAR)SEL_READ);
 }
 
 /* -- init / introspection ----------------------------------------------------- */
