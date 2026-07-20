@@ -506,6 +506,22 @@ startup = "crt1"
 mvs = false
 sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M4-6 NSFTCP loss-injection harness (host-only, the M4 exit gate) ----------
+# HOST-only (mvs = false): two real NSF TCP sockets self-talk on one stack (same
+# HOME_IP, 4-tuple demux) through a lossy loopback (capture DEVOPS + seeded-PRNG
+# drop/dup/reorder fault stage) driven by a SYNCHRONOUS single-threaded pump (no
+# event loop, no threads -- the M4 test contract). Exercises the M4-3 data path
+# and the M4-4 RTO/persist machinery against the systematic loss matrix the
+# lossless live CTCI link cannot produce: 5 % drop / bursts / dup / reorder /
+# combined (3+ seeds, x20) / SYN+FIN loss, each a seeded pseudo-random transfer
+# verified byte-exact + orderly FIN teardown + leak gate; plus TIME_WAIT reclaim
+# under pool pressure through the real verbs. Same source set as TSTTCP.
+[[test]]
+name = "TSTLOSS"
+startup = "crt1"
+mvs = false
+sources = ["test/tstloss.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M4-1 NSFTCP on MVS: the portable segment vectors, byte-order proof --------
 # MVS-only (host = false), tstip-M2 pattern: the same crafted-segment / checksum
 # / sequence-arithmetic vectors re-run on the S/370 target over the capture
