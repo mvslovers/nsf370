@@ -71,12 +71,15 @@ static int d_recv(SOCKCB *s, NSFRQE *r)
 }
 
 static PROTOPS dummy_ops = {
-    d_attach, d_bind, d_connect, d_listen, d_send, d_recv, d_close, d_detach
+    .attach = d_attach, .bind = d_bind, .connect = d_connect, .listen = d_listen,
+    .send = d_send, .recv = d_recv, .close = d_close, .detach = d_detach
 };
 
-/* A protocol missing bind() -- proves the null-callback path maps to EOPNOTSUPP. */
+/* A protocol missing bind() -- proves the null-callback path maps to EOPNOTSUPP.
+ * .bind is deliberately omitted (designated init zero-fills it to NULL). */
 static PROTOPS partial_ops = {
-    d_attach, NULL, d_connect, d_listen, d_send, d_recv, d_close, d_detach
+    .attach = d_attach, .connect = d_connect, .listen = d_listen,
+    .send = d_send, .recv = d_recv, .close = d_close, .detach = d_detach
 };
 
 /* ---- helpers --------------------------------------------------------------- */

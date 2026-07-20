@@ -382,14 +382,15 @@ static int udp_detach(SOCKCB *s)
 }
 
 static PROTOPS g_udp_ops = {
-    udp_attach,     /* SOCKET  */
-    udp_bind,       /* BIND    */
-    NULL,           /* CONNECT -- M3-3 has no UDP connect (EOPNOTSUPP)          */
-    NULL,           /* LISTEN  -- stream only                                   */
-    udp_send,       /* SEND / SENDTO */
-    udp_recv,       /* RECV / RECVFROM */
-    NULL,           /* CLOSE   -- RQ_CLOSE goes straight to soc_destroy (NSFREQ)*/
-    udp_detach      /* final resource release */
+    .attach  = udp_attach,  /* SOCKET  */
+    .bind    = udp_bind,    /* BIND    */
+    .connect = NULL,        /* CONNECT -- M3-3 has no UDP connect (EOPNOTSUPP)          */
+    .listen  = NULL,        /* LISTEN  -- stream only                                   */
+    .send    = udp_send,    /* SEND / SENDTO */
+    .recv    = udp_recv,    /* RECV / RECVFROM */
+    .close   = NULL,        /* CLOSE   -- RQ_CLOSE goes straight to soc_destroy (NSFREQ)*/
+    .detach  = udp_detach   /* final resource release */
+    /* accept / poll / shutdown omitted -- designated init zero-fills to NULL   */
 };
 
 /* -- inbound datagram (the NSFIP demux target, spec 12.3) --------------------- */

@@ -11,7 +11,7 @@ cflags = ["-std=gnu99", "-I", "include"]
 # Fast native inner loop for the portable foundation/protocol tests
 # (`make test-host`). NSF_DEBUG=1 turns on the eyecatcher / double-free /
 # leak-gate checks (compiled out of production; see nsfmm.c).
-cflags = ["-Wall", "-Wextra", "-DNSF_DEBUG=1", "-pthread"]
+cflags = ["-Wall", "-Wextra", "-Werror", "-DNSF_DEBUG=1", "-pthread"]
 # MVS-only CSECTs swapped for their host shims so an asm-carrying [[test]] still
 # builds and runs natively:
 #   nsfxq   -- the exit->mainline handoff (spec 4.2): a CS loop on MVS
