@@ -1103,6 +1103,45 @@ static void test_timewait_reclaim(NETDEV *dev)
     CHECK_EQ((long)small_inuse(), 0L, "reclaim: no buffer leak");
 }
 
+/* M4-6: a NEW ACTIVE socket must also reclaim the oldest TIME_WAIT when the TCB
+ * pool is full (tcp_attach), mirroring the passive path -- otherwise a guest doing
+ * rapid active connect->close against a REMOTE peer walls at EMFILE once its own
+ * accumulated TIME_WAITs fill the pool (there is no local passive open to reclaim
+ * for it). This is the M4-6 fold-in fix; the host loss harness's self-talk
+ * reclaim scenario cannot see it (its local child-creation reclaims via the
+ * passive path), so it is pinned here with a synthetic remote peer. */
+static void test_timewait_reclaim_active(NETDEV *dev)
+{
+    NSFRQE r;
+    UINT   ldesc, adesc, recl0;
+    int    i;
+
+    CHECK_EQ((long)tcb_inuse(), 0L, "reclaim-active: pool starts at baseline");
+    ldesc = tcp_socket();
+    rqe_init(&r, RQ_BIND, ldesc); r.p1 = HOME_IP; r.p2 = 6100u; dispatch(&r);
+    rqe_init(&r, RQ_LISTEN, ldesc); r.p1 = 8u; dispatch(&r);
+
+    /* Fill the pool: listener + (POOL-1) active TIME_WAIT TCBs. */
+    for (i = 0; i < TSTTCP_POOL - 1; i++) {
+        (void)active_to_timewait(dev, (USHORT)(8300 + i));
+    }
+    CHECK_EQ((long)tcb_inuse(), (long)TSTTCP_POOL, "reclaim-active: pool full (listener + TIME_WAITs)");
+    recl0 = ctr_get("NSFTCP", "twreclaim");
+
+    /* A new ACTIVE socket with the pool full: tcp_attach must reclaim the oldest
+     * TIME_WAIT (without the fix this returns 0 -- EMFILE). */
+    adesc = tcp_socket();
+    CHECK(adesc != 0u, "reclaim-active: new active socket succeeds (reclaimed a TIME_WAIT)");
+    CHECK_EQ((long)ctr_get("NSFTCP", "twreclaim"), (long)recl0 + 1,
+             "reclaim-active: exactly one TIME_WAIT reclaimed");
+
+    tcp_close(adesc);                           /* the fresh (CLOSED) socket        */
+    conn_close(ldesc);
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "reclaim-active: pool baseline after cleanup");
+    CHECK_EQ((long)small_inuse(), 0L, "reclaim-active: no buffer leak");
+}
+
 /* ==========================================================================
  * 6. M4-3 data path: segmentation, sliding window, in-order receive, EOF,
  *    copy-on-transmit recovery (ADR-0032). The loop is still NOT running; each
@@ -1994,6 +2033,57 @@ static void test_persist(NETDEV *dev)
     CHECK_EQ((long)large_inuse(), 0L, "persist: BUFLARGE baseline");
 }
 
+/* 7f'. M4-6 regression: the window reopens but the peer's window-update ACK is
+ *      LOST, so the sender's persist probe is the only signal. The peer accepts
+ *      the 1-byte probe (window now open) and ACKs SND.NXT+1. That ack is > our
+ *      SND.NXT (the probe did not advance it, ADR-0033), and the old code rejected
+ *      it as "acks unsent", never processing the window update it carried -> the
+ *      sender livelocked probing forever (found by the loss harness). The fix
+ *      accepts the probe-ACK and resumes. */
+static void test_persist_probe_ack_reopens(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[500];
+    USHORT plen;
+    TCB   *t;
+
+    fill_pattern(src, sizeof(src), 0x63u);
+    establish_active_opt(dev, 8130u, 0u, 1460u, &c);       /* peer window 0 */
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 500L, "probeack: 500 buffered (window 0)");
+    CHECK(tcb_persist_on(c.desc), "probeack: persist armed");
+
+    /* Persist probe: one byte at SND.NXT, SND.NXT unmoved. */
+    g_capcount = 0;
+    tick(NSFTCP_RTO_TICKS);
+    CHECK_EQ((long)g_capcount, 1L, "probeack: one probe");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)c.srv_next, "probeack: probe did not move SND.NXT");
+
+    /* The peer's window REOPENED and it accepted the probe byte -> it ACKs
+     * SND.NXT+1 with an open window. The window-update ACK (at SND.NXT) was lost;
+     * this probe-ACK is the only signal. The sender must resume. */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next + 1u, 0x2000u);
+    t = tcb_of(c.desc);
+    CHECK(t != NULL && t->snd_wnd == 0x2000u, "probeack: reopened window adopted");
+    CHECK(!tcb_persist_on(c.desc), "probeack: persist cancelled");
+    CHECK(tcb_rexmit_on(c.desc), "probeack: remaining data now in flight");
+    CHECK_EQ((long)g_capcount, 1L, "probeack: the buffered remainder is sent");
+    cap_seg(0, NULL, NULL, NULL, NULL, &plen);
+    CHECK_EQ((long)plen, 499L, "probeack: remainder = 500 - the 1 probed byte");
+
+    inject_ack_win(dev, &c, c.srv_next + 500u, 0x2000u);   /* ACK all 500 */
+    CHECK_EQ((long)tcb_sndq(c.desc), 0L, "probeack: sndq fully drained");
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "probeack: pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "probeack: BUFLARGE baseline");
+}
+
 /* 7g. Partial ACK during backoff: progress resets the backoff and RTO but the
  *     timer stays armed for the unacked remainder. */
 static void test_partial_ack_backoff(NETDEV *dev)
@@ -2152,6 +2242,66 @@ static void test_nonblock_connect(NETDEV *dev)
     CHECK_EQ((long)tcb_inuse(), 0L, "nbconnect: no TCB leaked");
 }
 
+/* M4-6 regression: the active opener must adopt the peer's advertised window from
+ * the SYN|ACK even when the peer's ISS is in the UPPER half of the sequence space
+ * (SEG.SEQ >= 2^31). tcp_connect leaves SND.WL1 == 0, and the RFC 793 window-update
+ * comparison TCP_SEQ_LT(0, SEG.SEQ) wraps FALSE for an upper-half SEG.SEQ, so a
+ * conditional-only adoption left SND.WND == 0 and the opener could never transmit
+ * -- a bug on ~half of all peers (any ISS >= 2^31, incl. NSF's own passive side),
+ * masked because every other active-open test used a LOWER-half synthetic peer ISS
+ * (0x50000000 / 0x60000000) and live active-open never sent guest data. The fix
+ * sets SND.WND/WL1/WL2 directly on the synchronizing segment (tcp_synsent_input),
+ * matching the passive child. Without it the send below emits ZERO segments. */
+static void test_synack_window_high_iss(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64], opt[4], src[100];
+    USHORT total, sport, l0;
+    UINT   synseq, desc;
+    UCHAR  flags;
+    UINT   peerISS = 0xC0000000u;               /* upper half -- the bug trigger  */
+    TCB   *t;
+
+    desc = tcp_socket();
+    CHECK(desc != 0u, "highiss: socket");
+    rqe_init(&r, RQ_CONNECT, desc);
+    r.p1 = PEER_IP; r.p2 = 9200u;
+    g_capcount = 0;
+    dispatch(&r);
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+
+    opt[0] = 2u; opt[1] = 4u; put16(opt + 2, 1460u);
+    total = build_tcp_opt(pkt, PEER_IP, HOME_IP, 9200u, sport, peerISS,
+                          synseq + 1u, (UCHAR)(TCP_FL_SYN | TCP_FL_ACK), 0x2000u,
+                          opt, 4u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(desc), (long)TCP_ESTABLISHED, "highiss: ESTABLISHED");
+    t = tcb_of(desc);
+    CHECK(t != NULL && t->snd_wnd == 0x2000u,
+          "highiss: peer window adopted from the SYN|ACK (was stuck at 0)");
+
+    /* The behavioral proof: a send now actually puts a segment on the wire. */
+    fill_pattern(src, sizeof(src), 0x70u);
+    req_send(&r, desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 100L, "highiss: send buffered 100");
+    CHECK_EQ((long)g_capcount, 1L, "highiss: send emitted a data segment (window live)");
+    cap_seg(0, NULL, NULL, NULL, NULL, &l0);
+    CHECK_EQ((long)l0, 100L, "highiss: the data segment carries all 100 bytes");
+
+    {
+        CONN c;
+        memset(&c, 0, sizeof(c));
+        c.desc = desc; c.cport = 9200u; c.lport = sport;
+        c.cli_next = peerISS + 1u; c.srv_next = synseq + 1u;
+        conn_reset(dev, &c);                    /* abort -> pool baseline          */
+    }
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "highiss: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "highiss: BUFLARGE baseline");
+}
+
 /* M4-5: tcp_poll -- the REAL SELECT readiness logic behind the PROTOPS vtable, each
  * ADR-0035 source asserted directly (a dummy poll in the SELECT-engine test would
  * prove only that the engine CALLS poll, not that poll is right). States and queues
@@ -2276,6 +2426,7 @@ int main(void)
     test_teardown_simultaneous(dev);
     test_malformed_options(dev);
     test_timewait_reclaim(dev);
+    test_timewait_reclaim_active(dev);
 
     /* M4-3: data path -- segmentation, sliding window, in-order receive, EOF,
      * copy-on-transmit recovery, and the error paths. */
@@ -2297,6 +2448,7 @@ int main(void)
     test_rexmit_synack(dev);
     test_rexmit_fin(dev);
     test_persist(dev);
+    test_persist_probe_ack_reopens(dev);
     test_partial_ack_backoff(dev);
     test_timer_exclusive(dev);
     test_flowctl_no_oversend(dev);
@@ -2304,6 +2456,10 @@ int main(void)
     /* M4-5: the SELECT readiness probe + non-blocking connect. */
     test_tcp_poll();
     test_nonblock_connect(dev);
+
+    /* M4-6: active-open window adoption with an upper-half peer ISS (the bug the
+     * loss harness exposed; folded in with the fix). */
+    test_synack_window_high_iss(dev);
 
     {
         NSFRQE rt;

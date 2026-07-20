@@ -1205,8 +1205,27 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
     }
 
     if (TCP_SEQ_GT(seg->ack, tcb->snd_nxt)) {
-        tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* ACKs something unsent -> ACK+drop*/
-        return 0;
+        /* A zero-window persist probe (tcp_persist_expire, ADR-0033) puts ONE byte
+         * on the wire at SND.NXT but does NOT advance SND.NXT (so "nothing in
+         * flight" and persist keeps governing). If the peer's window has since
+         * reopened it ACCEPTS that byte and ACKs SND.NXT+1 -- a legitimate ack of a
+         * byte we really sent, not of unsent data. Adopt it (account the probed
+         * byte as sent) and fall through to the normal window-update + SND.UNA
+         * advance + resume, so the sender comes out of persist even when the peer's
+         * window-update ACK was LOST and this probe-ACK is the only signal that the
+         * window reopened. Without this the probe-ACK is rejected as "unsent", the
+         * window update it carries is never processed, and the sender livelocks
+         * (M4-6 loss harness, ADR-0033 annotation). Only the single probed byte is
+         * accepted this way (ack == SND.NXT+1); any larger jump is genuinely unsent
+         * and still rejected. */
+        if (seg->ack == tcb->snd_nxt + 1u &&
+            tcb->t_persist.state == (UCHAR)TMR_PENDING &&
+            tcb->sndq_bytes > (tcb->snd_nxt - tcb->snd_una)) {
+            tcb->snd_nxt = seg->ack;            /* the probed byte is now sent     */
+        } else {
+            tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* ACKs something unsent -> ACK+drop*/
+            return 0;
+        }
     }
     /* Update the send window BEFORE any transmit below (RFC 793 p.72 step 5). The
      * progress branch advances SND.UNA and immediately re-clocks the sender
@@ -1506,7 +1525,21 @@ static void tcp_synsent_input(TCB *tcb, const TCPSEG *seg)
                 tcb->mss = mss;                 /* a malformed list keeps default  */
             }
         }
-        tcp_update_window(tcb, seg);
+        /* Adopt the peer's window UNCONDITIONALLY on this first synchronizing
+         * segment (RFC 793: SND.WND/WL1/WL2 <- SEG.WND/SEG.SEQ/SEG.ACK when a
+         * connection becomes synchronized; the SND.WL1/WL2 comparison in
+         * tcp_update_window governs only SUBSEQUENT segments). The conditional
+         * update alone was a bug here: tcp_connect leaves snd_wl1 == 0, and
+         * TCP_SEQ_LT(0, SEG.SEQ) wraps FALSE whenever the peer's ISS is in the
+         * upper half of the sequence space (>= 2^31, ~half of all peers), so
+         * snd_wnd stayed 0 and the active opener could never transmit data. The
+         * passive child (tcp_passive_open) already sets these three fields
+         * directly; this makes the active side match. Masked until M4-6 because
+         * tsttcp used lower-half synthetic peer ISS and live active-open never
+         * sent guest data. */
+        tcb->snd_wnd = seg->wnd;
+        tcb->snd_wl1 = seg->seq;
+        tcb->snd_wl2 = seg->ack;
         if (TCP_SEQ_GT(tcb->snd_una, tcb->iss)) {
             tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* our SYN acked -> ESTABLISHED */
             tcp_enter_established(tcb);
@@ -1784,6 +1817,15 @@ static int tcp_attach(SOCKCB *s)
         return NSF_EINVAL;                      /* attach once (defensive)        */
     }
     tcb = (TCB *)mm_alloc(g_tcbpool);
+    if (tcb == NULL && tcp_reclaim_timewait()) {
+        /* A new (active) socket, like a passive open (tcp_child_create), reclaims
+         * the oldest TIME_WAIT when the TCB pool is exhausted -- otherwise a guest
+         * doing rapid active connect->close cannot make a new connection once its
+         * own accumulated TIME_WAITs fill the pool (found by the M4-6 TIME_WAIT
+         * reclaim scenario; the passive path already did this, the active path did
+         * not). spec 13.4. */
+        tcb = (TCB *)mm_alloc(g_tcbpool);
+    }
     if (tcb == NULL) {
         return NSF_ENOBUFS;                     /* pool exhausted -> EMFILE-class */
     }

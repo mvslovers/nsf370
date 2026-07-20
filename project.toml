@@ -506,6 +506,22 @@ startup = "crt1"
 mvs = false
 sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M4-6 NSFTCP loss-injection harness (host-only, the M4 exit gate) ----------
+# HOST-only (mvs = false): two real NSF TCP sockets self-talk on one stack (same
+# HOME_IP, 4-tuple demux) through a lossy loopback (capture DEVOPS + seeded-PRNG
+# drop/dup/reorder fault stage) driven by a SYNCHRONOUS single-threaded pump (no
+# event loop, no threads -- the M4 test contract). Exercises the M4-3 data path
+# and the M4-4 RTO/persist machinery against the systematic loss matrix the
+# lossless live CTCI link cannot produce: 5 % drop / bursts / dup / reorder /
+# combined (3+ seeds, x20) / SYN+FIN loss, each a seeded pseudo-random transfer
+# verified byte-exact + orderly FIN teardown + leak gate; plus TIME_WAIT reclaim
+# under pool pressure through the real verbs. Same source set as TSTTCP.
+[[test]]
+name = "TSTLOSS"
+startup = "crt1"
+mvs = false
+sources = ["test/tstloss.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M4-1 NSFTCP on MVS: the portable segment vectors, byte-order proof --------
 # MVS-only (host = false), tstip-M2 pattern: the same crafted-segment / checksum
 # / sequence-arithmetic vectors re-run on the S/370 target over the capture
@@ -562,6 +578,21 @@ name = "TSTTCPR"
 startup = "crt1"
 host = false
 sources = ["test/mvs/tsttcpr.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M4-6 NSFTCP on MVS: TIME_WAIT reclaim under pool pressure (live gate) ------
+# MVS-only (host = false): the guest is the ACTIVE opener + closer, looping N=40
+# connect->close against a host listener (samples/host/twreclaim_listener.py, which
+# lets the client close first so the guest side enters TIME_WAIT). A small 32-TCB
+# pool + more cycles fills it with the guest's own TIME_WAITs, so a further active
+# socket must reclaim the oldest (tcp_attach, the M4-6 fold-in fix) -- else EMFILE.
+# The gate: all 40 connect->close succeed + twreclaim > 0. Same MVS source set as
+# TSTTCPH. Built + run with
+# -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
+[[test]]
+name = "TSTTCPW"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tsttcpw.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-5 NSFSEL: the SELECT multiplex engine (ADR-0035) --------------------
 # Direct-call, no threads: build an RQ_SELECT NSFRQE, dispatch it (routed to the
