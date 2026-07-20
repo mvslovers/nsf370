@@ -1704,8 +1704,8 @@ algorithm details follow RFC 793/1122 directly.
 > ephemeral ports). The interactive-telnet + clean FIN item was countersigned at
 > M4-5. Fixes #1/#2 are host-proven only (not inducible live without loss
 > injection/root); fix #3 is the live reclaim above. The three fixes are
-> intra-function (no new external symbols). **M4 exit gate MET** (the `M4 COMPLETE`
-> flip is staged for the countersigned merge).
+> intra-function (no new external symbols). **M4 exit gate MET — M4 COMPLETE**
+> (PR #43 merged).
 
 ### 13.1 Responsibilities
 
@@ -2202,8 +2202,7 @@ the active closer — over distinct ephemeral ports). The harness surfaced three
 latent TCP fixes (active-open window adoption, persist-probe-ACK acceptance,
 active-path TIME_WAIT reclaim), folded in with host regressions (v1.35); fixes #1
 and #2 are host-proven only (neither is inducible live without loss injection or
-root). **M4 exit gate MET** — the `M4 COMPLETE` flip is staged for the maintainer's
-countersigned merge.
+root). **M4 exit gate MET — M4 COMPLETE** (PR #43 merged, maintainer-countersigned).
 
 ### M5 — Subsystem split + hardening (Phase 2)
 
