@@ -2152,6 +2152,66 @@ static void test_nonblock_connect(NETDEV *dev)
     CHECK_EQ((long)tcb_inuse(), 0L, "nbconnect: no TCB leaked");
 }
 
+/* M4-6 regression: the active opener must adopt the peer's advertised window from
+ * the SYN|ACK even when the peer's ISS is in the UPPER half of the sequence space
+ * (SEG.SEQ >= 2^31). tcp_connect leaves SND.WL1 == 0, and the RFC 793 window-update
+ * comparison TCP_SEQ_LT(0, SEG.SEQ) wraps FALSE for an upper-half SEG.SEQ, so a
+ * conditional-only adoption left SND.WND == 0 and the opener could never transmit
+ * -- a bug on ~half of all peers (any ISS >= 2^31, incl. NSF's own passive side),
+ * masked because every other active-open test used a LOWER-half synthetic peer ISS
+ * (0x50000000 / 0x60000000) and live active-open never sent guest data. The fix
+ * sets SND.WND/WL1/WL2 directly on the synchronizing segment (tcp_synsent_input),
+ * matching the passive child. Without it the send below emits ZERO segments. */
+static void test_synack_window_high_iss(NETDEV *dev)
+{
+    NSFRQE r;
+    UCHAR  pkt[64], opt[4], src[100];
+    USHORT total, sport, l0;
+    UINT   synseq, desc;
+    UCHAR  flags;
+    UINT   peerISS = 0xC0000000u;               /* upper half -- the bug trigger  */
+    TCB   *t;
+
+    desc = tcp_socket();
+    CHECK(desc != 0u, "highiss: socket");
+    rqe_init(&r, RQ_CONNECT, desc);
+    r.p1 = PEER_IP; r.p2 = 9200u;
+    g_capcount = 0;
+    dispatch(&r);
+    cap_tcp(&synseq, NULL, &flags, &sport, NULL, NULL);
+
+    opt[0] = 2u; opt[1] = 4u; put16(opt + 2, 1460u);
+    total = build_tcp_opt(pkt, PEER_IP, HOME_IP, 9200u, sport, peerISS,
+                          synseq + 1u, (UCHAR)(TCP_FL_SYN | TCP_FL_ACK), 0x2000u,
+                          opt, 4u);
+    inject(dev, pkt, total);
+    CHECK_EQ((long)tcb_state(desc), (long)TCP_ESTABLISHED, "highiss: ESTABLISHED");
+    t = tcb_of(desc);
+    CHECK(t != NULL && t->snd_wnd == 0x2000u,
+          "highiss: peer window adopted from the SYN|ACK (was stuck at 0)");
+
+    /* The behavioral proof: a send now actually puts a segment on the wire. */
+    fill_pattern(src, sizeof(src), 0x70u);
+    req_send(&r, desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 100L, "highiss: send buffered 100");
+    CHECK_EQ((long)g_capcount, 1L, "highiss: send emitted a data segment (window live)");
+    cap_seg(0, NULL, NULL, NULL, NULL, &l0);
+    CHECK_EQ((long)l0, 100L, "highiss: the data segment carries all 100 bytes");
+
+    {
+        CONN c;
+        memset(&c, 0, sizeof(c));
+        c.desc = desc; c.cport = 9200u; c.lport = sport;
+        c.cli_next = peerISS + 1u; c.srv_next = synseq + 1u;
+        conn_reset(dev, &c);                    /* abort -> pool baseline          */
+    }
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "highiss: TCB pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "highiss: BUFLARGE baseline");
+}
+
 /* M4-5: tcp_poll -- the REAL SELECT readiness logic behind the PROTOPS vtable, each
  * ADR-0035 source asserted directly (a dummy poll in the SELECT-engine test would
  * prove only that the engine CALLS poll, not that poll is right). States and queues
@@ -2304,6 +2364,10 @@ int main(void)
     /* M4-5: the SELECT readiness probe + non-blocking connect. */
     test_tcp_poll();
     test_nonblock_connect(dev);
+
+    /* M4-6: active-open window adoption with an upper-half peer ISS (the bug the
+     * loss harness exposed; folded in with the fix). */
+    test_synack_window_high_iss(dev);
 
     {
         NSFRQE rt;

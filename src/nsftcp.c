@@ -1506,7 +1506,21 @@ static void tcp_synsent_input(TCB *tcb, const TCPSEG *seg)
                 tcb->mss = mss;                 /* a malformed list keeps default  */
             }
         }
-        tcp_update_window(tcb, seg);
+        /* Adopt the peer's window UNCONDITIONALLY on this first synchronizing
+         * segment (RFC 793: SND.WND/WL1/WL2 <- SEG.WND/SEG.SEQ/SEG.ACK when a
+         * connection becomes synchronized; the SND.WL1/WL2 comparison in
+         * tcp_update_window governs only SUBSEQUENT segments). The conditional
+         * update alone was a bug here: tcp_connect leaves snd_wl1 == 0, and
+         * TCP_SEQ_LT(0, SEG.SEQ) wraps FALSE whenever the peer's ISS is in the
+         * upper half of the sequence space (>= 2^31, ~half of all peers), so
+         * snd_wnd stayed 0 and the active opener could never transmit data. The
+         * passive child (tcp_passive_open) already sets these three fields
+         * directly; this makes the active side match. Masked until M4-6 because
+         * tsttcp used lower-half synthetic peer ISS and live active-open never
+         * sent guest data. */
+        tcb->snd_wnd = seg->wnd;
+        tcb->snd_wl1 = seg->seq;
+        tcb->snd_wl2 = seg->ack;
         if (TCP_SEQ_GT(tcb->snd_una, tcb->iss)) {
             tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* our SYN acked -> ESTABLISHED */
             tcp_enter_established(tcb);
