@@ -41,3 +41,10 @@ void nsfevt_plat_post(NSFECB *ecb)
     pthread_cond_broadcast(&g_cv);
     pthread_mutex_unlock(&g_mtx);
 }
+
+/* The host cond-var broadcast already wakes a WAITing loop, so a real wake is the
+ * same as a post here (only the MVS bit-set was insufficient). */
+void nsfevt_plat_wake(NSFECB *ecb)
+{
+    nsfevt_plat_post(ecb);
+}

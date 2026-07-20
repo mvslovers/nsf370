@@ -28,6 +28,11 @@
 #include "nsfbuf.h"           /* PBUF, buf_free (the RX terminus)            */
 #include "nsfip.h"            /* nsfip_input / nsfip_config (the IP layer)   */
 #include "nsficmp.h"          /* nsficmp_init (ICMP counters)                */
+#include "nsfsoc.h"           /* soc_reserve / soc_init (the socket layer)   */
+#include "nsfreq.h"           /* nsfreq_init / _register_proto / _ecb / ...  */
+#include "nsfsel.h"           /* nsfsel_init (the SELECT engine, M4-5)       */
+#include "nsftcp.h"           /* nsftcp_reserve / _init / _protops (M4-5)    */
+#include "nsfudp.h"           /* nsfudp_reserve / _init / _protops (M4-5)    */
 #include <string.h>           /* memcpy / memset (device wiring)             */
 #include <clibstae.h>          /* __estae, ESTAE_CREATE/DELETE */
 #include <clibsdwa.h>          /* SDWA, SDWARCDE, SDWACWT */
@@ -253,6 +258,18 @@ int main(int argc, char **argv)
         }
     }
 
+    /* 3c. Reserve the socket-layer pools (M4-5): the SOCKET table, the TCP TCBs and
+     *     the UDP PCBs. Still in the init window (mm_pool_create). This makes the
+     *     STC a full stack -- an inbound SYN to a closed port now draws a correct
+     *     RST (nsftcp_input) instead of an ICMP protocol-unreachable, and an
+     *     inbound UDP datagram to an unbound port a port-unreachable -- rather than
+     *     the IP layer's blanket proto-unreachable. Refuse to start on any failure. */
+    if (soc_reserve(0u) != 0 || nsftcp_reserve(0u) != 0 || nsfudp_reserve(0u) != 0) {
+        nsfmsg("NSF009E NSF INITIALIZATION FAILED, RC=%d", 8);
+        mm_shutdown();
+        return 8;
+    }
+
     mm_init_complete();                          /* seal: mm_pool_create is closed */
 
     /* 4. Operator interface (CIB/QEDIT); add its console ECB to the ECBLIST. */
@@ -271,6 +288,22 @@ int main(int argc, char **argv)
     nsf_start_devices(&g_cfg);
     nsficmp_init();                              /* register ICMP counters */
     (void)nsfip_config(&g_cfg);                  /* routing table from HOME/GATEWAY */
+
+    /* 5b. Socket layer + transports + the request/SELECT path (M4-5). The socket
+     *     table + request transport + SELECT engine, then TCP and UDP register
+     *     their inbound demux with NSFIP (AFTER nsfip_config) and their PROTOPS with
+     *     NSFREQ, and the requestECB joins the ECBLIST. Inert until an application
+     *     drives a request (Phase 1 has none in the STC), but the inbound demux is
+     *     live: TCP answers a closed port with a RST, UDP an unbound port with a
+     *     port-unreachable. */
+    soc_init();
+    nsfreq_init();
+    nsfsel_init();
+    nsftcp_init();
+    nsfudp_init();
+    (void)nsfreq_register_proto(6u,  nsftcp_protops());
+    (void)nsfreq_register_proto(17u, nsfudp_protops());
+    evt_set_request(nsfreq_ecb(), nsfreq_drain, nsfreq_pending);
 
     /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
     __estae(ESTAE_CREATE, (void *)nsf_recover, NULL);

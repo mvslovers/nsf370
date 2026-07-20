@@ -27,6 +27,13 @@
  *   nsf_getsockname @@NSGSKN   nsf_termapi     @@NSTERM
  *   nsf_lasterrno   @@NSERNO   nsfeza_init     @@NSEZAI
  *   nsf_ezasoh03    @@NSOH03   (the EZASOH03 plist decoder; see src/nsfeza.c)
+ * M4-5 verb set (ADR-0035; unique @@NS* aliases, disjoint from the above):
+ *   nsf_connect     @@NSCONN   nsf_listen      @@NSLIST
+ *   nsf_accept      @@NSACPT   nsf_send        @@NSSEND
+ *   nsf_recv        @@NSRECV   nsf_shutdown    @@NSSHUT
+ *   nsf_getpeername @@NSGPNM   nsf_select      @@NSSEL
+ *   nsf_setsockopt  @@NSSOPT   nsf_getsockopt  @@NSGOPT
+ *   nsf_fcntl       @@NSFCTL   nsf_ioctl       @@NSIOCT
  *
  * SOCKET NUMBERS ARE HALFWORD, 0-BASED (SC31-7187-03 5.4.16: "The lowest socket
  * number is 0. If you have 50 sockets, they are numbered from 0 to 49"). The
@@ -153,6 +160,81 @@ INT nsf_termapi(void) NSFEZA_ALIAS("@@NSTERM");
  * ERRNO slot. (Module-global in v1: not multi-subtask-safe -- see the header
  * comment / conformance doc.) */
 INT nsf_lasterrno(void) NSFEZA_ALIAS("@@NSERNO");
+
+/* FCNTL / IOCTL commands NSF honours (M4-5). The persistent non-blocking flag is a
+ * FACADE attribute -- a per-app bit next to the descriptor in NSFEZA's mapping table
+ * (the SOCKCB stays spec-exact, no flags field). FCNTL(F_GETFL/F_SETFL of
+ * O_NONBLOCK) and IOCTL(FIONBIO) both flip it; while set, every request NSFEZA
+ * builds for that socket carries RQ_F_NONBLOCK (docs/ezasoket-conformance.md §3).
+ * FIONBIO is the classic BSD/IBM _IOW('f',126,int) value; F_GETFL/F_SETFL/O_NONBLOCK
+ * the classic POSIX numbers. */
+#define NSF_FIONBIO       0x8004A77Eu   /* IOCTL: set/clear non-blocking (arg 0/1)  */
+#define NSF_F_GETFL       3             /* FCNTL: get file flags                    */
+#define NSF_F_SETFL       4             /* FCNTL: set file flags                    */
+#define NSF_O_NONBLOCK    0x04          /* the non-blocking file-status flag        */
+
+/* SETSOCKOPT / GETSOCKOPT level + option names (re-exported from nsfreq.h so an
+ * application uses one header). GET returns SO_RCVBUF/SO_SNDBUF actuals; SET accepts
+ * SO_REUSEADDR / TCP_NODELAY (accepted, no v1 effect). */
+/* NSF_SOL_SOCKET / NSF_SO_* / NSF_IPPROTO_TCP / NSF_TCP_NODELAY come from nsfreq.h. */
+
+/* CONNECT: active open to `name` (a sockaddr_in, namelen >= 16). Returns 0 on a
+ * completed (blocking) connect; on a NON-blocking socket returns -1 / EINPROGRESS
+ * and the connection proceeds (poll for write-ready via SELECT). */
+INT nsf_connect(INT s, const NSF_SOCKADDR_IN *name, INT namelen) NSFEZA_ALIAS("@@NSCONN");
+
+/* LISTEN: mark `s` a passive socket with the given backlog (clamped to the accept
+ * queue bound). Returns 0 on success, -1 on error. */
+INT nsf_listen(INT s, INT backlog) NSFEZA_ALIAS("@@NSLIST");
+
+/* ACCEPT: take the next established connection on the listening socket `s`. On
+ * success returns a NEW 0-based socket number for the connection (and, if `name` is
+ * non-NULL, the peer address + *namelen = 16); -1 on error. Non-blocking (FIONBIO or
+ * a per-call flag) returns -1 / EWOULDBLOCK when the queue is empty. */
+INT nsf_accept(INT s, NSF_SOCKADDR_IN *name, INT *namelen) NSFEZA_ALIAS("@@NSACPT");
+
+/* SEND: send `len` bytes on a connected socket. flags may carry NSF_MSG_DONTWAIT.
+ * Returns the byte count sent, -1 on error. */
+INT nsf_send(INT s, const void *buf, INT len, INT flags) NSFEZA_ALIAS("@@NSSEND");
+
+/* RECV: receive up to `len` bytes on a connected socket. Returns the byte count, 0
+ * at EOF (the peer closed), -1 on error. flags may carry NSF_MSG_DONTWAIT. */
+INT nsf_recv(INT s, void *buf, INT len, INT flags) NSFEZA_ALIAS("@@NSRECV");
+
+/* SHUTDOWN: shut down the connection direction(s) -- SHUT_RD (0), SHUT_WR (1),
+ * SHUT_RDWR (2). Write-shutdown sends a FIN; read-shutdown marks a local EOF.
+ * Returns 0 on success, -1 on error. */
+INT nsf_shutdown(INT s, INT how) NSFEZA_ALIAS("@@NSSHUT");
+
+/* GETPEERNAME: return the connected peer's name in *name (*namelen = 16). Returns 0
+ * on success, -1 / ENOTCONN when the socket has no peer. */
+INT nsf_getpeername(INT s, NSF_SOCKADDR_IN *name, INT *namelen) NSFEZA_ALIAS("@@NSGPNM");
+
+/* SELECT: wait until one of the sockets whose bit is set in the read/write masks is
+ * ready, or the timeout elapses. Masks are fullword bit strings numbered RIGHT TO
+ * LEFT (bit 0 of the first fullword = socket number 0); `maxsoc` is the number of
+ * socket numbers to test (0..maxsoc-1). The masks are REWRITTEN in place to the
+ * ready set (`emask` -> zero: no exception source in v1). `tv_sec` < 0 waits
+ * forever; 0/0 polls. Returns the count of ready sockets (0 on timeout), -1 on
+ * error. Any mask pointer may be NULL. */
+INT nsf_select(INT maxsoc, void *rmask, void *wmask, void *emask,
+               INT tv_sec, INT tv_usec) NSFEZA_ALIAS("@@NSSEL");
+
+/* SETSOCKOPT / GETSOCKOPT: the minimal option set (nsfreq.h). optval points at an
+ * INT. Returns 0 on success, -1 on error (EOPNOTSUPP for an option outside the
+ * set). */
+INT nsf_setsockopt(INT s, INT level, INT optname, const void *optval,
+                   INT optlen) NSFEZA_ALIAS("@@NSSOPT");
+INT nsf_getsockopt(INT s, INT level, INT optname, void *optval,
+                   INT *optlen) NSFEZA_ALIAS("@@NSGOPT");
+
+/* FCNTL / IOCTL: F_GETFL returns the file flags (O_NONBLOCK reflects the persistent
+ * non-blocking state); F_SETFL / IOCTL(FIONBIO) set it. Both operate on NSFEZA's
+ * per-app flag, no stack round-trip. Returns the flags (F_GETFL) / 0 on success,
+ * -1 on error. `arg` for IOCTL(FIONBIO) points at an INT (0 = blocking, non-0 =
+ * non-blocking). */
+INT nsf_fcntl(INT s, INT cmd, INT arg) NSFEZA_ALIAS("@@NSFCTL");
+INT nsf_ioctl(INT s, INT cmd, void *arg) NSFEZA_ALIAS("@@NSIOCT");
 
 /* The EZASOH03 plist decoder (ADR-0029). The HLASM facade EZASOH03 is a thin
  * veneer that passes its R1 plist straight here; this function decodes the

@@ -120,7 +120,14 @@ void nsfevt_handoff_push(QELEM *e)
 void nsfevt_stop(void)
 {
     g_stop = 1;
-    nsfevt_plat_post(&g_stopecb);
+    /* REAL wake, not a bit-set: nsfevt_stop is a STANDALONE cross-task signal (a
+     * subtask stopping the executive) with no accompanying real POST. On MVS a
+     * bit-only post does not wake a task already committed to the WAIT, and the
+     * STIMER heartbeat that would otherwise wake it can be disarmed (an idle timer
+     * queue after a TCP connection's timers drained, ADR-0034) -- so the loop would
+     * hang. nsfevt_plat_wake does a real SVC-2 POST (found via the NSFTECHO live
+     * shutdown hang). */
+    nsfevt_plat_wake(&g_stopecb);
 }
 
 void evt_set_operator(NSFECB *ecb, void (*drain)(void))

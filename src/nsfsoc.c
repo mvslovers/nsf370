@@ -37,6 +37,10 @@ static MMPOOL  *g_sockpool;                     /* SOCKET pool (SOCKCB objects) 
 static SOCKSLOT g_socktab[NSFSOC_MAX_DEFAULT];
 static UINT     g_sockmax = NSFSOC_MAX_DEFAULT; /* active table size            */
 
+/* SELECT readiness re-eval callback (NSFSEL registers it; NULL when SELECT is not
+ * linked -> every poke is a no-op). See the seam comment in nsfsoc.h. */
+static SOCSELFN g_select_notify;
+
 /* ---- statistics (spec 8, message range 600-699) ---------------------------- */
 static STSCTR *soc_opens, *soc_closes, *soc_nofd;
 static int     soc_stats_ready;
@@ -219,6 +223,11 @@ int soc_dispatch(SOCKCB *s, NSFRQE *r)
             return NSF_EOPNOTSUPP;
         }
         return s->ops->close(s, r);
+    case RQ_SHUTDOWN:
+        if (s->ops == NULL || s->ops->shutdown == NULL) {
+            return NSF_EOPNOTSUPP;
+        }
+        return s->ops->shutdown(s, r);          /* the op completes r (M4-5)    */
     default:
         return NSF_EINVAL;                      /* unknown / not-yet-wired fn   */
     }
@@ -286,6 +295,20 @@ void soc_complete(NSFRQE *r, INT retcode, INT errno_)
     nsfthr_post((NSFECB *)&r->ecb, 0u);
 }
 
+/* ---- SELECT readiness poke seam (spec 10.3 / ADR-0035) --------------------- */
+
+void soc_set_select_notify(SOCSELFN fn)
+{
+    g_select_notify = fn;
+}
+
+void soc_notify_ready(SOCKCB *s, UCHAR events)
+{
+    if (g_select_notify != NULL && s != NULL) {
+        g_select_notify(s, events);
+    }
+}
+
 /* ---- teardown: the ONE checklist (spec 10.5) ------------------------------- */
 
 void soc_destroy(SOCKCB *s)
@@ -296,6 +319,15 @@ void soc_destroy(SOCKCB *s)
     if (s == NULL) {
         return;
     }
+
+    /* 0. Poke the SELECT engine BEFORE any teardown, while soc_desc(s) still
+     *    resolves (the generation is bumped in step 6): a parked SELECT whose set
+     *    includes this socket completes with NSF_ECONNABORTED rather than hanging
+     *    once the socket vanishes. Forget-proof -- one line in the ONE checklist,
+     *    so no close/reset/shutdown path can skip it (ADR-0035). No-op when SELECT
+     *    is not linked. */
+    soc_notify_ready(s, (UCHAR)SEL_DEAD);
+
     s->state = SOC_ST_CLOSING;
 
     /* 1. Detach the pcb -- the protocol cancels its timers and frees its own pcb

@@ -63,6 +63,22 @@
 #define NSF_SOCK_STREAM   1
 #define NSF_SOCK_DGRAM    2
 
+/* SHUTDOWN HOW values (M4-5, the EZASOKET/BSD numbering). Write-shutdown drives the
+ * TCP FIN path; read-shutdown marks a local EOF (docs/ezasoket-conformance.md §3). */
+#define SHUT_RD           0     /* no more receives (local EOF)               */
+#define SHUT_WR           1     /* no more sends (send our FIN)               */
+#define SHUT_RDWR         2     /* both                                       */
+
+/* SELECT readiness bits (M4-5, ADR-0035). Passed to PROTOPS.poll as `want` and
+ * returned as the ready subset; also the `events` argument to soc_notify_ready.
+ * There is no EXCEPTION readiness bit: NSF v1 supports no TAKESOCKET (the only
+ * EZASOKET exception source), so ERETMSK is always zero. SEL_DEAD is the special
+ * teardown signal soc_destroy pokes so a parked SELECT referencing a dying socket
+ * completes with NSF_ECONNABORTED rather than hanging. */
+#define SEL_READ          0x01u
+#define SEL_WRITE         0x02u
+#define SEL_DEAD          0x80u
+
 /* Bounded-queue depths (spec 4.2, "reject rather than grow"). */
 #define NSFSOC_RXQ_MAX    32    /* PBUFs held for a RECV before back-pressure */
 #define NSFSOC_ACCEPTQ_MAX 8    /* listen backlog (TCP, M4)                   */
@@ -84,12 +100,18 @@ typedef struct protops {
     int (*close)  (SOCKCB *s, NSFRQE *r);   /* CLOSE                           */
     int (*detach) (SOCKCB *s);              /* final resource release          */
     int (*accept) (SOCKCB *s, NSFRQE *r);   /* ACCEPT (TCP, M4-2)              */
+    int (*poll)   (SOCKCB *s, int want);    /* SELECT readiness (M4-5, ADR-0035)*/
+    int (*shutdown)(SOCKCB *s, NSFRQE *r);  /* SHUTDOWN (TCP, M4-5)            */
 } PROTOPS;
-/* `accept` is the LAST member ON PURPOSE (M4-2): protocols and tests that use a
- * POSITIONAL PROTOPS initializer (UDP's g_udp_ops, the dummy PROTOPS in the M3
- * tests) omit the trailing member, which C zero-fills to NULL -- so adding accept
- * needs no edit to any non-TCP initializer, and a NULL accept maps to
- * NSF_EOPNOTSUPP through soc_dispatch exactly like the other unset ops. */
+/* `accept` (M4-2), `poll` and `shutdown` (M4-5) are the LAST members ON PURPOSE:
+ * protocols and tests that use a POSITIONAL PROTOPS initializer (UDP's g_udp_ops,
+ * the dummy PROTOPS in the M3 tests) omit the trailing members, which C zero-fills
+ * to NULL -- so adding one needs no edit to any non-TCP initializer. A NULL accept
+ * maps to NSF_EOPNOTSUPP through soc_dispatch; a NULL `poll` falls back to the
+ * generic SELECT readiness rule (read = rxq/acceptq non-empty, write = always) in
+ * the SELECT engine -- exactly right for UDP, so NSFUDP needs no poll op. `poll` is
+ * SIDE-EFFECT-FREE: given a `want` mask (SEL_READ|SEL_WRITE) it returns the ready
+ * subset NOW -- never blocks, parks, or dequeues (spec 10.3 / ADR-0035). */
 
 /* PROTOPS.close return convention (M4-2). A close op that has TAKEN OWNERSHIP of
  * the request -- completed it and is managing teardown itself, possibly in the
@@ -139,6 +161,7 @@ NSF_SIZE_ASSERT(SOCKCB, 76);
  *   soc_destroy NSFSODST   soc_dispatch NSFSODIS  soc_park NSFSOPRK
  *   soc_complete NSFSOCPL  soc_count NSFSOCNT   soc_debug_inuse NSFSODBI
  *   soc_foreach NSFSOFEA
+ *   soc_set_select_notify NSFSOSSN  soc_notify_ready NSFSONTR
  */
 
 /* Create the SOCKET pool (`count` SOCKCBs, 0 => NSFSOC_MAX_DEFAULT, capped at the
@@ -215,6 +238,21 @@ UINT     soc_count(void) asm("NSFSOCNT");
  * how NSFREQ's RQ_TERMAPI tears down every socket of one app, and how the §5.4
  * shutdown will abort all sockets. Executive-side, single-task (no locking). */
 void     soc_foreach(void (*fn)(SOCKCB *s, void *arg), void *arg) asm("NSFSOFEA");
+
+/* ---- SELECT readiness poke seam (M4-5, ADR-0035) --------------------------- *
+ * SELECT (one request over N sockets) is re-evaluated when a socket's readiness
+ * could have changed. The coupling is ONE function: protocol/socket code calls
+ * soc_notify_ready at the queue/state change (NEVER gated on a pend_* slot -- that
+ * slot is NULL exactly when a SELECT, not a per-socket blocking call, is waiting);
+ * it forwards to the SELECT engine's re-eval IFF one is registered. The engine
+ * (NSFSEL) lives in its own module reached only through this registration, so a
+ * build WITHOUT it (tsttcp/tstudp/tstreq) pokes into a NULL notify -- no link
+ * dependency, no behaviour change. `events` carries the readiness bits (SEL_READ/
+ * SEL_WRITE) or the special SEL_DEAD (soc_destroy: abort parked SELECTs on `s` with
+ * NSF_ECONNABORTED). */
+typedef void (*SOCSELFN)(SOCKCB *s, UCHAR events);
+void     soc_set_select_notify(SOCSELFN fn) asm("NSFSOSSN");
+void     soc_notify_ready(SOCKCB *s, UCHAR events) asm("NSFSONTR");
 
 #if NSF_DEBUG
 /* Leak-gate diagnostic (host tests): SOCKET-pool objects currently in use, which

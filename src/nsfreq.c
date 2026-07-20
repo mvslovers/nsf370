@@ -59,6 +59,12 @@ typedef struct protoent {
 
 static PROTOENT g_prototab[NSFREQ_PROTO_MAX];
 
+/* ---- RQ_SELECT handler (M4-5, ADR-0035) ------------------------------------
+ * SELECT is one request over N sockets, so it is NOT a per-socket PROTOPS op; its
+ * engine (NSFSEL) registers here. NULL until registered -> RQ_SELECT stays
+ * NSF_EOPNOTSUPP (the M3-2 behaviour, so a build without NSFSEL is unchanged). */
+static void (*g_select_handler)(NSFRQE *r);
+
 /* ---- statistics (spec 8, message range 600-699) --------------------------- */
 static STSCTR *req_recv, *req_bad, *req_nosys;
 static int     req_stats_ready;
@@ -97,6 +103,12 @@ void nsfreq_init(void)
     for (i = 0u; i < NSFREQ_PROTO_MAX; i++) {
         g_prototab[i].inuse = 0u;
     }
+    g_select_handler = NULL;                    /* NSFSEL re-registers if linked */
+}
+
+void nsfreq_register_select(void (*fn)(NSFRQE *r))
+{
+    g_select_handler = fn;
 }
 
 int nsfreq_register_proto(UCHAR proto, struct protops *ops)
@@ -315,6 +327,91 @@ static void do_getsockname(NSFRQE *r)
     soc_complete(r, NSF_RETOK, 0);
 }
 
+/* GETPEERNAME (M4-5): hand back the connected peer's name (spec 10.4), byte-wise
+ * through the fn-specific words exactly as do_getsockname returns the local name. A
+ * socket with no foreign name (a listener, an unconnected UDP socket, or a fresh
+ * socket) is NSF_ENOTCONN -- s->faddr is set only by CONNECT / a completed ACCEPT,
+ * so faddr == 0 is the reliable "no peer" signal. */
+static void do_getpeername(NSFRQE *r)
+{
+    SOCKCB *s = req_socket(r);
+
+    if (s == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_EBADF);
+        return;
+    }
+    if (s->faddr == 0u) {
+        soc_complete(r, NSF_RETERR, NSF_ENOTCONN);
+        return;
+    }
+    r->p1 = s->faddr;
+    r->p2 = (UINT)s->fport;
+    soc_complete(r, NSF_RETOK, 0);
+}
+
+/* SETSOCKOPT (M4-5, minimal set): accept SO_REUSEADDR and TCP_NODELAY (recorded at
+ * the compatibility level -- SO_REUSEADDR's documented TIME_WAIT-bind effect needs
+ * a TCP bind-time port-conflict check that v1 does not do, and TCP_NODELAY has no
+ * effect until Nagle exists at M5; the SOCKCB stays spec-exact with no flags field,
+ * so both are accepted no-ops). Any other option -> EOPNOTSUPP with the option in
+ * the trace (docs/ezasoket-conformance.md §3). */
+static void do_setsockopt(NSFRQE *r)
+{
+    SOCKCB *s = req_socket(r);
+
+    if (s == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_EBADF);
+        return;
+    }
+    if ((r->p1 == (UINT)NSF_SOL_SOCKET && r->p2 == (UINT)NSF_SO_REUSEADDR) ||
+        (r->p1 == (UINT)NSF_IPPROTO_TCP && r->p2 == (UINT)NSF_TCP_NODELAY)) {
+        soc_complete(r, NSF_RETOK, 0);          /* accepted (no v1 effect)        */
+        return;
+    }
+    TRC(SOCKET, "setsockopt unsupported level=%u opt=%u",
+        (unsigned)r->p1, (unsigned)r->p2);
+    soc_complete(r, NSF_RETERR, NSF_EOPNOTSUPP);
+}
+
+/* GETSOCKOPT (M4-5, minimal set): SO_RCVBUF / SO_SNDBUF return the fixed buffer
+ * size (NSF_SO_DFLT_BUF, mirroring the TCP window / send budget) in p3. Any other
+ * option -> EOPNOTSUPP with the option in the trace. */
+static void do_getsockopt(NSFRQE *r)
+{
+    SOCKCB *s = req_socket(r);
+
+    if (s == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_EBADF);
+        return;
+    }
+    if (r->p1 == (UINT)NSF_SOL_SOCKET &&
+        (r->p2 == (UINT)NSF_SO_RCVBUF || r->p2 == (UINT)NSF_SO_SNDBUF)) {
+        r->p3 = (UINT)NSF_SO_DFLT_BUF;          /* the actual (fixed in v1)       */
+        soc_complete(r, NSF_RETOK, 0);
+        return;
+    }
+    TRC(SOCKET, "getsockopt unsupported level=%u opt=%u",
+        (unsigned)r->p1, (unsigned)r->p2);
+    soc_complete(r, NSF_RETERR, NSF_EOPNOTSUPP);
+}
+
+/* FCNTL (M4-5): the persistent non-blocking flag (F_GETFL/F_SETFL of O_NONBLOCK,
+ * IOCTL FIONBIO) lives entirely in the NSFEZA facade's per-app mapping table (the
+ * SOCKCB has no flags field), so those never reach the executive. A raw RQ_FCNTL
+ * that does arrive is an unsupported command: validate the socket, then
+ * EOPNOTSUPP with the command in the trace. */
+static void do_fcntl(NSFRQE *r)
+{
+    SOCKCB *s = req_socket(r);
+
+    if (s == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_EBADF);
+        return;
+    }
+    TRC(SOCKET, "fcntl unsupported cmd=%u", (unsigned)r->p1);
+    soc_complete(r, NSF_RETERR, NSF_EOPNOTSUPP);
+}
+
 static void do_close(NSFRQE *r)
 {
     SOCKCB *s = req_socket(r);
@@ -392,18 +489,26 @@ void nsfreq_dispatch(NSFRQE *r)
     case RQ_RECVFROM:
     case RQ_SHUTDOWN:    do_delegate(r);     break;
 
-    /* -- frozen but not implemented in M3-2: complete cleanly, never crash.
-     *    ERRNO is NSF_EOPNOTSUPP (45) -- IBM Table 67 has no ENOSYS and 78 is
-     *    EDEADLK, so the classic "operation not supported" value is correct
-     *    (ADR-0029; the M3-4 errno correction). -- */
+    /* -- SELECT (M4-5, ADR-0035): one request over N sockets, so it is routed to
+     *    the registered NSFSEL engine (completes or parks r). NULL when NSFSEL is
+     *    not linked -> the M3-2 NSF_EOPNOTSUPP behaviour, unchanged. -- */
     case RQ_SELECT:
-    case RQ_SETSOCKOPT:
-    case RQ_GETSOCKOPT:
-    case RQ_FCNTL:
-    case RQ_GETPEERNAME:
-        reqc(req_nosys);
-        soc_complete(r, NSF_RETERR, NSF_EOPNOTSUPP);
+        if (g_select_handler != NULL) {
+            g_select_handler(r);
+        } else {
+            reqc(req_nosys);
+            soc_complete(r, NSF_RETERR, NSF_EOPNOTSUPP);
+        }
         break;
+
+    /* -- M4-5 socket-level verbs handled here (GETPEERNAME reads the connected
+     *    peer; SET/GETSOCKOPT the minimal documented option set; FCNTL's persistent
+     *    non-blocking flag lives in the NSFEZA facade, so the dispatcher path is a
+     *    no-op ack). -- */
+    case RQ_GETPEERNAME: do_getpeername(r);  break;
+    case RQ_SETSOCKOPT:  do_setsockopt(r);   break;
+    case RQ_GETSOCKOPT:  do_getsockopt(r);   break;
+    case RQ_FCNTL:       do_fcntl(r);        break;
 
     /* -- unknown fn: clean error, never a fall-through -- */
     default:

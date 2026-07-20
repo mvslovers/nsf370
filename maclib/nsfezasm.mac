@@ -1,37 +1,38 @@
          MACRO
 &LABEL   NSFEZASM &TYPE=,&S=,&BUF=,&NBYTE=,&FLAGS=,&NAME=,             *
-               &ERRNO=,&RETCODE=
+               &OPTNAME=,&OPTVAL=,&OPTLEN=,&ERRNO=,&RETCODE=
 .*=====================================================================
 .*  NSFEZASM -- the NSF companion to Shelby Beach's EZASMI macro,
-.*             adding the UDP verbs EZASMI has no TYPE for: SENDTO and
-.*             RECVFROM.  It is a SEPARATE file so Shelby's shipped
-.*             EZASMI.hlasm is never modified in place (ADR-0029); a
-.*             program that needs UDP issues NSFEZASM TYPE=SENDTO|RECVFROM
-.*             exactly the way it issues EZASMI TYPE=SEND|RECV for TCP.
+.*             adding the verbs EZASMI has no TYPE for.  It is a SEPARATE
+.*             file so Shelby's shipped EZASMI.hlasm is never modified in
+.*             place (ADR-0029); a program issues NSFEZASM TYPE=... exactly
+.*             the way it issues EZASMI TYPE=... for Shelby's verbs.
 .*
-.*  Shelby's first-4-characters &FUNC scheme collides for these:
-.*    SENDTO   -> SEND   (taken by the TCP SEND verb)
-.*    RECVFROM -> RECV   (taken by the TCP RECV verb)
-.*  so NSF pins two NEW 4-char EZASOH03 function codes, documented in
-.*  docs/ezasoket-conformance.md 2:
-.*    SENDTO   -> 'SNDT'
-.*    RECVFROM -> 'RCVF'
+.*  M3-4 added SENDTO/RECVFROM (Shelby's first-4-char &FUNC scheme collides
+.*  SENDTO->SEND, RECVFROM->RECV, so NSF pins the NEW codes SNDT/RCVF).
+.*  M4-5 adds SETSOCKOPT/GETSOCKOPT (Shelby has NO code for these; their
+.*  first four characters would collide GETS(OCKNAME), so NSF pins SOPT/GOPT).
+.*  Shelby's own CONN/LIST/ACCE/SEND/RECV/SHUT/GETP/SELE/IOCT are used via
+.*  EZASMI unchanged.  Codes documented in docs/ezasoket-conformance.md 2.2.
 .*
-.*  It builds the EZASOH03 argument list (the ABI in ADR-0029 /
-.*  conformance doc 2) and calls EZASOH03 -- NSF's veneer (asm/ezasoh03.asm)
-.*  routes it to the C core.  Plist layout built here:
-.*    +0  A('SNDT'|'RCVF')   +4 A(ERRNO)   +8 A(RETCODE)
-.*    +12 A(S)  +16 A(FLAGS)  +20 A(NBYTE)  +24 A(BUF)  +28 A(NAME)
+.*  It builds the EZASOH03 argument list (the ABI in ADR-0029 / conformance
+.*  doc 2.1) and calls EZASOH03 -- NSF's veneer (asm/ezasoh03.asm) routes it
+.*  to the C core.  Common plist head:
+.*    +0  A(code)   +4 A(ERRNO)   +8 A(RETCODE)
+.*  then the function-specific A() parameters at +12.. .
 .*
 .*  Operands (addresses, EZASMI style):
-.*    TYPE=SENDTO | RECVFROM
-.*    S=       the socket descriptor (halfword)
-.*    BUF=     the data buffer
-.*    NBYTE=   the length (fullword)
-.*    FLAGS=   the flags (fullword; 0, or NSF MSG_DONTWAIT = X'40')
-.*    NAME=    the sockaddr_in (peer on SENDTO, sender-out on RECVFROM)
-.*    ERRNO=   the returned ERRNO fullword
-.*    RETCODE= the returned RETCODE fullword
+.*    TYPE=SENDTO | RECVFROM | SETSOCKOPT | GETSOCKOPT
+.*    S=       the socket descriptor (halfword)                    all TYPEs
+.*    BUF=     the data buffer                              SENDTO / RECVFROM
+.*    NBYTE=   the length (fullword)                        SENDTO / RECVFROM
+.*    FLAGS=   the flags (fullword; 0 or MSG_DONTWAIT X'40')SENDTO / RECVFROM
+.*    NAME=    the sockaddr_in (peer / sender-out)          SENDTO / RECVFROM
+.*    OPTNAME= the option number (fullword)              SET/GETSOCKOPT
+.*    OPTVAL=  the option value buffer (fullword)        SET/GETSOCKOPT
+.*    OPTLEN=  the option length (fullword)              SET/GETSOCKOPT
+.*    ERRNO=   the returned ERRNO fullword                         all TYPEs
+.*    RETCODE= the returned RETCODE fullword                       all TYPEs
 .*
 .*  Register use: R1 (plist ptr), R14/R15 (the call).  The plist and the
 .*  function-code cell are generated inline, branched around -- one
@@ -45,14 +46,24 @@
 &AR      SETC  'NEZA&NSFEZN'      branch-around label
          AIF   ('&TYPE' EQ 'SENDTO').SNDT
          AIF   ('&TYPE' EQ 'RECVFROM').RCVF
-         MNOTE 8,'NSFEZASM: TYPE must be SENDTO or RECVFROM'
+         AIF   ('&TYPE' EQ 'SETSOCKOPT').SOPT
+         AIF   ('&TYPE' EQ 'GETSOCKOPT').GOPT
+         MNOTE 8,'NSFEZASM: TYPE=SENDTO|RECVFROM|SETSOCKOPT|GETSOCKOPT'
          MEXIT
 .SNDT    ANOP
 &FC      SETC  'SNDT'
-         AGO   .GEN
+         AGO   .GENIO
 .RCVF    ANOP
 &FC      SETC  'RCVF'
-.GEN     ANOP
+         AGO   .GENIO
+.SOPT    ANOP
+&FC      SETC  'SOPT'
+         AGO   .GENOPT
+.GOPT    ANOP
+&FC      SETC  'GOPT'
+         AGO   .GENOPT
+.*-------------------------------------------------------------------- SENDTO/RECVFROM
+.GENIO   ANOP
 &LABEL   B     &AR                skip the inline data
 &FID     DC    CL4'&FC'           the EZASOH03 function code
 &PL      DC    8A(0)              the 8-slot argument list
@@ -74,6 +85,31 @@
          LA    1,&NAME
          ST    1,&PL+28           +28 A(NAME) -- last parameter
          OI    &PL+28,X'80'       set the VL bit on the last address
+         AGO   .CALL
+.*-------------------------------------------------------------------- SET/GETSOCKOPT
+.GENOPT  ANOP
+&LABEL   B     &AR                skip the inline data
+&FID     DC    CL4'&FC'           the EZASOH03 function code
+&PL      DC    8A(0)              the 8-slot argument list
+&AR      DS    0H
+         LA    1,&FID
+         ST    1,&PL+0            +0  A(function code)
+         LA    1,&ERRNO
+         ST    1,&PL+4            +4  A(ERRNO)
+         LA    1,&RETCODE
+         ST    1,&PL+8            +8  A(RETCODE)
+         LA    1,&S
+         ST    1,&PL+12           +12 A(S)
+         LA    1,&OPTNAME
+         ST    1,&PL+16           +16 A(OPTNAME)
+         LA    1,&OPTVAL
+         ST    1,&PL+20           +20 A(OPTVAL)
+         LA    1,&OPTLEN
+         ST    1,&PL+24           +24 A(OPTLEN) -- last parameter
+         OI    &PL+24,X'80'       set the VL bit on the last address
+         AGO   .CALL
+.*-------------------------------------------------------------------- the call
+.CALL    ANOP
          LA    1,&PL              R1 -> the EZASOH03 plist
          L     15,=V(EZASOH03)
          BALR  14,15              R15=0 always; result in ERRNO/RETCODE

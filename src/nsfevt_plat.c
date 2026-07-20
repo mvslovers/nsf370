@@ -16,6 +16,11 @@
  * (rather than via <clibecb.h>) so the seam has no header dependency. */
 int ecb_waitlist(NSFECB **ecblist) asm("@@ECBWL");
 
+/* libc370: a plain SVC-2 POST (needs no cthread identity, unlike cthread_post),
+ * declared here like ecb_waitlist. It WAKES a task committed to a WAIT on this ECB
+ * -- what nsfevt_plat_post's bit-set alone cannot do. */
+int ecb_post(NSFECB *ecb, unsigned postcode) asm("@@ECBPST");
+
 /* Local copy capacity: MUST be >= the loop's EVT_ECBLIST_MAX (nsfevt.c). If it
  * is smaller, a full list is silently truncated here and the ECBs at the END --
  * the cib and stop ECBs -- are dropped from the WAIT, so the loop can never wake
@@ -42,4 +47,9 @@ void nsfevt_plat_wait(NSFECB **ecblist, int count)
 void nsfevt_plat_post(NSFECB *ecb)
 {
     *ecb |= NSFECB_POSTED;
+}
+
+void nsfevt_plat_wake(NSFECB *ecb)
+{
+    (void)ecb_post(ecb, 0u);            /* real SVC-2 POST: wakes a committed WAIT */
 }

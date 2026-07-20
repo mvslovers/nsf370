@@ -712,6 +712,12 @@ static void tcp_recv_data(TCB *tcb, const TCPSEG *seg, PBUF *b, int *kept)
         (void)tcp_recv_drain_to(tcb, s->pend_recv);   /* deliver + grow rcv_wnd     */
     }
     tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);       /* ONE ACK: final RCV.NXT/WND       */
+
+    /* Read-ready poke AT THE END (post-drain), unconditional (never gated on
+     * pend_recv -- that is NULL exactly when a SELECT is the waiter): reflects the
+     * FINAL rxq state, so a concurrent parked RECV that just consumed this segment
+     * leaves the rxq empty and the SELECT correctly reports not-ready (ADR-0035). */
+    soc_notify_ready(s, (UCHAR)SEL_READ);
 }
 
 /* An initial send sequence from the platform clock. RFC 793 §3.3 draws the ISS
@@ -1130,9 +1136,7 @@ static void tcp_graduate(TCB *child)
     }
     if (ls->pend_accept != NULL) {
         tcp_accept_deliver(child, ls->pend_accept);
-        return;
-    }
-    if (q_enq(&ls->acceptq, &child->acceptlink) == 0) {
+    } else if (q_enq(&ls->acceptq, &child->acceptlink) == 0) {
         child->flags |= (UCHAR)TCB_F_ONACCEPTQ;
     }
     /* else: the acceptq is unexpectedly full -- unreachable, because the SYN-time
@@ -1141,6 +1145,12 @@ static void tcp_graduate(TCB *child)
      * / TERMAPI); do NOT destroy it here -- this runs mid-ACK-processing and the
      * caller (tcp_process_ack -> tcp_synchronized_input) would then touch a freed
      * TCB. */
+
+    /* Read-ready poke on the LISTENER (ACCEPT counts as a read op): a pending
+     * accept just delivered leaves the acceptq empty (SELECT reports not-ready);
+     * one queued leaves it non-empty (SELECT reports the listener read-ready).
+     * Unconditional, reflecting the final acceptq state (ADR-0035). */
+    soc_notify_ready(ls, (UCHAR)SEL_READ);
 }
 
 /* Reach ESTABLISHED (RFC 793): count it, complete a parked CONNECT (active side)
@@ -1168,6 +1178,12 @@ static void tcp_enter_established(TCB *tcb)
     if (tcb->listener != NULL) {
         tcp_graduate(tcb);                              /* passive open done       */
     }
+    /* Write-ready poke (ADR-0035): an active open that just reached ESTABLISHED is
+     * now write-ready -- a SELECT-for-write waiting on the connecting socket fires
+     * (the nonblocking-CONNECT-then-select-for-write idiom). Unconditional (not
+     * gated on pend_connect). The passive child is not app-visible until ACCEPT, so
+     * a poke on it is a harmless no-op. */
+    soc_notify_ready(s, (UCHAR)SEL_WRITE);
 }
 
 /* ACK processing (RFC 793 p.72). Returns 1 to continue segment processing (URG /
@@ -1215,6 +1231,11 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
          * the sndq -- clamp to sndq_bytes), then refill a parked SEND (M4-3). */
         tcp_sndq_free(tcb, (acked < tcb->sndq_bytes) ? acked : tcb->sndq_bytes);
         tcp_send_resume(tcb);
+        /* Write-ready poke (ADR-0035): the ACK just freed send-budget room. Placed
+         * here, after SND.UNA advances -- NOT behind tcp_send_resume's pend_send
+         * early return, which is NULL exactly when a SELECT-for-write is the waiter.
+         * tcp_poll gates on the actual state/room, so this is safe to fire always. */
+        soc_notify_ready(tcb->sock, (UCHAR)SEL_WRITE);
     } else if (tcb->snd_una != tcb->snd_nxt && seg->dlen == 0u &&
                !(seg->flags & (TCP_FL_SYN | TCP_FL_FIN))) {
         tcb->dupacks = (UCHAR)(tcb->dupacks + 1u);   /* run length (counting only) */
@@ -1283,6 +1304,10 @@ static void tcp_process_fin(TCB *tcb, const TCPSEG *seg)
         Q_EMPTY(&tcb->sock->rxq)) {
         soc_complete(tcb->sock->pend_recv, 0, 0);
     }
+    /* EOF is level-triggered read-ready for a parked SELECT too (ADR-0035): a RECV
+     * on this socket would now return 0. Poke after the pend_recv EOF completion so
+     * the readiness reflects the FIN state regardless of a concurrent recv. */
+    soc_notify_ready(tcb->sock, (UCHAR)SEL_READ);
 
     switch (tcb->state) {
     case TCP_SYN_RCVD:
@@ -1829,7 +1854,58 @@ static int tcp_connect(SOCKCB *s, NSFRQE *r)
     }
     tcpc(tcp_activeopen);
     tcp_timers_update(tcb);                         /* arm rexmit for the SYN        */
+    if ((r->flags & (USHORT)RQ_F_NONBLOCK) != 0u) {
+        /* Non-blocking CONNECT (M4-5, ADR-0035): the SYN is on the wire and the
+         * connection proceeds in the background; report EINPROGRESS now and do NOT
+         * park. Its completion is observed via SELECT-for-write (tcp_enter_established
+         * pokes SEL_WRITE); a failure tears the socket down (SEL_DEAD -> the select
+         * aborts), so no completion is lost. */
+        soc_complete(r, NSF_RETERR, NSF_EINPROGRESS);
+        return 0;
+    }
     return soc_park(s, r, SOC_PEND_CONNECT);        /* wake on SYN|ACK / RST         */
+}
+
+/* SHUTDOWN (M4-5, ADR-0035 / conformance §3). HOW selects the direction(s):
+ *  - SHUT_RD / SHUT_RDWR: mark a LOCAL EOF (TCB_F_RCVFIN) so a subsequent RECV
+ *    returns 0; poke SEL_READ (EOF is read-ready). No wire action.
+ *  - SHUT_WR / SHUT_RDWR: send our FIN (graceful write-side close) by the same
+ *    FINQ mechanism CLOSE uses -- but WITHOUT TCB_F_APPCLOSED and without owning
+ *    the socket's death: the app keeps the descriptor open for reading. The
+ *    background FIN handshake / TIME_WAIT run as usual; the app's later CLOSE
+ *    drives soc_destroy.
+ * Synchronous: completes r and returns 0 (handled). */
+static int tcp_shutdown(SOCKCB *s, NSFRQE *r)
+{
+    TCB *tcb = (TCB *)s->pcb;
+    int  how = (int)r->p1;
+
+    if (tcb == NULL) {
+        soc_complete(r, NSF_RETERR, NSF_ENOTCONN);
+        return 0;
+    }
+    if (how == SHUT_RD || how == SHUT_RDWR) {
+        tcb->flags |= (UCHAR)TCB_F_RCVFIN;          /* local EOF (recv -> 0)         */
+        soc_notify_ready(s, (UCHAR)SEL_READ);       /* EOF is read-ready             */
+    }
+    if (how == SHUT_WR || how == SHUT_RDWR) {
+        switch (tcb->state) {
+        case TCP_ESTABLISHED:
+            tcb->flags |= (UCHAR)TCB_F_FINQ;
+            tcb->state  = (UCHAR)TCP_FIN_WAIT_1;
+            tcp_output(tcb);                        /* FIN once the sndq drains      */
+            break;
+        case TCP_CLOSE_WAIT:
+            tcb->flags |= (UCHAR)TCB_F_FINQ;
+            tcb->state  = (UCHAR)TCP_LAST_ACK;
+            tcp_output(tcb);
+            break;
+        default:
+            break;                                  /* nothing to FIN in this state  */
+        }
+    }
+    soc_complete(r, NSF_RETOK, 0);
+    return 0;
 }
 
 /* LISTEN (passive open enable): clamp the backlog to the acceptq bound, size the
@@ -2009,6 +2085,36 @@ static int tcp_close(SOCKCB *s, NSFRQE *r)
     }
 }
 
+/* SELECT readiness probe (M4-5, ADR-0035). Side-effect-free: report the subset of
+ * `want` (SEL_READ|SEL_WRITE) the socket is ready for NOW -- never blocks, parks or
+ * dequeues. Read-ready: buffered data, a pending connection on a listener (ACCEPT
+ * counts as a read op), or EOF (a RECV would return 0 immediately). Write-ready: an
+ * ESTABLISHED / CLOSE_WAIT connection with send-budget room (a connecting or closing
+ * state is not). NSF has no exception source (TAKESOCKET unsupported), so SELECT
+ * never reports one. */
+static int tcp_poll(SOCKCB *s, int want)
+{
+    TCB *tcb = (TCB *)s->pcb;
+    int  ready = 0;
+
+    if ((want & (int)SEL_READ) != 0) {
+        if (!Q_EMPTY(&s->rxq) || !Q_EMPTY(&s->acceptq)) {
+            ready |= (int)SEL_READ;             /* buffered data, or pending accept*/
+        } else if (tcb != NULL && (tcb->flags & (UCHAR)TCB_F_RCVFIN) != 0) {
+            ready |= (int)SEL_READ;             /* EOF: recv returns 0 immediately */
+        }
+    }
+    if ((want & (int)SEL_WRITE) != 0) {
+        if (tcb != NULL &&
+            (tcb->state == (UCHAR)TCP_ESTABLISHED ||
+             tcb->state == (UCHAR)TCP_CLOSE_WAIT) &&
+            tcb->sndq_bytes < (UINT)NSFTCP_SNDBUF) {
+            ready |= (int)SEL_WRITE;            /* send would accept >= 1 byte     */
+        }
+    }
+    return ready;
+}
+
 static PROTOPS g_tcp_ops = {
     tcp_attach,     /* SOCKET  -- alloc the TCB                                   */
     NULL,           /* BIND    -- framework records the name (protocol-independent)*/
@@ -2018,7 +2124,9 @@ static PROTOPS g_tcp_ops = {
     tcp_recv,       /* RECV / RECVFROM -- in-order stream delivery (M4-3)         */
     tcp_close,      /* CLOSE   -- graceful FIN teardown (M4-2)                    */
     tcp_detach,     /* final resource release -> tcp_destroy                      */
-    tcp_accept      /* ACCEPT  -- hand back an established child (M4-2)           */
+    tcp_accept,     /* ACCEPT  -- hand back an established child (M4-2)           */
+    tcp_poll,       /* SELECT readiness probe (M4-5)                              */
+    tcp_shutdown    /* SHUTDOWN -- directional close (M4-5)                       */
 };
 
 /* -- init / introspection ----------------------------------------------------- */
