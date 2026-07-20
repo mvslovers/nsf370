@@ -121,7 +121,8 @@ static int d_send(SOCKCB *s, NSFRQE *r)
 }
 
 static PROTOPS dummy_ops = {
-    d_attach, d_bind, d_connect, d_listen, d_send, d_recv, d_close, d_detach
+    .attach = d_attach, .bind = d_bind, .connect = d_connect, .listen = d_listen,
+    .send = d_send, .recv = d_recv, .close = d_close, .detach = d_detach
 };
 
 /* ---- helpers --------------------------------------------------------------- */

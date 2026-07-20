@@ -104,9 +104,16 @@ typedef struct protops {
     int (*shutdown)(SOCKCB *s, NSFRQE *r);  /* SHUTDOWN (TCP, M4-5)            */
 } PROTOPS;
 /* `accept` (M4-2), `poll` and `shutdown` (M4-5) are the LAST members ON PURPOSE:
- * protocols and tests that use a POSITIONAL PROTOPS initializer (UDP's g_udp_ops,
- * the dummy PROTOPS in the M3 tests) omit the trailing members, which C zero-fills
- * to NULL -- so adding one needs no edit to any non-TCP initializer. A NULL accept
+ * PROTOPS is APPEND-ONLY. The inits that name only the ops they implement (UDP's
+ * g_udp_ops, the dummy PROTOPS in the M3 tests) are DESIGNATED (.attach = ...):
+ * they zero-fill the ops they omit to NULL and stay -Wmissing-field-initializers-
+ * clean under the host build's -Werror (project.toml [host].cflags) when a member
+ * is appended at the end. The inits that still list all members POSITIONALLY
+ * (g_tcp_ops, tstsel, tsteza) do NOT get that for free: appending a member makes
+ * them -Werror-fatal (convert them to designated then), and REORDERING members
+ * silently rebinds a slot to the wrong op -- connect/send/recv/close/accept/
+ * shutdown share one signature, so the compiler cannot catch it. Hence: only ever
+ * append to PROTOPS, and prefer designated initializers for new ops tables. A NULL accept
  * maps to NSF_EOPNOTSUPP through soc_dispatch; a NULL `poll` falls back to the
  * generic SELECT readiness rule (read = rxq/acceptq non-empty, write = always) in
  * the SELECT engine -- exactly right for UDP, so NSFUDP needs no poll op. `poll` is
