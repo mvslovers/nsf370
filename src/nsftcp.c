@@ -1817,6 +1817,15 @@ static int tcp_attach(SOCKCB *s)
         return NSF_EINVAL;                      /* attach once (defensive)        */
     }
     tcb = (TCB *)mm_alloc(g_tcbpool);
+    if (tcb == NULL && tcp_reclaim_timewait()) {
+        /* A new (active) socket, like a passive open (tcp_child_create), reclaims
+         * the oldest TIME_WAIT when the TCB pool is exhausted -- otherwise a guest
+         * doing rapid active connect->close cannot make a new connection once its
+         * own accumulated TIME_WAITs fill the pool (found by the M4-6 TIME_WAIT
+         * reclaim scenario; the passive path already did this, the active path did
+         * not). spec 13.4. */
+        tcb = (TCB *)mm_alloc(g_tcbpool);
+    }
     if (tcb == NULL) {
         return NSF_ENOBUFS;                     /* pool exhausted -> EMFILE-class */
     }

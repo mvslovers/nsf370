@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.34 — Draft for implementation. Companion document to the frozen
+*Version 1.35 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1676,6 +1676,37 @@ algorithm details follow RFC 793/1122 directly.
 > **policy + backoff** are host-proven; live cadence follows issue #40.
 > Genuine-loss RTO firing needs root; the drop/dup/reorder matrix is M4-6.
 
+> **Status (M4-6, v1.35): the M4 exit gate — loss survival + TIME_WAIT reclaim.**
+> A host loss-injection harness (`test/tstloss.c`) drives two real NSF TCP sockets
+> self-talking on one stack through a lossy loopback (a synchronous single-threaded
+> pump + a seeded-PRNG drop/dup/reorder fault stage) and confirms the M4-3 data
+> path + the M4-4 RTO/persist machinery survive 5 % synthetic loss (and burst /
+> dup / reorder / combined / SYN+FIN loss) **byte-exact** with an orderly FIN
+> teardown. The harness found and (with the maintainer's standing authorization)
+> folded in **three real, latent TCP fixes**, each host-regression-guarded: (1) the
+> active opener now adopts the SYN|ACK window **unconditionally** on the
+> synchronizing segment (`tcp_synsent_input`) — the conditional
+> `tcp_update_window` with `SND.WL1 == 0` wraps FALSE for an upper-half peer ISS
+> (≥ 2³¹), so `SND.WND` stayed 0 and the opener could never send; the passive
+> child already did this (RFC 793: the initial-window set is unconditional). (2) a
+> zero-window **persist-probe ACK** (`ack == SND.NXT+1`, the peer accepted the
+> probe after its window reopened) is now accepted and resumes the sender, rather
+> than rejected as "acks unsent" — which livelocked a sender whose window-update
+> ACK was lost (ADR-0033 §4 annotation). (3) `tcp_attach` now reclaims the oldest
+> **TIME_WAIT** on pool exhaustion like the passive path, so a guest doing rapid
+> active connect→close does not wall at EMFILE once its own TIME_WAITs fill the
+> pool. **TIME_WAIT reclaim under pool pressure** is demonstrated host-side
+> (`test/tstloss.c`, 52 active cycles, pool 40) and live (`test/mvs/tsttcpw.c`, the
+> guest loops 40 active connect→close against a host listener with a 32-TCB pool,
+> forcing reclaim — **live GREEN on MVSCE**: batch CC 0, `connected=40`,
+> `twreclaim=8` = cycles 40 − pool 32, no EMFILE wall, leak clean; tcpdump confirms
+> the guest is the active closer, sending the first FIN each cycle over distinct
+> ephemeral ports). The interactive-telnet + clean FIN item was countersigned at
+> M4-5. Fixes #1/#2 are host-proven only (not inducible live without loss
+> injection/root); fix #3 is the live reclaim above. The three fixes are
+> intra-function (no new external symbols). **M4 exit gate MET** (the `M4 COMPLETE`
+> flip is staged for the countersigned merge).
+
 ### 13.1 Responsibilities
 
 Full state machine (11 states), sequence processing per RFC 793,
@@ -2157,6 +2188,23 @@ after closing issue #28 (the idle-link CTCI write stall) with the `rarmed` guard
 FIN teardown, survives 5% synthetic loss on host harness; TIME_WAIT
 reclaim under pool pressure demonstrated.
 
+**Exit gate MET.** telnet interactive echo + clean FIN countersigned at M4-5
+(`NSFTECHO`). The TCP machine survives 5 % synthetic loss byte-exact — plus
+drop-burst / duplication / reorder / combined (3 seeds at 1 MB + 20 rotating) /
+SYN+FIN loss — on the host harness `test/tstloss.c` (a synchronous single-threaded
+pump self-talking two real sockets through a seeded lossy loopback). TIME_WAIT
+reclaim under pool pressure is demonstrated host-side (`test/tstloss.c`, 52 active
+connect→close cycles, pool 40, `twreclaim > 0`) and live (`test/mvs/tsttcpw.c`, 40
+active cycles vs. a host listener, 32-TCB pool — **live gate GREEN on MVSCE**:
+batch CC 0, `connected=40`, `twreclaim=8` (exactly cycles 40 − pool 32), no EMFILE
+wall, leak gate clean; tcpdump shows the guest sending the first FIN each cycle —
+the active closer — over distinct ephemeral ports). The harness surfaced three real
+latent TCP fixes (active-open window adoption, persist-probe-ACK acceptance,
+active-path TIME_WAIT reclaim), folded in with host regressions (v1.35); fixes #1
+and #2 are host-proven only (neither is inducible live without loss injection or
+root). **M4 exit gate MET** — the `M4 COMPLETE` flip is staged for the maintainer's
+countersigned merge.
+
 ### M5 — Subsystem split + hardening (Phase 2)
 
 | WP | Deliverable | Size |
@@ -2193,6 +2241,53 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.35: M4-6 — the loss-injection harness (drop/dup/reorder) + TIME_WAIT reclaim
+under pool pressure; the M4 exit gate.** A HOST-only harness `test/tstloss.c`
+stands up TWO real NSF TCP sockets self-talking on ONE stack (same HOME_IP, the
+4-tuple demux distinguishes them — the port pairs are swapped) through a lossy
+loopback, so the M4-3 data path and the M4-4 RTO/persist machinery are exercised
+against the systematic drop/dup/reorder matrix the lossless live CTCI link cannot
+produce. It is a **synchronous single-threaded pump** (no event loop, no threads):
+a capture DEVOPS puts each outbound frame's bytes on a bounded FIFO; the pump
+drains a per-round SNAPSHOT through a seeded-PRNG fault stage (drop / duplicate /
+reorder-hold-one / deterministic first-K-SYN/FIN drop; the seed is printed so any
+failure reproduces) and re-injects survivors; on a stall it flushes a reorder-held
+frame, else jumps simulated time to the next armed timer expiry
+(`nsftmr_peek(0)->delta`), else declares a real deadlock — it never nudges past a
+stall. A livelock watchdog fails fast (with the seed) on any no-app-progress spin.
+Scenarios (each a seeded pseudo-random transfer verified byte-exact + orderly FIN
+teardown + a per-scenario leak gate): 5 % drop / mid-transfer 3-segment burst /
+5 % dup / 5 % reorder / combined 5 %+2 %+2 % (3 seeds at 1 MB + 20 rotating at
+128 KB) / SYN+FIN loss; plus TIME_WAIT reclaim (52 active connect→close cycles).
+Host **2152→2788** (TSTLOSS 511; TSTTCP +130 for the three fold-in regressions),
+ASan+UBSan clean on the harness. **The harness exposed THREE real, latent TCP
+bugs, folded in with the maintainer's standing authorization, each with a host
+regression:** (1) **active-open window adoption** — `tcp_synsent_input` adopted the
+SYN|ACK window via the CONDITIONAL `tcp_update_window` with `SND.WL1 == 0`, and
+`TCP_SEQ_LT(0, SEG.SEQ)` wraps FALSE for a peer ISS in the upper half of the
+sequence space (≥ 2³¹, ~half of all peers), so `SND.WND` stayed 0 and the active
+opener could never transmit; the passive child already set the window
+unconditionally, and the fix makes the active side match (RFC 793 initial-window
+set is unconditional). Masked because every prior test used a lower-half synthetic
+peer ISS and live active-open never sent guest data. (2) **persist-probe ACK
+rejection** — a zero-window probe sends 1 byte at SND.NXT without advancing it
+(ADR-0033); when the peer's window reopens it accepts the byte and ACKs SND.NXT+1,
+which `tcp_process_ack` rejected as "acks unsent", dropping the window update it
+carried, so a sender whose window-update ACK was LOST livelocked; the fix accepts a
+probe-ACK (`ack == SND.NXT+1`, persist armed, unsent data) and resumes (ADR-0033
+annotation). (3) **active-path TIME_WAIT reclaim** — `tcp_attach` did not reclaim
+the oldest TIME_WAIT on pool exhaustion (only the passive `tcp_child_create` did),
+so a guest doing rapid active connect→close against a remote peer walls at EMFILE
+once its own TIME_WAITs fill the pool; the fix reclaims on the active path too.
+**M4 exit gate MET** (spec §13 status): the TCP machine survives 5 % synthetic loss
+byte-exact and TIME_WAIT reclaim under pool pressure is demonstrated (host
+`test/tstloss.c` + live gate `test/mvs/tsttcpw.c` — the guest loops 40 active
+connect→close against a host listener with a 32-TCB pool, forcing reclaim; the
+telnet interactive + clean FIN item was countersigned at M4-5). NSF + NSFECHO +
+NSFTECHO + 41 test modules cross-link clean, alias scan clean (the three fixes are
+intra-function; no new externals). §13 status + ADR-0033 annotation + conformance
+unchanged (no errno surface change).
 
 **v1.34: M4-5 — the EZASOKET M4 verb set + SELECT (ADR-0035).** NSFEZA gains the
 stream/control verbs (`nsf_connect`/`listen`/`accept`/`send`/`recv`/`shutdown`/

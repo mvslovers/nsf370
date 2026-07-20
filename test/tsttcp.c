@@ -1103,6 +1103,45 @@ static void test_timewait_reclaim(NETDEV *dev)
     CHECK_EQ((long)small_inuse(), 0L, "reclaim: no buffer leak");
 }
 
+/* M4-6: a NEW ACTIVE socket must also reclaim the oldest TIME_WAIT when the TCB
+ * pool is full (tcp_attach), mirroring the passive path -- otherwise a guest doing
+ * rapid active connect->close against a REMOTE peer walls at EMFILE once its own
+ * accumulated TIME_WAITs fill the pool (there is no local passive open to reclaim
+ * for it). This is the M4-6 fold-in fix; the host loss harness's self-talk
+ * reclaim scenario cannot see it (its local child-creation reclaims via the
+ * passive path), so it is pinned here with a synthetic remote peer. */
+static void test_timewait_reclaim_active(NETDEV *dev)
+{
+    NSFRQE r;
+    UINT   ldesc, adesc, recl0;
+    int    i;
+
+    CHECK_EQ((long)tcb_inuse(), 0L, "reclaim-active: pool starts at baseline");
+    ldesc = tcp_socket();
+    rqe_init(&r, RQ_BIND, ldesc); r.p1 = HOME_IP; r.p2 = 6100u; dispatch(&r);
+    rqe_init(&r, RQ_LISTEN, ldesc); r.p1 = 8u; dispatch(&r);
+
+    /* Fill the pool: listener + (POOL-1) active TIME_WAIT TCBs. */
+    for (i = 0; i < TSTTCP_POOL - 1; i++) {
+        (void)active_to_timewait(dev, (USHORT)(8300 + i));
+    }
+    CHECK_EQ((long)tcb_inuse(), (long)TSTTCP_POOL, "reclaim-active: pool full (listener + TIME_WAITs)");
+    recl0 = ctr_get("NSFTCP", "twreclaim");
+
+    /* A new ACTIVE socket with the pool full: tcp_attach must reclaim the oldest
+     * TIME_WAIT (without the fix this returns 0 -- EMFILE). */
+    adesc = tcp_socket();
+    CHECK(adesc != 0u, "reclaim-active: new active socket succeeds (reclaimed a TIME_WAIT)");
+    CHECK_EQ((long)ctr_get("NSFTCP", "twreclaim"), (long)recl0 + 1,
+             "reclaim-active: exactly one TIME_WAIT reclaimed");
+
+    tcp_close(adesc);                           /* the fresh (CLOSED) socket        */
+    conn_close(ldesc);
+    nsftmr_run((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "reclaim-active: pool baseline after cleanup");
+    CHECK_EQ((long)small_inuse(), 0L, "reclaim-active: no buffer leak");
+}
+
 /* ==========================================================================
  * 6. M4-3 data path: segmentation, sliding window, in-order receive, EOF,
  *    copy-on-transmit recovery (ADR-0032). The loop is still NOT running; each
@@ -2387,6 +2426,7 @@ int main(void)
     test_teardown_simultaneous(dev);
     test_malformed_options(dev);
     test_timewait_reclaim(dev);
+    test_timewait_reclaim_active(dev);
 
     /* M4-3: data path -- segmentation, sliding window, in-order receive, EOF,
      * copy-on-transmit recovery, and the error paths. */
