@@ -129,6 +129,32 @@ connection open indefinitely (probing at the 64 s cap) while still reaping a dea
 one, at the cost of one flag bit and *not* resetting `backoff` on a zero-window
 ACK (which would hide the backoff the live test is meant to show).
 
+**Annotation (M4-6, v1.35) — the probe-ACK acceptance hole.** "The probe does not
+advance `SND.NXT`" (above) has a corner the M4-6 loss harness exposed: when the
+peer's window has **reopened**, it *accepts* the probe byte (RCV.NXT advances past
+`SND.NXT`) and ACKs `SND.NXT+1`. Because `SND.NXT` was not advanced, that ACK is
+`> SND.NXT`, and `tcp_process_ack`'s guard treated any `ack > snd_nxt` as
+"acknowledges unsent data" — bare-ACK + drop, **before** the window update it
+carried was processed. So a sender whose window-update ACK was **lost** (only the
+loss path produces this) never learned the window reopened and livelocked, probing
+forever. Fix: `tcp_process_ack` accepts a probe-ACK — when `t_persist` is armed,
+there is unsent data, and `seg->ack == SND.NXT + 1` (exactly the one probed byte),
+it advances `SND.NXT` over that byte and falls through to the normal window-update
++ `SND.UNA` advance + resume. Any larger `ack > SND.NXT` is still genuinely unsent
+and rejected. The invariant (probe does not put durable data in flight; persist
+governs) is preserved for the still-closed-window case — only the reopened-window
+probe-ACK is now honoured. Guarded by `test_persist_probe_ack_reopens`
+(`test/tsttcp.c`), which fails pre-fix (livelock) and reproduces the exact
+ordering: fill the window → drop the window-update ACK → persist probe → the peer
+accepts → the sender resumes.
+
+Assumption: the `ack == SND.NXT+1` acceptance trusts a conformant peer — it takes
+that ACK to mean "the peer received our probe byte." A misbehaving peer acking
+`SND.NXT+1` before we ever probed would advance `SND.NXT` over a byte it has not
+actually taken. This matches the stack's threat model (v1 does not harden against
+a malicious peer anywhere else), and the window is narrow (persist must already be
+armed with unsent data); noted here so it is a known assumption, not a silent one.
+
 ## Consequences
 
 - **Fixed RTO, no Karn / adaptive RTT (M5):** the RTO is a constant 1 s base, not

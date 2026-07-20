@@ -1205,8 +1205,27 @@ static int tcp_process_ack(TCB *tcb, const TCPSEG *seg)
     }
 
     if (TCP_SEQ_GT(seg->ack, tcb->snd_nxt)) {
-        tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* ACKs something unsent -> ACK+drop*/
-        return 0;
+        /* A zero-window persist probe (tcp_persist_expire, ADR-0033) puts ONE byte
+         * on the wire at SND.NXT but does NOT advance SND.NXT (so "nothing in
+         * flight" and persist keeps governing). If the peer's window has since
+         * reopened it ACCEPTS that byte and ACKs SND.NXT+1 -- a legitimate ack of a
+         * byte we really sent, not of unsent data. Adopt it (account the probed
+         * byte as sent) and fall through to the normal window-update + SND.UNA
+         * advance + resume, so the sender comes out of persist even when the peer's
+         * window-update ACK was LOST and this probe-ACK is the only signal that the
+         * window reopened. Without this the probe-ACK is rejected as "unsent", the
+         * window update it carries is never processed, and the sender livelocks
+         * (M4-6 loss harness, ADR-0033 annotation). Only the single probed byte is
+         * accepted this way (ack == SND.NXT+1); any larger jump is genuinely unsent
+         * and still rejected. */
+        if (seg->ack == tcb->snd_nxt + 1u &&
+            tcb->t_persist.state == (UCHAR)TMR_PENDING &&
+            tcb->sndq_bytes > (tcb->snd_nxt - tcb->snd_una)) {
+            tcb->snd_nxt = seg->ack;            /* the probed byte is now sent     */
+        } else {
+            tcp_emit(tcb, (USHORT)TCP_FL_ACK, 0);   /* ACKs something unsent -> ACK+drop*/
+            return 0;
+        }
     }
     /* Update the send window BEFORE any transmit below (RFC 793 p.72 step 5). The
      * progress branch advances SND.UNA and immediately re-clocks the sender

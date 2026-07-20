@@ -1994,6 +1994,57 @@ static void test_persist(NETDEV *dev)
     CHECK_EQ((long)large_inuse(), 0L, "persist: BUFLARGE baseline");
 }
 
+/* 7f'. M4-6 regression: the window reopens but the peer's window-update ACK is
+ *      LOST, so the sender's persist probe is the only signal. The peer accepts
+ *      the 1-byte probe (window now open) and ACKs SND.NXT+1. That ack is > our
+ *      SND.NXT (the probe did not advance it, ADR-0033), and the old code rejected
+ *      it as "acks unsent", never processing the window update it carried -> the
+ *      sender livelocked probing forever (found by the loss harness). The fix
+ *      accepts the probe-ACK and resumes. */
+static void test_persist_probe_ack_reopens(NETDEV *dev)
+{
+    CONN   c;
+    NSFRQE r;
+    UCHAR  src[500];
+    USHORT plen;
+    TCB   *t;
+
+    fill_pattern(src, sizeof(src), 0x63u);
+    establish_active_opt(dev, 8130u, 0u, 1460u, &c);       /* peer window 0 */
+
+    req_send(&r, c.desc, src, sizeof(src), 0u);
+    g_capcount = 0;
+    dispatch(&r);
+    CHECK_EQ((long)r.retcode, 500L, "probeack: 500 buffered (window 0)");
+    CHECK(tcb_persist_on(c.desc), "probeack: persist armed");
+
+    /* Persist probe: one byte at SND.NXT, SND.NXT unmoved. */
+    g_capcount = 0;
+    tick(NSFTCP_RTO_TICKS);
+    CHECK_EQ((long)g_capcount, 1L, "probeack: one probe");
+    CHECK_EQ((long)tcb_sndnxt(c.desc), (long)c.srv_next, "probeack: probe did not move SND.NXT");
+
+    /* The peer's window REOPENED and it accepted the probe byte -> it ACKs
+     * SND.NXT+1 with an open window. The window-update ACK (at SND.NXT) was lost;
+     * this probe-ACK is the only signal. The sender must resume. */
+    g_capcount = 0;
+    inject_ack_win(dev, &c, c.srv_next + 1u, 0x2000u);
+    t = tcb_of(c.desc);
+    CHECK(t != NULL && t->snd_wnd == 0x2000u, "probeack: reopened window adopted");
+    CHECK(!tcb_persist_on(c.desc), "probeack: persist cancelled");
+    CHECK(tcb_rexmit_on(c.desc), "probeack: remaining data now in flight");
+    CHECK_EQ((long)g_capcount, 1L, "probeack: the buffered remainder is sent");
+    cap_seg(0, NULL, NULL, NULL, NULL, &plen);
+    CHECK_EQ((long)plen, 499L, "probeack: remainder = 500 - the 1 probed byte");
+
+    inject_ack_win(dev, &c, c.srv_next + 500u, 0x2000u);   /* ACK all 500 */
+    CHECK_EQ((long)tcb_sndq(c.desc), 0L, "probeack: sndq fully drained");
+    conn_reset(dev, &c);
+    tick((UINT)NSFTCP_2MSL_TICKS);
+    CHECK_EQ((long)tcb_inuse(), 0L, "probeack: pool baseline");
+    CHECK_EQ((long)large_inuse(), 0L, "probeack: BUFLARGE baseline");
+}
+
 /* 7g. Partial ACK during backoff: progress resets the backoff and RTO but the
  *     timer stays armed for the unacked remainder. */
 static void test_partial_ack_backoff(NETDEV *dev)
@@ -2357,6 +2408,7 @@ int main(void)
     test_rexmit_synack(dev);
     test_rexmit_fin(dev);
     test_persist(dev);
+    test_persist_probe_ack_reopens(dev);
     test_partial_ack_backoff(dev);
     test_timer_exclusive(dev);
     test_flowctl_no_oversend(dev);
