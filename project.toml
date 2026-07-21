@@ -624,6 +624,23 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstssi.c"]
 
+# -- M5 Stage-0a' SVC cross-AS transport probe: the CLIENT (TSTSVC) ----------
+# MVS-only (host = false): cross-AS via a private SVC (SVCTABLE/ASCB/CSA) has no
+# host analog, so this IS the transport test -- host coverage is the
+# NSF_SIZE_ASSERTs in nsfpsvc.h firing at cc370 cross-compile (ADR-0038). THE
+# DECISIVE PROOF: the client is UNAUTHORIZED (it asserts __isauth()==0, TESTAUTH
+# FCTN=1) and NEVER self-authorizes -- an unauthorized problem-state program
+# completing the round trip is the thing the SSI probe (TSTSSI) could not do. It
+# issues the private SVC (R1 = &NSFV_REQ, number in R6 via the EX-SVC-0 trick)
+# N>=40 times, verifying the token round-tripped byte-exact (echo = token+1) plus
+# a monotonic served counter. PREREQUISITE: the probe STC must be started first
+# (S NSFV). No NSF sources, no asm -- links only libc370 (__isauth autocalled).
+[[test]]
+name = "TSTSVC"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstsvc.c"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
@@ -696,6 +713,41 @@ entry = "NSFPSSIR"
 startup = false
 ac = 1
 sources = ["src/nsfpssir.c"]
+
+# -- M5 Stage-0a' the SVC transport probe STC (NSFV) --------------------------
+# The probe target address space (ADR-0038, supersedes ADR-0036's transport):
+# owns the CSA rendezvous anchor, __loadhi's the SVC routine (NSFVSVC) into CSA,
+# publishes the anchor into it, then STEALS an unused installation SVC slot
+# (200-255; CVT->CVTABEND->SCVTSVCT) to point at it -- so an UNAUTHORIZED client
+# can reach the stack via the SVC. Runs a supervisor/key-0 WAIT loop servicing
+# one token round trip per wake; RESTORES the stolen slot at stop AND on abend
+# (ESTAE). Self-contained: src/nsfv.c uses only libc370 seams + the CVT/SVCTABLE
+# structs (cvt.h/ihascvt.h). ac=1: the STC (not the client) self-authorizes via
+# clib_apf_setup/SVC 244 for __loadhi/key-0 CSA/the SVCTABLE store. Deployed to
+# NSF.LINKLIB (make deploy), run via jcl/NSFV.jcl (S NSFV). NSFS stays reserved
+# for M5-2. NSFP (the SSI probe) stays in-repo as the SSI reference (ADR-0038).
+[[module]]
+name = "NSFV"
+startup = "crt1"
+ac = 1
+sources = ["src/nsfv.c"]
+
+# -- M5 Stage-0a' the private SVC routine (NSFVSVC) ---------------------------
+# The routine a stolen SVC slot dispatches, in the CALLER's address space, to
+# hand a token across to the STC and back (ADR-0038). Pure HLASM (Mike's call):
+# an SVC routine has no cc370 C runtime, and the register-in/out convention is
+# native to assembler. Its ENTRY IS the routine (entry=NSFVSVC, startup=false)
+# -- MVS enters it via SVC dispatch, supervisor/key 0; RENT, no writable statics.
+# Arbitrarily named, NOT IGCnnn (a stolen slot installs a resident EP directly,
+# bypassing the by-name SVC loader -- the ancestor's transport SVC is CSECT
+# STCPSVC). __loadhi'd into CSA by the STC. Links only the branch POST it inlines
+# (CVT0PT01) + the WAIT macro; no libc370 C functions (no CRT).
+[[module]]
+name = "NSFVSVC"
+entry = "NSFVSVC"
+startup = false
+ac = 1
+sources = ["asm/nsfvsvc.asm"]
 
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB

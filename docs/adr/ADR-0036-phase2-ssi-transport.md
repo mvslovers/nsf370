@@ -183,3 +183,18 @@ protocol code is involved in Stage-0a.
   validates the transport mechanics on an empty token. Supersedes nothing.
   Amendments (the unauthorized-app resolution; the NSFRQE keyed move; client-death
   cleanup) will be appended as M5-2/Stage-0b/0c land.
+- **2026-07-21 — Transport superseded by ADR-0038** (append-only annotation). The
+  Stage-0a `NSFP` probe proved the SSI transport live (520 PASS, no abend, PR #45), but
+  its **open M5-2 question** (above) proved decisive: `IEFSSREQ` is authorized-only, so
+  the SSI cannot serve NSF's **unauthorized, relink-only** EZASOKET applications. With the
+  APF constraint now on the table, the Phase-2 transport is changed to a **dynamically
+  installed private SVC** (the APF-free unauthorized→authorized transition) — see
+  **ADR-0038**. This annotation supersedes only the **transport mechanism** (§Decision,
+  §Why's SVC-vs-SSI trade-off, which was struck before the APF constraint was decisive).
+  **Everything else in this ADR remains valid and is reused verbatim by ADR-0038:** the
+  cross-AS state/key rules (§3 — the `__xmpost`-from-supervisor and WAIT placement,
+  adjusted for a supervisor-throughout SVC routine), the CSA-anchor design (§2), dynamic
+  registration's no-IPL principle (§4), runtime self-authorization for the **STC** side
+  (§5 — the STC still self-auths via SVC 244 for `__loadhi`/key-0 CSA; only the
+  **client** no longer needs it), and the ESTAE / in-flight-drain discipline
+  (§Consequences). The `NSFP` SSI probe stays in-repo as the SSI reference/history.
