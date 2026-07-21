@@ -607,6 +607,23 @@ name = "TSTSEL"
 startup = "crt1"
 sources = ["test/tstsel.c", "src/nsfsel.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfthr.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M5 Stage-0a SSI cross-AS transport probe: the CLIENT (TSTSSI) -----------
+# MVS-only (host = false): cross-AS SSI (ASCB/CSA/IEFSSREQ) has no host analog,
+# so this IS the transport test -- host coverage is the NSF_SIZE_ASSERTs in
+# nsfpssi.h firing at cc370 cross-compile (ADR-0036). The client builds an SSOB +
+# SSIB(name=NSFP) + our extension and calls IEFSSREQ N>=40 times, verifying the
+# token round-tripped byte-exact through the probe STC (echo = token+1) plus a
+# monotonic served counter. PREREQUISITE: the probe STC must be started first
+# (S NSFP) -- like the M3/M4 live gates that need a peer (`nc`, a listener). The
+# client self-authorizes via clib_apf_setup (SVC 244); no NSF sources, no asm --
+# it links only libc370 (iefssreq, ssct, clib_apf_setup autocalled). The
+# five-abend gauntlet (S047/S0C4/S202/S102/X'201') is proven by CC 0 + no dump.
+[[test]]
+name = "TSTSSI"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstssi.c"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
@@ -649,6 +666,36 @@ sources = ["samples/nsfecho.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", 
 name = "NSFTECHO"
 startup = "crt1"
 sources = ["samples/nsftecho.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M5 Stage-0a the SSI transport probe STC (NSFP) ---------------------------
+# The probe target address space (ADR-0036): owns the CSA rendezvous anchor,
+# dynamically registers the NSFP probe subsystem (SSCT/SSVT into JESCT -- no
+# IEFSSNxx/IPL), __loadhi's the router (NSFPSSIR) into CSA, and runs a
+# supervisor/key-0 WAIT loop that services one token round trip per wake. Self-
+# contained: src/nsfp.c uses only libc370 seams (__super/__xmpost/getmain/ssct/
+# ssvt/__loadhi/__estae, autocalled). ac=1 mirrors UFSD (runtime auth is via
+# clib_apf_setup/SVC 244, so the steplib need not be APF). Deployed to
+# NSF.LINKLIB (make deploy), run via jcl/NSFP.jcl (S NSFP). NOT the production
+# NSF stack; NSFS stays reserved for M5-2.
+[[module]]
+name = "NSFP"
+startup = "crt1"
+ac = 1
+sources = ["src/nsfp.c"]
+
+# -- M5 Stage-0a the SSI thin router (NSFPSSIR) -------------------------------
+# The SSVT function routine MVS invokes via IEFSSREQ, loaded into CSA by the STC
+# (__loadhi by name). Its ENTRY IS the router function and it runs WITHOUT the C
+# runtime (entry=NSFPSSIR, startup=false) -- MVS enters it directly in the
+# caller's address space; RENT, no writable statics (ADR-0036). ac=1 mirrors
+# UFSD's UFSDSSIR. Links its own copy of the libc370 pieces it calls (memcmp,
+# ecb_timed_wait, __super/__prob/__ascb/__xmpost/__uinc/__udec, ssct_find).
+[[module]]
+name = "NSFPSSIR"
+entry = "NSFPSSIR"
+startup = false
+ac = 1
+sources = ["src/nsfpssir.c"]
 
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB
