@@ -198,3 +198,11 @@ protocol code is involved in Stage-0a.
   (§5 — the STC still self-auths via SVC 244 for `__loadhi`/key-0 CSA; only the
   **client** no longer needs it), and the ESTAE / in-flight-drain discipline
   (§Consequences). The `NSFP` SSI probe stays in-repo as the SSI reference/history.
+- **2026-07-22 — SSI probe code RETIRED.** With ADR-0038's SVC transport proven live
+  (an unauthorized client completing the round trip), the `NSFP` SSI probe is no longer
+  carried in the build: `src/nsfp.c`, `src/nsfpssir.c`, `include/nsfpssi.h`,
+  `test/mvs/tstssi.c`, `jcl/NSFP.jcl` and their `project.toml` entries are removed. **This
+  ADR is the SSI reference** (the design is described in full above); the code remains
+  recoverable from git history. The decision to retire (rather than keep the code in-tree)
+  is deliberate — the SSI transport is superseded and carrying dead cross-AS code that is
+  built/deployed/tested every cycle is a maintenance cost the ADR already covers.

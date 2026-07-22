@@ -293,3 +293,22 @@ is wrong).
   restoring the slot under RTM) is built + host-reasoned but not run, to avoid a dump.
   Amendments (the unauthorized-app resolution is now MET; the NSFRQE keyed move; client-
   death cleanup) will be appended as M5-2/Stage-0b/0c land.
+- **2026-07-22 — countersign findings (append-only corrections).**
+  1. **`MVCP`/`MVCS` correction (§6, Consequences) — WRONG for MVS 3.8j.** `MVCP` (Move to
+     Primary, `DA`) and `MVCS` (Move to Secondary, `DB`) are **dual-address-space (DAS)**
+     instructions (primary/secondary ASN, `SSAR`) absent on a base S/370 — and ADR-0036
+     correctly records "no cross-memory services" on this target, so §6 contradicts it.
+     The non-DAS key-checked move is **`MVCK` (Move with Key, `D9`)**: a key-0 routine
+     copies to/from a key-8 caller buffer under the *caller's* key, so a bad or hostile
+     pointer takes a protection exception instead of a silent key-0 clobber. **Read §6's
+     "`MVCP`/`MVCS`" as "`MVCK`".** Confirmed empirically (a one-instruction probe) in
+     **Stage-0b**, which will append the definitive result here.
+  2. **`RENT` is CONDITIONAL — do not read it as unqualified.** The SVC routine's `RENT`
+     claim holds for the **single-client-sequential probe** because its register-
+     preservation scratch is the *shared* CSA anchor `csasave` (Decision §5; only one
+     invocation is ever in flight). Under **concurrent clients from multiple address
+     spaces** (M5-2), that shared scratch is a data race: each invocation then needs
+     **per-invocation storage in the SVRB** (the natural per-request work area, `R5`),
+     not the anchor. The probe does not exercise concurrency; M5-2 must switch the scratch
+     to the SVRB before the routine is entered concurrently. Recorded so it is not hidden
+     behind a bare "`RENT` ✓".

@@ -4,7 +4,7 @@
 * ADR-0038 (supersedes ADR-0036's SSI transport).  This is the routine a
 * dynamically installed private SVC dispatches, in the CALLER's address
 * space, to hand a request across to the probe STC (NSFV) and back.  It is
-* the SVC analogue of Stage-0a's SSI router (nsfpssir.c) -- same CSA anchor,
+* the SVC analogue of Stage-0a's SSI router (retired; ADR-0036) -- same anchor,
 * same __xmpost cross-AS wake, same in-flight discipline -- but reached by
 * SVC dispatch instead of IEFSSREQ, so it serves an UNAUTHORIZED problem-
 * state client (no APF): the SVC is the APF-free unauthorized->authorized
@@ -64,7 +64,7 @@ R13      EQU   13
 R14      EQU   14
 R15      EQU   15
 *----------------------------------------------------------------------
-*  NSFV_ANCHOR field offsets -- MIRROR of include/nsfpsvc.h (guarded there
+*  NSFV_ANCHOR field offsets -- MIRROR of include/nsfvsvc.h (guarded there
 *  by NSF_SIZE_ASSERT at cross-compile).
 *----------------------------------------------------------------------
 ANCEYE   EQU   0                  CL8  "NSFVANCR"
@@ -83,7 +83,7 @@ REQEYE   EQU   0                  CL4  "NSFV"
 REQTOKN  EQU   8                  F    in token / out echo (+1)
 REQRC    EQU   12                 F    out rc
 REQSEQ   EQU   16                 F    out served snapshot
-*  state + rc constants (mirror nsfpsvc.h)
+*  state + rc constants (mirror nsfvsvc.h)
 STFREE   EQU   0
 STPEND   EQU   1
 STDONE   EQU   2
@@ -122,7 +122,7 @@ NSFVGO   DS    0H
          BNZ   SLOTBSY            no -> NOREQ
 *----------------------------------------------------------------------
 *  Mark in-flight (shutdown clears ACTIVE and drains this to zero before it
-*  frees the CSA).  CS loop = the __uinc of nsfpssir.c.
+*  frees the CSA).  CS loop = the in-flight __uinc of Stage-0a's SSI router.
 *----------------------------------------------------------------------
          L     R3,ANCINFL(,R2)
 UINCLP   LR    R4,R3

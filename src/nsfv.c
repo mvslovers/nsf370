@@ -18,7 +18,8 @@
  * Restore merely redirects the slot, so the ESTAE may restore under RTM (unlike
  * Stage-0a's SSCT), which also makes a fresh S NSFV after an abend restartable.
  *
- * Modelled on Stage-0a's nsfp.c (STC lifecycle, in-flight drain, ESTAE) and the
+ * Modelled on Stage-0a's SSI probe STC (retired; ADR-0036) -- STC lifecycle,
+ * in-flight drain, ESTAE -- and the
  * CBT/mvs38j-ip SVCTABLE steal (STCPSVC0/STCPSVC9: CVT->CVTABEND->SCVTSVCT).
  * The STC (not the client) self-authorises via clib_apf_setup (SVC 244) for
  * __loadhi / key-0 CSA / the SVCTABLE store -- NSF.LINKLIB need not be APF.
@@ -28,7 +29,7 @@
 #define NSFV_VERSION "0.1.0-probe"
 #endif
 
-#include "nsfpsvc.h"
+#include "nsfvsvc.h"
 #include <string.h>
 #include <clibos.h>          /* __super/__prob/__ascb/__xmpost/getmain/loadhi   */
 #include <clibwto.h>         /* wtof                                            */
