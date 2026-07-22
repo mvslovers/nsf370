@@ -69,28 +69,36 @@
 #define NSFV_RC_CORRUPT   8    /* anchor gone / server quiescing             */
 #define NSFV_RC_NOREQ     12   /* request slot busy (concurrent client)      */
 
-/* The one probe request: the STC increments the token and bumps a served
- * counter, so the client verifies both a byte-exact transform (token -> token+1)
- * and a monotonic server-side count. */
+/* Request functions.  ECHO (Stage-0a') increments the token; XFER (Stage-0b)
+ * moves a ubuf app->stack->app through a CSA staging buffer with a byte-wise
+ * +1 transform (ADR-0039). */
 #define NSFV_REQ_ECHO     1U
+#define NSFV_REQ_XFER     2U
+
+/* CSA staging / copy chunk = BUFLARGE (the large PBUF, ADR-0009), so M5-2's
+ * marshalling copies straight into/out of 2048-byte PBUFs (ufsd used 4K -- not
+ * PBUF-aligned; ADR-0039).  A ubuf > 2048 is moved in 2048-byte chunks, one
+ * SVC<->STC round trip per chunk. */
+#define NSFV_XFER_CHUNK   2048U
 
 /* ============================================================
  * NSFV_REQ -- the client's request block (R1 -> here at the SVC).
  *
- * The M5-2 NSFRQE-by-pointer shape, staged on an empty token.  Mirrors
- * Stage-0a's NSFPSSOB extension; carries NO pointers (abend-immune, and the
- * probe needs none -- the token crosses via the CSA anchor, not this block).
- * The routine reads eye+token IN and writes token+seq+rc OUT (plain key-0 store
- * for the probe; M5-2 uses MVCP/MVCS -- ADR-0038 §6).  20 bytes.
+ * The M5-2 NSFRQE-by-pointer shape, staged on an empty token.  For XFER it also
+ * carries the ubuf address + length IN THE CALLER'S ADDRESS SPACE (the routine
+ * runs in that AS and MVCKs the ubuf<->staging; ADR-0039).  The routine reads
+ * eye+func+token+ubuf+ulen IN and writes token+seq+rc OUT.  28 bytes.
  * ============================================================ */
 typedef struct nsfv_req {
     char      eye[4];       /* +00 "NSFV"                                     */
-    UINT      func;         /* +04 request function (NSFV_REQ_ECHO)          */
+    UINT      func;         /* +04 request function (ECHO / XFER)            */
     UINT      token;        /* +08 in: client token; out: STC echo (+1)      */
     int       rc;           /* +0C out: router return code (also -> R15)     */
     UINT      seq;          /* +10 out: server's served-counter snapshot     */
-} NSFV_REQ;                 /* +14 = 20 bytes                                */
-NSF_SIZE_ASSERT(NSFV_REQ, 20);
+    void     *ubuf;         /* +14 XFER: caller-AS buffer address            */
+    UINT      ulen;         /* +18 XFER: caller buffer length (bytes to move) */
+} NSFV_REQ;                 /* +1C = 28 bytes                                */
+NSF_SIZE_ASSERT(NSFV_REQ, 28);
 
 /* ============================================================
  * NSFV_ANCHOR -- the CSA (SP=241, key 0) rendezvous block.
@@ -122,22 +130,31 @@ NSF_SIZE_ASSERT(NSFV_REQ, 20);
  *   ANCRASCB   EQU 40    A    req_ascb    (client ASCB, POST target)
  *   ANCSERVED  EQU 44    F    served
  *   ANCSAVE    EQU 48    18F  SVC-routine POST register save area
+ *   ANCXFUNC   EQU 120   F    transform the STC applies (ECHO / XFER)
+ *   ANCXLEN    EQU 124   F    bytes in the staging buffer this chunk
+ *   ANCSTAGE   EQU 128   2048 CSA staging buffer (the ubuf CSA bounce)
  * ============================================================================
+ * The staging buffer is CSA-shared (the STC must reach it -- it cannot live in
+ * the SVRB), single-client-sequential like csasave; M5-2 concurrency needs
+ * per-client staging (ADR-0039).  Stage-0b adds no other shared scratch.
  * ============================================================ */
 typedef struct nsfv_anchor {
-    char      eye[8];       /* +00 "NSFVANCR"                                 */
-    UINT      version;      /* +08 anchor version                            */
-    UINT      flags;        /* +0C NSFV_ANCHOR_ACTIVE                        */
-    ECB       server_ecb;   /* +10 STC WAIT target (CSA, key 0)              */
-    void     *server_ascb;  /* +14 STC ASCB (__ascb(0) at startup)          */
-    UINT      inflight;     /* +18 clients executing inside the SVC routine   */
-    UINT      req_state;    /* +1C NSFV_REQ_FREE / _PENDING / _DONE          */
-    UINT      req_token;    /* +20 in: client token; out: STC's echo (+1)    */
-    ECB       reply_ecb;    /* +24 client WAIT target (CSA, key 0)           */
-    void     *req_ascb;     /* +28 client ASCB (__xmpost target)            */
-    UINT      served;       /* +2C requests serviced (monotonic diagnostic)  */
-    UINT      csasave[18];  /* +30 SVC-routine POST register save area (72 B) */
-} NSFV_ANCHOR;              /* +78 = 120 bytes                               */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 120);
+    char      eye[8];             /* +00 "NSFVANCR"                           */
+    UINT      version;            /* +08 anchor version                      */
+    UINT      flags;              /* +0C NSFV_ANCHOR_ACTIVE                  */
+    ECB       server_ecb;         /* +10 STC WAIT target (CSA, key 0)        */
+    void     *server_ascb;        /* +14 STC ASCB (__ascb(0) at startup)    */
+    UINT      inflight;           /* +18 clients executing inside the routine */
+    UINT      req_state;          /* +1C NSFV_REQ_FREE / _PENDING / _DONE    */
+    UINT      req_token;          /* +20 in: client token; out: echo (+1)    */
+    ECB       reply_ecb;          /* +24 client WAIT target (CSA, key 0)     */
+    void     *req_ascb;           /* +28 client ASCB (__xmpost target)      */
+    UINT      served;             /* +2C requests serviced (diagnostic)      */
+    UINT      csasave[18];        /* +30 SVC-routine POST save area (72 B)    */
+    UINT      xfunc;              /* +78 transform: NSFV_REQ_ECHO / _XFER     */
+    UINT      xlen;               /* +7C bytes in stage[] this chunk          */
+    char      stage[NSFV_XFER_CHUNK]; /* +80 CSA staging (the ubuf bounce)   */
+} NSFV_ANCHOR;                    /* +880 = 2176 bytes                        */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 2176);
 
 #endif /* NSFVSVC_H */

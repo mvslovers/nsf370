@@ -252,10 +252,12 @@ nsfv_svc_restore(NSFV_STC *stc)
 }
 
 /* ============================================================
- * Service the one pending request: read the token, echo it incremented, bump
- * the served counter, wake the client (cross-AS POST, supervisor state).
- * The SVC routine owns the slot's FREE<->PENDING/DONE lifecycle; this only
- * moves PENDING -> DONE.
+ * Service the one pending request (cross-AS, supervisor state).  Dispatch on
+ * the transform the SVC routine staged: ECHO increments the token; XFER applies
+ * a byte-wise +1 to the CSA staging buffer's xlen bytes (ADR-0039 -- a trivial,
+ * position-sensitive transform so a short/wrong/offset copy is visible).  The
+ * SVC routine owns the slot's FREE<->PENDING/DONE lifecycle; this only moves
+ * PENDING -> DONE.
  * ============================================================ */
 static void
 nsfv_service(NSFV_ANCHOR *anchor)
@@ -265,10 +267,17 @@ nsfv_service(NSFV_ANCHOR *anchor)
     if (__super(PSWKEY0, &savekey)) return;
 
     if (anchor->req_state == NSFV_REQ_PENDING) {
-        UINT   t  = anchor->req_token;
         void  *ca = anchor->req_ascb;
 
-        anchor->req_token = t + 1u;             /* echo / increment            */
+        if (anchor->xfunc == NSFV_REQ_XFER) {
+            UINT n = anchor->xlen;
+            UINT k;
+            if (n > NSFV_XFER_CHUNK) n = NSFV_XFER_CHUNK;   /* clamp to staging */
+            for (k = 0u; k < n; k++)
+                anchor->stage[k] = (char)(anchor->stage[k] + 1);
+        } else {
+            anchor->req_token = anchor->req_token + 1u;     /* ECHO             */
+        }
         anchor->served++;
         anchor->req_state = NSFV_REQ_DONE;      /* PENDING -> DONE             */
 
