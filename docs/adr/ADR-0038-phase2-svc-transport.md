@@ -303,6 +303,30 @@ is wrong).
      pointer takes a protection exception instead of a silent key-0 clobber. **Read §6's
      "`MVCP`/`MVCS`" as "`MVCK`".** Confirmed empirically (a one-instruction probe) in
      **Stage-0b**, which will append the definitive result here.
+- **2026-07-22 — `MVCK` promise CLOSED (Stage-0b Step 1, live on MVSCE; `TSTMVCK`
+  batch+TSO CC 0, 12/12).** The definitive result the correction above promised:
+  1. **`MVCK` exists and executes** on MVS 3.8j / Hercules (no `S0C1`), and a
+     supervisor/key-0 `MVCK` reading a key-8 source under `R3`=8 (the SVC routine's
+     write-in) copies **byte-exact** and honours the length. **Stage-0b uses `MVCK`** for
+     the `ubuf` app↔staging copies (ADR-0039), not the key-0 `memcpy` fallback.
+  2. **`MVCK` decodes and enforces `R3`** (it is not a silent clobber): a foreign source
+     key (`R3`=0, the master key, from problem state) is a privileged operation and
+     **faults `S0C2`** — proving the key field is used, and that an unauthorized caller
+     cannot misuse `MVCK` to read under an arbitrary key.
+  3. **Toolchain finding:** `as370` **mis-assembles the `MVCK` mnemonic** — it treats the
+     first operand as an SS-format length-immediate (like `MVC`) and drops the `R1`
+     length-register and `R3` key-register (encoding both as 0, verified in the listing).
+     `MVCK` must be emitted as a **raw `D9` opcode** with the register fields
+     (`D9 R1R3 B1D1 B2D2`). Recorded for M5-2's use of the same seam.
+  4. **Supervisor storage-key protection `S0C4` — demonstrated live** (Mike's call). A
+     key-8 `MVCK`-read (`R3`=8) of a genuinely **fetch-protected** frame takes a
+     **protection exception (`S0C4`)** — the real hostile-pointer case, not a silent
+     key-0 clobber. Because `SSK` under MVS DAT sets **real-frame** keys, the probe `LRA`-
+     translates the virtual test page to its real address, `SSK`s it to key 0 +
+     fetch-protect (`ISK` confirms `keyback=08`), then the supervisor `MVCK` faults
+     `S0C4`. So the write-in read genuinely enforces the caller's key at the hardware
+     level; M5-2 still owns the *recovery* (turning that `S0C4` into a clean `EFAULT`) and
+     address/length validation (ADR-0039). **The `MVCK` seam is fully proven.**
   2. **`RENT` is CONDITIONAL — do not read it as unqualified.** The SVC routine's `RENT`
      claim holds for the **single-client-sequential probe** because its register-
      preservation scratch is the *shared* CSA anchor `csasave` (Decision §5; only one

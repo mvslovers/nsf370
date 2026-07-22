@@ -624,6 +624,38 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstsvc.c"]
 
+# -- M5 Stage-0b Step 1: the MVCK (Move with Key) probe (TSTMVCK) ------------
+# MVS-only (host = false): MVCK/SSK/storage keys have no host analog. Settles
+# ADR-0038's open promise (ADR-0039 Step 1): MVCP/MVCS are DAS (absent on base
+# S/370), so the M5-2 ubuf keyed move must be the non-DAS MVCK. Proves MVCK
+# (1) exists+executes+copies byte-exact and (2) HONOURS the source key -- a page
+# SSK'd to key 0 + fetch-protect, MVCK-read under source key 8, faults with a
+# protection exception (S0C4) caught by libc370 try() with no dump. A MECHANISM
+# probe: it self-auths (SVC 244 -- SSK is privileged, MVCK runs the SVC routine's
+# key-0 context); NOT the ubuf client (which stays UNAUTHORIZED). No NSF sources.
+[[test]]
+name = "TSTMVCK"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstmvck.c"]
+
+# -- M5 Stage-0b Step 2: the ubuf keyed CSA-bounce CLIENT (TSTUBUF) ----------
+# MVS-only (host = false): the keyed CSA bounce (MVCK/storage keys/cross-AS SVC
+# + anchor) has no host analog -- this IS the transport test; host coverage is
+# the NSF_SIZE_ASSERTs in nsfvsvc.h at cc370 cross-compile (ADR-0039). THE RED
+# LINE: the client is UNAUTHORIZED (asserts __isauth()==0, TESTAUTH FCTN=1) and
+# NEVER self-authorizes -- an unauthorized problem-state program moving a data
+# buffer app->stack->app byte-exact is the Stage-0b deliverable. It issues the
+# XFER private SVC (R1 = &NSFV_REQ, number in R6 via EX-SVC-0) once per <= 2048
+# chunk over sizes 0/1/100/2048/5000/10, verifying every byte transformed (+1)
+# byte-exact and a guard byte after ulen untouched (no overrun). PREREQUISITE:
+# the probe STC must be started first (S NSFV). Links only libc370.
+[[test]]
+name = "TSTUBUF"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstubuf.c"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
