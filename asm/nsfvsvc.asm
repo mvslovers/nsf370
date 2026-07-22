@@ -78,11 +78,17 @@ ANCRECB  EQU   36                 F    reply_ecb   (our WAIT target)
 ANCRASCB EQU   40                 A    req_ascb    (caller ASCB)
 ANCSERVD EQU   44                 F    served
 ANCSAVE  EQU   48                 18F  POST register save area
+ANCXFUNC EQU   120                F    transform (ECHO/XFER)
+ANCXLEN  EQU   124                F    bytes staged this chunk
+ANCSTAGE EQU   128                CSA staging buffer (2048)
 *  NSFV_REQ field offsets (caller's block, R8 = A(req))
 REQEYE   EQU   0                  CL4  "NSFV"
+REQFUNC  EQU   4                  F    request function
 REQTOKN  EQU   8                  F    in token / out echo (+1)
 REQRC    EQU   12                 F    out rc
 REQSEQ   EQU   16                 F    out served snapshot
+REQUBUF  EQU   20                 A    XFER caller ubuf addr
+REQULEN  EQU   24                 F    XFER bytes to move
 *  state + rc constants (mirror nsfvsvc.h)
 STFREE   EQU   0
 STPEND   EQU   1
@@ -91,6 +97,12 @@ RCOK     EQU   0
 RCINVAL  EQU   4
 RCCORR   EQU   8
 RCNOREQ  EQU   12
+*  request functions + MVCK copy constants (mirror nsfvsvc.h)
+FNECHO   EQU   1
+FNXFER   EQU   2
+XFCHUNK  EQU   2048               max ulen moved per SVC call
+MVCKMAX  EQU   255                bytes per MVCK piece
+MVCKK8   EQU   X'80'              MVCK source key 8
 *----------------------------------------------------------------------
          USING NSFVSVC,R6         base = our entry (R6, FLIH-set)
          B     NSFVGO             skip the STC-patched anchor word
@@ -130,13 +142,64 @@ UINCLP   LR    R4,R3
          CS    R3,R4,ANCINFL(R2)
          BNE   UINCLP
 *----------------------------------------------------------------------
-*  Stage the request.  Publish req_state = PENDING LAST (after every other
-*  field), so an STC wake for any reason never services a half-formed slot.
-*  Zero the reply ECB first so a stale post cannot false-wake the WAIT.
+*  Dispatch on req.func.  ECHO stages the token; XFER first copies the
+*  caller's ubuf into the CSA staging buffer (write-in), then stages xlen.
+*  Both publish req_state = PENDING LAST (after every other field), so an
+*  STC wake never services a half-formed slot; and zero the reply ECB first
+*  so a stale post cannot false-wake the WAIT.
 *----------------------------------------------------------------------
+         L     R3,REQFUNC(,R8)             request function
+         C     R3,=A(FNXFER)               XFER?
+         BE    XFERIN                      yes -> write-in + xlen
+*  ECHO: stage the token.  Set xfunc = ECHO so an ECHO after an XFER is not
+*  misdispatched by the STC (which switches on the staged xfunc).
          XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
          L     R3,REQTOKN(,R8)             read caller token
          ST    R3,ANCTOKEN(,R2)            stage token
+         LA    R3,FNECHO
+         ST    R3,ANCXFUNC(,R2)            xfunc = ECHO
+         ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
+         LA    R3,STPEND
+         ST    R3,ANCSTATE(,R2)            publish PENDING
+         B     DOPOST
+*----------------------------------------------------------------------
+*  XFER write-in.  Clamp L = min(ulen, XFCHUNK): a > chunk ulen would run
+*  MVCK off the end of stage[] (the last anchor field) into adjacent CSA --
+*  an IPL-class overrun.  Stage xlen = L (in CSA, survives POST/WAIT, reused
+*  for read-out).  Then MVCK the caller's ubuf (source key 8) into stage
+*  (dst key 0), <= 255 bytes/piece -- raw D9, since as370 mis-assembles the
+*  MVCK mnemonic (drops the R1/R3 registers); see tstmvck.c.  The piece
+*  length is saved in R0 (MVCK is not trusted to preserve R1) and used to
+*  advance, so the loop never depends on a register MVCK may clobber.
+*----------------------------------------------------------------------
+XFERIN   DS    0H
+         L     R0,REQULEN(,R8)             R0 = ulen
+         C     R0,=A(XFCHUNK)              > staging size?
+         BNH   XFISTX
+         L     R0,=A(XFCHUNK)              clamp to staging size
+XFISTX   ST    R0,ANCXLEN(,R2)             xlen = L
+         L     R10,ANCXLEN(,R2)            R10 = remaining = L
+         SLR   R11,R11                     R11 = offset
+WRINLP   LTR   R10,R10                     bytes left? (0 -> skip)
+         BNP   WRINEND
+         LR    R1,R10                      R1 = piece length
+         C     R1,=A(MVCKMAX)
+         BNH   WRINSZ
+         LA    R1,MVCKMAX                  cap at 255
+WRINSZ   LR    R0,R1                       save piece length
+         L     R5,REQUBUF(,R8)             R5 = ubuf base (source B2)
+         ALR   R5,R11
+         LA    R4,ANCSTAGE(,R2)            R4 = &stage (dst B1)
+         ALR   R4,R11
+         LA    R3,MVCKK8                   R3 = source key 8
+         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         ALR   R11,R0                      off += piece
+         SLR   R10,R0                      remaining -= piece
+         B     WRINLP
+WRINEND  DS    0H
+         XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
+         LA    R3,FNXFER
+         ST    R3,ANCXFUNC(,R2)            xfunc = XFER
          ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
          LA    R3,STPEND
          ST    R3,ANCSTATE(,R2)            publish PENDING
@@ -147,6 +210,7 @@ UINCLP   LR    R4,R3
 *  save-area pointer.  R2 (anchor), R8 (A(req)), R14 (return) all restore
 *  from the save area afterward, and the later WAIT (SVC 1) preserves R2-R14.
 *----------------------------------------------------------------------
+DOPOST   DS    0H                 POST/WAIT entry (ECHO + XFER share)
          LA    R13,ANCSAVE(,R2)   R13 -> 18-word POST save area
          STM   R14,R12,12(R13)    preserve regs across the POST
          LR    R9,R13             R9: the only reg POST preserves
@@ -184,8 +248,40 @@ PSTOK    DS    0H
 *  Normal reply: copy the STC's echo + served into the caller's block, release
 *  the slot, decrement in-flight LAST (after every CSA write).
 *----------------------------------------------------------------------
-         L     R3,ANCTOKEN(,R2)   echoed token (token+1)
+         L     R3,REQFUNC(,R8)    request function
+         C     R3,=A(FNXFER)      XFER?
+         BE    XFEROUT
+*  ECHO: copy the echoed token (token+1) back into the caller's block.
+         L     R3,ANCTOKEN(,R2)   echoed token
          ST    R3,REQTOKN(,R8)
+         B     REPLYC
+*----------------------------------------------------------------------
+*  XFER read-out: MVCK the transformed staging (source key 0) back out to
+*  the caller's ubuf (dst key 0), L = ANCXLEN bytes (reloaded from CSA --
+*  it survived POST/WAIT), <= 255 bytes/piece, offset recomputed.  Piece
+*  length saved in R0 to advance (MVCK not trusted to preserve R1).  The
+*  write-out is key 0 in Stage-0b; M5-2 tightens the write-side key.
+*----------------------------------------------------------------------
+XFEROUT  DS    0H
+         L     R10,ANCXLEN(,R2)   R10 = remaining = L
+         SLR   R11,R11            R11 = offset
+RDOTLP   LTR   R10,R10            bytes left? (0 -> skip)
+         BNP   REPLYC
+         LR    R1,R10             R1 = piece length
+         C     R1,=A(MVCKMAX)
+         BNH   RDOTSZ
+         LA    R1,MVCKMAX         cap at 255
+RDOTSZ   LR    R0,R1              save piece length
+         L     R4,REQUBUF(,R8)    R4 = ubuf base (dst B1)
+         ALR   R4,R11
+         LA    R5,ANCSTAGE(,R2)   R5 = &stage (source B2)
+         ALR   R5,R11
+         SLR   R3,R3             R3 = source key 0
+         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         ALR   R11,R0             off += piece
+         SLR   R10,R0             remaining -= piece
+         B     RDOTLP
+REPLYC   DS    0H
          L     R3,ANCSERVD(,R2)
          ST    R3,REQSEQ(,R8)
          SLR   R3,R3
