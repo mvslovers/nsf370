@@ -161,3 +161,32 @@ carries the open promise, and Stage-0b closes it.
   note: `as370` mis-assembles the `MVCK` mnemonic, so it is emitted as a **raw `D9`
   opcode** with the `R1`/`R3` register fields. Recorded append-only in ADR-0038 (closing
   its open promise). **Step 2 (the `ubuf` move) next.**
+- **2026-07-22 — Step 2 done (the `ubuf` keyed CSA bounce; live on MVSCE, `TSTUBUF`
+  21/21 CC 0 batch+TSO).** The SVC routine (`asm/nsfvsvc.asm`) gained the `XFER` path:
+  dispatch on `req.func`, clamp `L = min(ulen, 2048)` (an IPL-class guard against running
+  `MVCK` off the end of `stage[]` — the last anchor field — into adjacent CSA), stage
+  `xlen = L`, **`MVCK` write-in** the caller's `ubuf` (source key 8, `R3`=`X'80'`) into the
+  CSA staging (dst key 0) in ≤ 255-byte pieces, the reused `POST`/`WAIT`, then **`MVCK`
+  read-out** the transformed staging (source key 0) back to the caller's `ubuf` (dst key 0,
+  `L` reloaded from `ANCXLEN`). `MVCK` is a raw `D9` opcode (Step 1 toolchain finding);
+  **255-byte pieces** deliberately avoid the ambiguous `R1`-low-byte-zero length (empirically
+  the byte count is the `R1` low byte *directly*, so 255 is the safe max under both the
+  0-means-0 and 0-means-256 readings); the piece length is saved in `R0` to advance so the
+  loop never depends on a register `MVCK` might clobber. The `ECHO` path now also stages
+  `xfunc = ECHO` so mixed `ECHO`/`XFER` traffic is not misdispatched by the STC. No new
+  external symbols. **Live-proven** (MVSCE, unauthorized client `TSTUBUF`, `TESTAUTH`
+  FCTN=1 == 0): a byte pattern moves app→CSA staging→STC(+1)→app **byte-exact** over sizes
+  0 / 1 / 100 / 2048 (exactly one chunk) / 5000 (multi-chunk, 3 SVC round trips) / 10
+  (short after the large transfer — truncation), the **guard byte after `ulen` untouched**
+  in every case (no write-out overrun), all `XFER` chunk router `rc` OK; no abend (in
+  particular none reading the `ubuf`), no `SYSUDUMP`. The STC drained to `INFLIGHT=0`,
+  restored the stolen `SVC 239`, unloaded the CSA routine, and shut down clean; the
+  `ECHO` regression (`TSTSVC`) stayed CC 0. **Deferred (M5-2, §17.3):** caller
+  address/length **validation**, `owner_ascb` checks, and hostile-pointer **fault
+  recovery** — Stage-0b's client is trusted; `MVCK`'s source-key check (proven in Step 1)
+  is the seam. The **write-out** is key 0 in Stage-0b; M5-2 adds the PSW-key window on the
+  store side. The staging stays **CSA-shared single-client** (like `csasave`); M5-2
+  concurrency needs per-client staging. **Production adoption of the keyed move into the
+  frozen NSFRQE `ubuf`/`ulen` marshalling is M5-2** — Stage-0b proves the mechanism, not
+  the binding. **Stage-0b Step 2 complete pending Mike's countersign; the "Stage-0b
+  proven" flip + the 0b PR merge are his. M5-2 stays unstarted until 0b AND 0c are green.**
