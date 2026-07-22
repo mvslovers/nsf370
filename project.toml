@@ -624,6 +624,21 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstsvc.c"]
 
+# -- M5 Stage-0b Step 1: the MVCK (Move with Key) probe (TSTMVCK) ------------
+# MVS-only (host = false): MVCK/SSK/storage keys have no host analog. Settles
+# ADR-0038's open promise (ADR-0039 Step 1): MVCP/MVCS are DAS (absent on base
+# S/370), so the M5-2 ubuf keyed move must be the non-DAS MVCK. Proves MVCK
+# (1) exists+executes+copies byte-exact and (2) HONOURS the source key -- a page
+# SSK'd to key 0 + fetch-protect, MVCK-read under source key 8, faults with a
+# protection exception (S0C4) caught by libc370 try() with no dump. A MECHANISM
+# probe: it self-auths (SVC 244 -- SSK is privileged, MVCK runs the SVC routine's
+# key-0 context); NOT the ubuf client (which stays UNAUTHORIZED). No NSF sources.
+[[test]]
+name = "TSTMVCK"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstmvck.c"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
