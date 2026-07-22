@@ -1,5 +1,5 @@
 /*
- * nsfpsvc.h -- M5 Stage-0a' SVC cross-AS probe: shared CSA layout + constants.
+ * nsfvsvc.h -- M5 Stage-0a' SVC cross-AS probe: shared CSA layout + constants.
  *
  * ADR-0038 (supersedes ADR-0036's transport).  This is the data/constants
  * contract shared between the probe STC (src/nsfv.c) and the probe client
@@ -20,8 +20,8 @@
  * is not host-simulable; the probe's "host" coverage is the NSF_SIZE_ASSERT
  * below firing at cc370 cross-compile (ADR-0038).
  */
-#ifndef NSFPSVC_H
-#define NSFPSVC_H
+#ifndef NSFVSVC_H
+#define NSFVSVC_H
 
 #include "nsf.h"        /* UINT + NSF_SIZE_ASSERT                              */
 #include <clibecb.h>    /* ECB (unsigned int)                                 */
@@ -140,4 +140,4 @@ typedef struct nsfv_anchor {
 } NSFV_ANCHOR;              /* +78 = 120 bytes                               */
 NSF_SIZE_ASSERT(NSFV_ANCHOR, 120);
 
-#endif /* NSFPSVC_H */
+#endif /* NSFVSVC_H */

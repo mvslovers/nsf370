@@ -22,7 +22,7 @@
  * The result is read from the caller's block (authoritative; no dependence on
  * the SVC register-return convention -- ADR-0038 6).
  */
-#include "nsfpsvc.h"
+#include "nsfvsvc.h"
 #include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                       */
 #include <clibwto.h>        /* wtof (console markers survive a hang)           */
 #include <mbtcheck.h>
