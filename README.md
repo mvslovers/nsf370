@@ -7,8 +7,12 @@ applications (HTTPD, mvsMF) **unchanged, relink-only** over a native stack
 instead of the Hercules X'75' hack, with full EZASOKET / PROFILE.TCPIP
 compatibility.
 
-> Status: **M0-1** — build skeleton. Foundation services (NSFMM, NSFQUE, …)
-> land from M0-2 onward. See `docs/` for the full picture.
+> Status: **M0–M4 complete** — foundation, CTCI driver, IPv4/ICMP, sockets +
+> UDP + EZASOKET, and TCP (state machine, data path, retransmission) all run
+> live on Hercules. **M5 (Phase 2: the cross-AS `NSFS` subsystem)** is in
+> progress: the app↔stack transport is proven both ways on the live target — an
+> SSI probe (Stage-0a) and, for **unauthorized relink-only apps**, a private-SVC
+> probe (Stage-0a′, ADR-0038). See `CLAUDE.md` §7 for the full milestone status.
 
 ## Documentation
 
