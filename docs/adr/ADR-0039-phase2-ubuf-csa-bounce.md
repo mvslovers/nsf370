@@ -190,3 +190,34 @@ carries the open promise, and Stage-0b closes it.
   frozen NSFRQE `ubuf`/`ulen` marshalling is M5-2** — Stage-0b proves the mechanism, not
   the binding. **Stage-0b Step 2 complete pending Mike's countersign; the "Stage-0b
   proven" flip + the 0b PR merge are his. M5-2 stays unstarted until 0b AND 0c are green.**
+- **2026-08-15 — Stage-0b COUNTERSIGNED and merged (PR #48, merged by the maintainer
+  2026-07-22).** Per the repo convention (M3-5, M4-6) the maintainer's merge **is** the
+  countersign, so the "pending countersign" qualifier above is discharged: **Stage-0b is
+  proven.** The remaining gate before M5-2 is **Stage-0c — client-death cleanup**: what
+  reclaims the slot, the in-flight count and the CSA staging when the client address space
+  dies *between* the `POST` and the `WAIT` (`owner_ascb` is the seam; spec §17.3 and the
+  M5-1 row of §19 "Roadmap" name the requirement, no stage has touched it). **M5-2 stays
+  unstarted until Stage-0c is green.**
+  *Reading note on the `TSTMVCK` count:* ADR-0038's status entry records **12/12** and the
+  Step 1 entry above **16/16**. Both are correct at their moment — `test/mvs/tstmvck.c` has
+  8 assertion sites and the runner counts batch + TSO, so 12 = 6 × 2 is the figure **before**
+  scenario (3), the `S0C4` fetch-protect demonstration added at the maintainer's request,
+  and 16 = 8 × 2 is the final one. **16/16 is the state of the test today.**
+- **2026-08-15 — Two obligations M5-2 inherits from Stage-0b**, recorded here so they are
+  not rediscovered by the next reader:
+  1. **The write side of the keyed move.** Decision §2 and the Step 2 entry above already
+     record the asymmetry, the PSW-key window as its fix, and the hostile-pointer fault
+     recovery, all deferred to M5-2; two things they do not say. First, this is **M5-2's
+     top security obligation**: `MVCK` keys only its *source* operand, so a wrong or
+     hostile `ubuf` pointer takes a **key-0 clobber the hardware cannot catch** — the very
+     failure the keyed move exists to prevent, left open on the store side. Second, the
+     fix has **two admissible shapes**, not one: a PSW-key window around the store (§2's
+     wording) *or* a destination-keyed move.
+  2. **The moved-length contract is missing.** The routine clamps `L = min(ulen, 2048)`
+     **silently**, and the chunk size is a constant shared between routine and client by
+     convention, not by the interface — nothing in `NSFV_REQ` reports how many bytes were
+     actually moved. BSD `send`/`recv`, which the frozen NSFRQE must present, return
+     exactly that count. **M5-2 must return the moved length per call**; otherwise a
+     client whose chunking assumption drifts from the routine's gets **silent truncation**
+     where it should get a short count. (Stage-0b is safe only because its client and the
+     routine share the constant and every size is asserted byte-exact.)
