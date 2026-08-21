@@ -16,7 +16,11 @@ dist/
 *.d
 *.obj
 
+# --- Local reference material (IBM manuals etc.; never commit) ---
+pdf/
+
 # --- Editor / tooling ---
+.claude/
 compile_commands.json
 .cache/
 *.dSYM/
