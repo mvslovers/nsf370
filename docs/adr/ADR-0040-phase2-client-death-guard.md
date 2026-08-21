@@ -289,3 +289,50 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
 - **`inflight` becomes a counter two address spaces decrement** — the client's SVC routine
   on the normal path, the STC on a reap. Both do it with a compare-and-swap loop, and the
   STC's never goes below zero.
+
+## Status / history
+
+- **2026-08-21 — Stage-0c implemented and VALIDATED LIVE on MVSCE** (probe STC `NSFV`
+  `STC01187`, anchor `00A86288`, ASCB `00FD4F18`, `SVC 239` stolen from EP `0000CCC8`).
+  `TSTDEATH` **CC 0 batch + TSO, 72 PASS / 0 FAIL** (36 assertions each; the TSO re-run
+  passes too — unlike the CTCI probes, nothing here is a single-shot physical resource).
+  The client ran with `__isauth() == 0` throughout (the ADR-0038 red line), located its own
+  identity (`ASCB 00FE7380`, `ASID 0008`) and found `ASID 0020` reported AVAILABLE by the
+  ASVT — the control-block reads an unauthorized problem-state program needs for the probe
+  worked without a fault. All three classifications came out right, and the STC logged each
+  one:
+  - `NSFV050I CLIENT DEAD (ASCB=00FE7380 ASID=0020) -- REQUEST REAPED, INFLIGHT=0
+    REAPED=1` — the **available-ASID row**: the client's own real ASCB carried on a free
+    ASID, reaped, in-flight count back to zero, **no POST issued**.
+  - `NSFV050I CLIENT DEAD (ASCB=00FE7388 ASID=0008) -- REQUEST REAPED, INFLIGHT=0
+    REAPED=2` — the **ASID-reuse row**, forced deterministically: `ASID 0008` *is* assigned
+    (to the client itself), but to ASCB `00FE7380`, not the recorded `00FE7388`. This is
+    the row an ASID-only check cannot see.
+  - `NSFV051W CLIENT LIVENESS UNKNOWN (ASCB=00000000 ASID=0008) -- REQUEST HELD, NOT
+    REAPED` — the **safe side**: no post, no reap, `inflight` deliberately left standing,
+    released only by the client's own `UNSTAGE`.
+  - **No `NSFV050I` for either LIVE scenario** — the orphan carrying the live identity was
+    serviced (`DONE`) and the blocking `ECHO` round trip returned `token+1`. The guard did
+    not false-positive a living client, which is also what proves the `asvtenty[asid-1]`
+    index: an off-by-one would have compared against a neighbour's ASCB and reaped here.
+  Shutdown clean on the first `P NSFV`: `NSFV002I NSFV SERVED=4 INFLIGHT=0 REAPED=4
+  STATE=0`, then `NSFV095I SVC 239 RESTORED` → `NSFV036I SVC ROUTINE UNLOADED` →
+  `NSFV011I NSFV SHUTDOWN COMPLETE` → `IEF404I`, **`COND CODE 0000`, no `NSFV098W`** (the
+  drain reached zero, no CSA retained) and **no dump**.
+- **2026-08-21 — What is proven, and what is not.** Proven live: the classifier's three
+  answers on real control blocks, the reap (in-flight count, staging, slot), the refusal to
+  post into anything not confirmed LIVE, and that the guard costs the LIVE path nothing.
+  **Not proven live, by construction:** the race between a kill and the STC's POST — the
+  gate stages a dead *identity* from a living client (ADR-0040 8). The operator-timed check
+  that closes that gap is a manual step: hold a reply, `CANCEL` the client while it is
+  parked, watch the STC classify and reap. **Deferred to M5-2:** the `owner_ascb` sweep for
+  sockets that outlive their request (this classifier, not `ufsd_sess_cleanup`'s ASID-only
+  test), folding the guard into the drain's timeout policy, and per-client staging/slots.
+- **2026-08-21 — Offline gates.** Host suite **2788/0 unchanged** (the guard is MVS-only);
+  full cc370/as370/ld370 cross-build (5 modules + 45 test modules); **no new external
+  symbols** (every new C helper is `static`, the assembler added no CSECT/ENTRY). The
+  layout change was audited two ways: the new `NSFV_OFF_ASSERT` set pins every C field
+  offset at cross-compile (verified to have teeth — moving `stage` from 136 to 128 in the
+  assert fails the build), and the `as370 -a=` listing was read against it (`ANCSTAGE` now
+  `X'088'` in both `MVCK` setups, the ASID capture assembles as `4830 7024` = `LH R3,
+  X'024'(0,R7)`, every `CS` still RS-format `D(B)`, nothing dropped at column 72).
