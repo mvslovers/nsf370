@@ -16,15 +16,38 @@
  * path could not do (ADR-0036's open M5-2 question).  No NSFRQE, no socket, no
  * protocol: the probe round-trips a 32-bit token, entirely in registers.
  *
+ * Stage-0c (ADR-0040) adds the CLIENT-DEATH GUARD to the same contract: the
+ * anchor records the caller's ASID next to its ASCB, and the STC classifies that
+ * pair against the ASVT immediately BEFORE the reply POST -- DEAD is reaped and
+ * never posted into, UNKNOWN is neither posted into nor reaped (the safe-side
+ * asymmetry).  It also adds three PROBE-ONLY function codes (ORPHAN / QUERY /
+ * UNSTAGE) that exist to make client death reproducible in a batch job; they are
+ * not part of the M5-2 transport.
+ *
  * MVS-ONLY.  There is no SVC table / ASCB / CSA on the host, so the transport
- * is not host-simulable; the probe's "host" coverage is the NSF_SIZE_ASSERT
- * below firing at cc370 cross-compile (ADR-0038).
+ * is not host-simulable; the probe's "host" coverage is the NSF_SIZE_ASSERT and
+ * the NSFV_OFF_ASSERTs below firing at cc370 cross-compile (ADR-0038/0040).
  */
 #ifndef NSFVSVC_H
 #define NSFVSVC_H
 
 #include "nsf.h"        /* UINT + NSF_SIZE_ASSERT                              */
 #include <clibecb.h>    /* ECB (unsigned int)                                 */
+#include <stddef.h>     /* offsetof (NSFV_OFF_ASSERT)                         */
+
+/* Per-FIELD offset assert, target-only (like NSF_SIZE_ASSERT: host pointers are
+ * 8 bytes, so host offsets differ by design).  A total-size assert cannot catch
+ * a field that MOVED, and every offset below is mirrored by hand as an EQU in
+ * asm/nsfvsvc.asm -- a wrong ANCSTAGE is an IPL-class CSA overrun (ADR-0039 3).
+ * These pin the C side at cross-compile; the mirror block is what the assembler
+ * copies from. */
+#ifdef __MVS__
+#define NSFV_OFF_ASSERT(type, field, off) \
+    typedef char nsfv_off_##type##_##field[(offsetof(type, field) == (off)) ? 1 : -1]
+#else
+#define NSFV_OFF_ASSERT(type, field, off) \
+    typedef char nsfv_off_##type##_##field[1]
+#endif
 
 /* --- Probe identity ------------------------------------------------------ */
 #define NSFV_ROUTER_MOD   "NSFVSVC"  /* CSA SVC-routine load module (__loadhi) */
@@ -63,6 +86,13 @@
 #define NSFV_REQ_PENDING  1U
 #define NSFV_REQ_DONE     2U
 
+/* HELD (Stage-0c, ADR-0040 6): the STC could NOT establish that the client is
+ * alive (UNKNOWN), so it neither posted into the request nor reclaimed it.  The
+ * slot stays BUSY to the SVC routine (which rejects any non-FREE state) but is
+ * no longer a work item to the STC -- without a distinct state the executive's
+ * "drain while PENDING" loop would spin on a request it refuses to service. */
+#define NSFV_REQ_HELD     3U
+
 /* Router return codes (-> R15 to the SVC issuer). */
 #define NSFV_RC_OK        0
 #define NSFV_RC_INVALID   4    /* bad R1 magic (not our caller)              */
@@ -74,6 +104,23 @@
  * +1 transform (ADR-0039). */
 #define NSFV_REQ_ECHO     1U
 #define NSFV_REQ_XFER     2U
+
+/* PROBE-ONLY function codes (Stage-0c, ADR-0040 8).  They exist so a batch job
+ * can reproduce client death deterministically, with no operator timing, and
+ * they are NOT part of the transport M5-2 inherits:
+ *   ORPHAN  stage the identity the CLIENT supplies (pascb/pasid) instead of the
+ *           FLIH's, POST the STC, and return WITHOUT waiting -- so the in-flight
+ *           decrement is skipped by construction, which is what a dead client
+ *           leaves behind, while the caller survives to observe the outcome.
+ *   QUERY   read req_state / inflight / reaped / served back into the request
+ *           block.  Changes nothing, works while the slot is busy: an
+ *           unauthorized client cannot read the anchor in CSA itself.
+ *   UNSTAGE release a slot the STC deliberately did not release (the HELD case,
+ *           and a LIVE orphan), so the probe leaves no in-flight count behind
+ *           and the STC still stops clean. */
+#define NSFV_REQ_ORPHAN   3U
+#define NSFV_REQ_QUERY    4U
+#define NSFV_REQ_UNSTAGE  5U
 
 /* CSA staging / copy chunk = BUFLARGE (the large PBUF, ADR-0009), so M5-2's
  * marshalling copies straight into/out of 2048-byte PBUFs (ufsd used 4K -- not
@@ -87,18 +134,39 @@
  * The M5-2 NSFRQE-by-pointer shape, staged on an empty token.  For XFER it also
  * carries the ubuf address + length IN THE CALLER'S ADDRESS SPACE (the routine
  * runs in that AS and MVCKs the ubuf<->staging; ADR-0039).  The routine reads
- * eye+func+token+ubuf+ulen IN and writes token+seq+rc OUT.  28 bytes.
+ * eye+func+token+ubuf+ulen IN and writes token+seq+rc OUT.
+ *
+ * Stage-0c appends the probe-only words (ADR-0040 8): pascb/pasid are the
+ * identity ORPHAN stages verbatim, and qstate/qinfl/qreap are what QUERY reports
+ * back.  They ride the SAME block rather than a second one so the client keeps
+ * one shape and one issuer.  48 bytes.
  * ============================================================ */
 typedef struct nsfv_req {
     char      eye[4];       /* +00 "NSFV"                                     */
-    UINT      func;         /* +04 request function (ECHO / XFER)            */
+    UINT      func;         /* +04 request function (ECHO / XFER / probe)     */
     UINT      token;        /* +08 in: client token; out: STC echo (+1)      */
     int       rc;           /* +0C out: router return code (also -> R15)     */
     UINT      seq;          /* +10 out: server's served-counter snapshot     */
     void     *ubuf;         /* +14 XFER: caller-AS buffer address            */
     UINT      ulen;         /* +18 XFER: caller buffer length (bytes to move) */
-} NSFV_REQ;                 /* +1C = 28 bytes                                */
-NSF_SIZE_ASSERT(NSFV_REQ, 28);
+    void     *pascb;        /* +1C ORPHAN in: client ASCB to stage (verbatim) */
+    UINT      pasid;        /* +20 ORPHAN in: client ASID to stage (verbatim) */
+    UINT      qstate;       /* +24 QUERY out: anchor req_state                */
+    UINT      qinfl;        /* +28 QUERY out: anchor inflight                 */
+    UINT      qreap;        /* +2C QUERY out: anchor reaped (dead requests)   */
+} NSFV_REQ;                 /* +30 = 48 bytes                                */
+NSF_SIZE_ASSERT(NSFV_REQ, 48);
+NSFV_OFF_ASSERT(NSFV_REQ, func,   4);
+NSFV_OFF_ASSERT(NSFV_REQ, token,  8);
+NSFV_OFF_ASSERT(NSFV_REQ, rc,    12);
+NSFV_OFF_ASSERT(NSFV_REQ, seq,   16);
+NSFV_OFF_ASSERT(NSFV_REQ, ubuf,  20);
+NSFV_OFF_ASSERT(NSFV_REQ, ulen,  24);
+NSFV_OFF_ASSERT(NSFV_REQ, pascb, 28);
+NSFV_OFF_ASSERT(NSFV_REQ, pasid, 32);
+NSFV_OFF_ASSERT(NSFV_REQ, qstate, 36);
+NSFV_OFF_ASSERT(NSFV_REQ, qinfl, 40);
+NSFV_OFF_ASSERT(NSFV_REQ, qreap, 44);
 
 /* ============================================================
  * NSFV_ANCHOR -- the CSA (SP=241, key 0) rendezvous block.
@@ -115,6 +183,11 @@ NSF_SIZE_ASSERT(NSFV_REQ, 28);
  *     POST natively.  Single-client-sequential, so the shared scratch is safe
  *     here; a concurrent-client M5-2 needs per-invocation scratch (the SVRB /
  *     GETMAIN) -- ADR-0038.
+ * Stage-0c (ADR-0040) adds req_asid -- the caller's ASID, captured at SVC entry
+ * from ASCBASID (ASCB+X'24') and NOT from the request, so a client cannot forge
+ * it -- and reaped, the count of requests the guard reclaimed from dead clients.
+ * stage[] stays the LAST field: ADR-0039's clamp argument (an over-long ulen
+ * would run MVCK off the end of stage[] into adjacent CSA) depends on it.
  * Target layout, 4-byte pointers -- 120 bytes.
  *
  * ============ ASSEMBLER MIRROR (asm/nsfvsvc.asm carries these as EQUs) ======
@@ -132,7 +205,9 @@ NSF_SIZE_ASSERT(NSFV_REQ, 28);
  *   ANCSAVE    EQU 48    18F  SVC-routine POST register save area
  *   ANCXFUNC   EQU 120   F    transform the STC applies (ECHO / XFER)
  *   ANCXLEN    EQU 124   F    bytes in the staging buffer this chunk
- *   ANCSTAGE   EQU 128   2048 CSA staging buffer (the ubuf CSA bounce)
+ *   ANCXASID   EQU 128   F    req_asid  (client ASID, ASCBASID at ASCB+X'24')
+ *   ANCREAPD   EQU 132   F    reaped    (dead requests reclaimed, diagnostic)
+ *   ANCSTAGE   EQU 136   2048 CSA staging buffer (the ubuf CSA bounce)
  * ============================================================================
  * The staging buffer is CSA-shared (the STC must reach it -- it cannot live in
  * the SVRB), single-client-sequential like csasave; M5-2 concurrency needs
@@ -153,8 +228,26 @@ typedef struct nsfv_anchor {
     UINT      csasave[18];        /* +30 SVC-routine POST save area (72 B)    */
     UINT      xfunc;              /* +78 transform: NSFV_REQ_ECHO / _XFER     */
     UINT      xlen;               /* +7C bytes in stage[] this chunk          */
-    char      stage[NSFV_XFER_CHUNK]; /* +80 CSA staging (the ubuf bounce)   */
-} NSFV_ANCHOR;                    /* +880 = 2176 bytes                        */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 2176);
+    UINT      req_asid;           /* +80 client ASID (ASCBASID, ASCB+X'24')   */
+    UINT      reaped;             /* +84 dead requests reclaimed (diagnostic) */
+    char      stage[NSFV_XFER_CHUNK]; /* +88 CSA staging (the ubuf bounce)   */
+} NSFV_ANCHOR;                    /* +888 = 2184 bytes                        */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 2184);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, version,     8);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,      12);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb, 16);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ascb, 20);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, inflight,   24);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, req_state,  28);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, req_token,  32);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, reply_ecb,  36);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, req_ascb,   40);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, served,     44);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, csasave,    48);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, xfunc,     120);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, xlen,      124);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, req_asid,  128);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, reaped,    132);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, stage,     136);
 
 #endif /* NSFVSVC_H */

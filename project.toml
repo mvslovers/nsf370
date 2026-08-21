@@ -656,6 +656,25 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstubuf.c"]
 
+# -- M5 Stage-0c: the client-death guard CLIENT (TSTDEATH) -------------------
+# MVS-only (host = false): the guard reads real control blocks (CVT -> ASVT) and
+# rides the cross-AS SVC/CSA rendezvous, so there is no host analog; the host
+# coverage of this stage is the NSF_SIZE_ASSERT + NSFV_OFF_ASSERT set in
+# nsfvsvc.h firing at cc370 cross-compile (ADR-0040). THE RED LINE is unchanged:
+# the client is UNAUTHORIZED (asserts __isauth()==0) and never self-authorizes.
+# It drives all three answers of the guard the STC runs before every reply POST
+# -- LIVE (serviced + posted), DEAD (reaped, never posted into; both the
+# available-ASID and the ASID-reuse row), UNKNOWN (HELD: neither posted into nor
+# reaped) -- through the probe-only ORPHAN/QUERY/UNSTAGE verbs. Client death is
+# modelled by staging a DEAD IDENTITY from a living client (the decrement is
+# skipped by construction); the kill-vs-POST race is the manual check in the PR.
+# PREREQUISITE: the probe STC must be started first (S NSFV). Links only libc370.
+[[test]]
+name = "TSTDEATH"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstdeath.c"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is

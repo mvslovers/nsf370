@@ -80,7 +80,9 @@ ANCSERVD EQU   44                 F    served
 ANCSAVE  EQU   48                 18F  POST register save area
 ANCXFUNC EQU   120                F    transform (ECHO/XFER)
 ANCXLEN  EQU   124                F    bytes staged this chunk
-ANCSTAGE EQU   128                CSA staging buffer (2048)
+ANCXASID EQU   128                F    req_asid (client ASID)
+ANCREAPD EQU   132                F    reaped (dead reqs reclaimed)
+ANCSTAGE EQU   136                CSA staging buffer (2048)
 *  NSFV_REQ field offsets (caller's block, R8 = A(req))
 REQEYE   EQU   0                  CL4  "NSFV"
 REQFUNC  EQU   4                  F    request function
@@ -89,10 +91,16 @@ REQRC    EQU   12                 F    out rc
 REQSEQ   EQU   16                 F    out served snapshot
 REQUBUF  EQU   20                 A    XFER caller ubuf addr
 REQULEN  EQU   24                 F    XFER bytes to move
+REQPASC  EQU   28                 A    ORPHAN probe ASCB (in)
+REQPASI  EQU   32                 F    ORPHAN probe ASID (in)
+REQQSTA  EQU   36                 F    QUERY req_state (out)
+REQQINF  EQU   40                 F    QUERY inflight (out)
+REQQRPD  EQU   44                 F    QUERY reaped (out)
 *  state + rc constants (mirror nsfvsvc.h)
 STFREE   EQU   0
 STPEND   EQU   1
 STDONE   EQU   2
+STHELD   EQU   3                  STC declined (UNKNOWN client)
 RCOK     EQU   0
 RCINVAL  EQU   4
 RCCORR   EQU   8
@@ -100,6 +108,13 @@ RCNOREQ  EQU   12
 *  request functions + MVCK copy constants (mirror nsfvsvc.h)
 FNECHO   EQU   1
 FNXFER   EQU   2
+FNORPH   EQU   3                  probe: stage + POST, no WAIT
+FNQUERY  EQU   4                  probe: report anchor state
+FNUNSTG  EQU   5                  probe: release a held slot
+*  ASCB field the Stage-0c guard needs (ADR-0040): the caller ASID.  R7 is
+*  A(caller ASCB), set by the SVC FLIH, so the ASID comes from the control
+*  block and NOT from the request -- a client cannot forge its identity.
+ASCBASID EQU   36                 ASCBASID halfword (ASCB+X'24')
 XFCHUNK  EQU   2048               max ulen moved per SVC call
 MVCKMAX  EQU   255                bytes per MVCK piece
 MVCKK8   EQU   X'80'              MVCK source key 8
@@ -125,9 +140,22 @@ NSFVGO   DS    0H
          TM    ANCFLAG(R2),X'80'  ACTIVE?  (X'80000000' high byte)
          BNO   BADANC             quiescing -> CORRUPT
 *----------------------------------------------------------------------
+*  Stage-0c probe verbs that take NO slot and change no in-flight state:
+*  QUERY reports the anchor's request state, UNSTAGE gives back a slot the
+*  STC deliberately did not release (ADR-0040 8).  Both have to work while
+*  the slot is BUSY -- that is the state the probe needs to observe -- so
+*  they branch out ahead of the slot-take below.
+*----------------------------------------------------------------------
+         L     R3,REQFUNC(,R8)    request function
+         C     R3,=A(FNQUERY)
+         BE    DOQUERY
+         C     R3,=A(FNUNSTG)
+         BE    DOUNSTG
+*----------------------------------------------------------------------
 *  Take the one request slot (single-client sequential probe: reject a
 *  concurrent client rather than corrupt the slot).  Reject BEFORE the
 *  in-flight increment, so a rejected caller leaves inflight untouched.
+*  Any non-FREE state is busy -- including HELD (ADR-0040 6).
 *----------------------------------------------------------------------
          L     R3,ANCSTATE(,R2)
          LTR   R3,R3              FREE (== 0)?
@@ -151,6 +179,8 @@ UINCLP   LR    R4,R3
          L     R3,REQFUNC(,R8)             request function
          C     R3,=A(FNXFER)               XFER?
          BE    XFERIN                      yes -> write-in + xlen
+         C     R3,=A(FNORPH)               ORPHAN (probe)?
+         BE    ORPHIN                      yes -> stage probe identity
 *  ECHO: stage the token.  Set xfunc = ECHO so an ECHO after an XFER is not
 *  misdispatched by the STC (which switches on the staged xfunc).
          XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
@@ -159,6 +189,9 @@ UINCLP   LR    R4,R3
          LA    R3,FNECHO
          ST    R3,ANCXFUNC(,R2)            xfunc = ECHO
          ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
+         LH    R3,ASCBASID(,R7)            caller ASID (ASCB+X'24')
+         N     R3,=X'0000FFFF'             halfword, no sign extension
+         ST    R3,ANCXASID(,R2)            stage the ASID (Stage-0c)
          LA    R3,STPEND
          ST    R3,ANCSTATE(,R2)            publish PENDING
          B     DOPOST
@@ -201,6 +234,30 @@ WRINEND  DS    0H
          LA    R3,FNXFER
          ST    R3,ANCXFUNC(,R2)            xfunc = XFER
          ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
+         LH    R3,ASCBASID(,R7)            caller ASID (ASCB+X'24')
+         N     R3,=X'0000FFFF'             halfword, no sign extension
+         ST    R3,ANCXASID(,R2)            stage the ASID (Stage-0c)
+         LA    R3,STPEND
+         ST    R3,ANCSTATE(,R2)            publish PENDING
+*----------------------------------------------------------------------
+*  ORPHAN (Stage-0c probe only, ADR-0040 8).  Stages the request exactly as
+*  ECHO does, EXCEPT that the client identity comes from the request block
+*  (pascb/pasid) and is stored VERBATIM -- that is the whole point: the probe
+*  hands the STC an identity naming an address space that is not there, so the
+*  guard has something to classify DEAD.  The caller then returns WITHOUT
+*  waiting (see PSTOK), so the in-flight decrement is skipped by construction,
+*  which is exactly what a client that died mid-request leaves behind.
+*----------------------------------------------------------------------
+ORPHIN   DS    0H
+         XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
+         L     R3,REQTOKN(,R8)             read caller token
+         ST    R3,ANCTOKEN(,R2)            stage token
+         LA    R3,FNECHO
+         ST    R3,ANCXFUNC(,R2)            transform stays ECHO
+         L     R3,REQPASC(,R8)             probe ASCB
+         ST    R3,ANCRASCB(,R2)            stored VERBATIM
+         L     R3,REQPASI(,R8)             probe ASID
+         ST    R3,ANCXASID(,R2)            stored VERBATIM
          LA    R3,STPEND
          ST    R3,ANCSTATE(,R2)            publish PENDING
 *----------------------------------------------------------------------
@@ -231,6 +288,11 @@ PSTERR   DS    0H                 POST failed: STC ASCB gone
          LM    R14,R12,12(R13)
          B     PSTFAIL
 PSTOK    DS    0H
+*  ORPHAN leaves here: the STC is awake, the request is in flight, and this
+*  caller neither waits for the reply nor gives the in-flight count back.
+         L     R3,REQFUNC(,R8)    request function
+         C     R3,=A(FNORPH)
+         BE    ORPHRET
 *----------------------------------------------------------------------
 *  WAIT for the reply on the key-0 CSA reply ECB, supervisor state, key 0.
 *  ADR-0038 empirical unknown #1: Stage-0a's problem-state / key-8-stack-ECB
@@ -294,6 +356,53 @@ UDEC1    LR    R4,R3
          CS    R3,R4,ANCINFL(R2)
          BNE   UDEC1
          SLR   R15,R15            R15 = RCOK
+         BR    R14
+*----------------------------------------------------------------------
+*  Stage-0c probe handlers (ADR-0040 8).  Probe-only: not part of the M5-2
+*  transport.  ORPHRET is the no-WAIT return; DOQUERY reports the anchor's
+*  state to a client that cannot read CSA itself; DOUNSTG releases a slot the
+*  STC declined to release, so the probe leaves no in-flight count behind and
+*  the STC still stops clean.
+*----------------------------------------------------------------------
+ORPHRET  DS    0H                 orphan: no WAIT, no decrement
+         SLR   R3,R3
+         ST    R3,REQRC(,R8)      caller rc = OK
+         SLR   R15,R15
+         BR    R14
+*
+DOQUERY  DS    0H                 report state (no slot, no change)
+         L     R3,ANCSTATE(,R2)
+         ST    R3,REQQSTA(,R8)
+         L     R3,ANCINFL(,R2)
+         ST    R3,REQQINF(,R8)
+         L     R3,ANCREAPD(,R2)
+         ST    R3,REQQRPD(,R8)
+         L     R3,ANCSERVD(,R2)
+         ST    R3,REQSEQ(,R8)
+         SLR   R3,R3
+         ST    R3,REQRC(,R8)      caller rc = OK
+         SLR   R15,R15
+         BR    R14
+*
+*  UNSTAGE: FREE the slot and give one in-flight count back, but never take
+*  the count below zero -- the STC may already have reaped this request.
+DOUNSTG  DS    0H
+         L     R3,ANCSTATE(,R2)
+         LTR   R3,R3              already FREE?
+         BZ    UNSTRC             yes -> nothing to give back
+         SLR   R3,R3
+         ST    R3,ANCSTATE(,R2)   -> FREE
+         L     R3,ANCINFL(,R2)
+UNSTLP   LTR   R3,R3              never below zero
+         BZ    UNSTRC
+         LR    R4,R3
+         BCTR  R4,0
+         CS    R3,R4,ANCINFL(R2)
+         BNE   UNSTLP
+UNSTRC   DS    0H
+         SLR   R3,R3
+         ST    R3,REQRC(,R8)      caller rc = OK
+         SLR   R15,R15
          BR    R14
 *----------------------------------------------------------------------
 *  Bail paths.

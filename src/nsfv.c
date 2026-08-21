@@ -38,6 +38,7 @@
 #include <clibsdwa.h>        /* SDWA, SDWACWT                                   */
 #include <cvt.h>             /* CVT, CVTPTR                                     */
 #include <ihascvt.h>         /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
+#include <ihaasvt.h>         /* ASVT (asvtmaxu, asvtenty) -- the liveness guard */
 
 /* ============================================================
  * STC control block (main's stack).
@@ -252,6 +253,98 @@ nsfv_svc_restore(NSFV_STC *stc)
 }
 
 /* ============================================================
+ * Client liveness -- the Stage-0c guard (ADR-0040).
+ *
+ * Answers, for the identity the SVC routine recorded at entry (req_ascb +
+ * req_asid, both taken from control blocks, neither forgeable by the client),
+ * whether that address space is still there.  Called immediately before every
+ * reply POST; a DEAD answer reaps the request instead of posting into it.
+ *
+ * ASID n lives at asvtenty[n-1] (ihaasvt.h).  An AVAILABLE entry (high bit)
+ * belongs to no address space and carries the next available entry's address,
+ * so the BIT -- never a zero test -- separates the two kinds.
+ *
+ * THE COMPARISON IS ON THE ASCB ADDRESS ALONE.  Nothing is read out of the
+ * ASCB: the recorded pointer may be stale, an ASCB block returns to SQA at
+ * memterm and is handed out again (ufsd measured a restart landing on its own
+ * predecessor's block), so a field read out of it answers with a stranger's
+ * data.  Comparing addresses cannot fault and needs no field offsets.
+ *
+ * UNKNOWN is NOT dead.  Every case where the lookup cannot be completed --
+ * no ASCB, no CVT/ASVT, an ASID outside 1..asvtmaxu -- answers UNKNOWN, and
+ * an UNKNOWN request is neither posted into nor reclaimed.  The asymmetry is
+ * the whole point (ADR-0040 2): a dead client wrongly called live leaks a slot,
+ * while a LIVE client wrongly called dead has its storage freed underneath it.
+ * "I could not check" must never be answered with "go ahead and free it".
+ *
+ * Runs inside the caller's key-0 window (the CVT and the ASVT are fetch-
+ * accessible; no storage is written).
+ * ============================================================ */
+#define NSFV_ASVT_AVAIL  0x80000000U   /* ASVTAVAI: ASID available, unassigned */
+
+#define NSFV_CL_LIVE     0
+#define NSFV_CL_DEAD     1
+#define NSFV_CL_UNKNOWN  2
+
+static int
+nsfv_client_state(NSFV_ANCHOR *anchor)
+{
+    CVT      *cvt;
+    ASVT     *asvt;
+    unsigned  asid;
+    unsigned  entry;
+
+    if (!anchor->req_ascb) return NSFV_CL_UNKNOWN;
+
+    cvt = *(CVT **)16;
+    if (!cvt) return NSFV_CL_UNKNOWN;
+
+    asvt = (ASVT *)cvt->cvtasvt;
+    if (!asvt || asvt->asvtmaxu == 0U) return NSFV_CL_UNKNOWN;
+
+    asid = anchor->req_asid;
+    if (asid == 0U || asid > asvt->asvtmaxu) return NSFV_CL_UNKNOWN;
+
+    entry = *(unsigned *)&asvt->asvtenty[asid - 1U];
+
+    if (entry & NSFV_ASVT_AVAIL)              return NSFV_CL_DEAD;  /* free   */
+    if (entry != (unsigned)anchor->req_ascb)   return NSFV_CL_DEAD;  /* reused */
+    return NSFV_CL_LIVE;
+}
+
+/* ============================================================
+ * Reap a request whose client the guard proved DEAD (ADR-0040 1).
+ *
+ * Everything the dead client would have released on its way out: the CSA
+ * staging buffer and its descriptors, the reply ECB, the recorded identity,
+ * the in-flight count, and last of all the slot itself.
+ *
+ * ORDER MATTERS.  The slot is published FREE only after the storage it owns
+ * has been cleared and the count given back, because the SVC routine's
+ * slot-take tests req_state: a new client must never see FREE while this
+ * request's staging is still claimed.  The in-flight decrement is guarded
+ * against underflow and is safe as a test-then-decrement precisely because
+ * the slot is still busy at that moment -- no other client can be inside the
+ * routine incrementing it, and the dead one will never decrement.
+ * ============================================================ */
+static void
+nsfv_reap(NSFV_ANCHOR *anchor)
+{
+    memset(anchor->stage, 0, sizeof(anchor->stage));
+    anchor->xlen      = 0;
+    anchor->xfunc     = 0;
+    anchor->req_token = 0;
+    anchor->reply_ecb = 0;
+    anchor->req_ascb  = NULL;
+    anchor->req_asid  = 0;
+
+    if (anchor->inflight != 0U) __udec(&anchor->inflight);
+
+    anchor->reaped++;
+    anchor->req_state = NSFV_REQ_FREE;      /* published LAST */
+}
+
+/* ============================================================
  * Service the one pending request (cross-AS, supervisor state).  Dispatch on
  * the transform the SVC routine staged: ECHO increments the token; XFER applies
  * a byte-wise +1 to the CSA staging buffer's xlen bytes (ADR-0039 -- a trivial,
@@ -263,29 +356,65 @@ static void
 nsfv_service(NSFV_ANCHOR *anchor)
 {
     unsigned char savekey;
+    int           cl    = -1;              /* the guard's answer, for the WTO  */
+    unsigned      lascb = 0;
+    unsigned      lasid = 0;
+    unsigned      linfl = 0;
+    unsigned      lreap = 0;
 
     if (__super(PSWKEY0, &savekey)) return;
 
     if (anchor->req_state == NSFV_REQ_PENDING) {
         void  *ca = anchor->req_ascb;
 
-        if (anchor->xfunc == NSFV_REQ_XFER) {
-            UINT n = anchor->xlen;
-            UINT k;
-            if (n > NSFV_XFER_CHUNK) n = NSFV_XFER_CHUNK;   /* clamp to staging */
-            for (k = 0u; k < n; k++)
-                anchor->stage[k] = (char)(anchor->stage[k] + 1);
-        } else {
-            anchor->req_token = anchor->req_token + 1u;     /* ECHO             */
-        }
-        anchor->served++;
-        anchor->req_state = NSFV_REQ_DONE;      /* PENDING -> DONE             */
+        /* ADR-0040: establish the client is alive BEFORE anything else.  The
+        ** reply POST is the hazard -- __xmpost dereferences the recorded ASCB,
+        ** and an ASCB block of an ended address space is reused SQA -- so the
+        ** check gates the post, and reclamation falls out of the same answer.
+        ** Nothing else in the STC may POST a client without passing here. */
+        cl    = nsfv_client_state(anchor);
+        lascb = (unsigned)ca;
+        lasid = anchor->req_asid;
 
-        if (ca)
+        if (cl == NSFV_CL_DEAD) {
+            nsfv_reap(anchor);
+            linfl = anchor->inflight;
+            lreap = anchor->reaped;
+        } else if (cl == NSFV_CL_UNKNOWN) {
+            /* Neither post nor reap.  HELD keeps the slot busy to the SVC
+            ** routine while taking it off the executive's work list -- the
+            ** drain loop below spins while req_state is PENDING. */
+            anchor->req_state = NSFV_REQ_HELD;
+        } else {
+            /* LIVE: the Stage-0a'/0b path, unchanged.  ca is non-NULL here by
+            ** construction -- a request with no recorded ASCB answers UNKNOWN
+            ** above, so the post never runs on a null target. */
+            if (anchor->xfunc == NSFV_REQ_XFER) {
+                UINT n = anchor->xlen;
+                UINT k;
+                if (n > NSFV_XFER_CHUNK) n = NSFV_XFER_CHUNK;  /* clamp        */
+                for (k = 0u; k < n; k++)
+                    anchor->stage[k] = (char)(anchor->stage[k] + 1);
+            } else {
+                anchor->req_token = anchor->req_token + 1u;    /* ECHO         */
+            }
+            anchor->served++;
+            anchor->req_state = NSFV_REQ_DONE;  /* PENDING -> DONE             */
             __xmpost(ca, &anchor->reply_ecb, 0);/* wake the parked client      */
+        }
     }
 
     __prob(savekey, NULL);
+
+    /* WTO outside the key-0 window (every other message in this file does the
+    ** same).  A held request is reported once: the STC only re-evaluates it on
+    ** the next wake, and the slot stays busy until the client releases it. */
+    if (cl == NSFV_CL_DEAD)
+        wtof("NSFV050I CLIENT DEAD (ASCB=%08X ASID=%04X) -- REQUEST REAPED,"
+             " INFLIGHT=%u REAPED=%u", lascb, lasid, linfl, lreap);
+    else if (cl == NSFV_CL_UNKNOWN)
+        wtof("NSFV051W CLIENT LIVENESS UNKNOWN (ASCB=%08X ASID=%04X)"
+             " -- REQUEST HELD, NOT REAPED", lascb, lasid);
 }
 
 static void
@@ -325,7 +454,12 @@ nsfv_wake_parked(NSFV_ANCHOR *anchor)
 
     if (__super(PSWKEY0, &savekey)) return;
     ca = anchor->req_ascb;
-    if (ca)
+    /* ADR-0040: the drain's nudge is a POST like any other, so it goes only to
+    ** a client the guard confirms LIVE -- a client that died in flight is
+    ** exactly what this loop is draining, and posting through its ASCB is the
+    ** failure the guard exists to prevent.  Silent by design: the drain polls
+    ** up to 100 times and a message per poll would bury the shutdown. */
+    if (ca && nsfv_client_state(anchor) == NSFV_CL_LIVE)
         __xmpost(ca, &anchor->reply_ecb, 0);
     __prob(savekey, NULL);
 }
@@ -365,8 +499,9 @@ nsfv_process_cib(NSFV_STC *stc, CIB *cib)
             return;
         }
         if (stc->anchor)
-            wtof("NSFV002I NSFV SERVED=%u INFLIGHT=%u",
-                 stc->anchor->served, stc->anchor->inflight);
+            wtof("NSFV002I NSFV SERVED=%u INFLIGHT=%u REAPED=%u STATE=%u",
+                 stc->anchor->served, stc->anchor->inflight,
+                 stc->anchor->reaped, stc->anchor->req_state);
         else
             wtof("NSFV002I NSFV NO ANCHOR");
         return;
@@ -544,7 +679,9 @@ main(int argc, char **argv)
 
         /* Service the pending request: reset server_ecb, then double-check for
         ** a request that arrived between the last service and the reset
-        ** (ADR-0022 reset-before-WAIT + double-check-drain). */
+        ** (ADR-0022 reset-before-WAIT + double-check-drain).  A request the
+        ** guard declines to service leaves PENDING for HELD (ADR-0040 6), so
+        ** this loop terminates instead of spinning on it. */
         do {
             if (anchor->req_state == NSFV_REQ_PENDING)
                 nsfv_service(anchor);
