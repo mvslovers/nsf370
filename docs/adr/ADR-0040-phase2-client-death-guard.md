@@ -336,3 +336,40 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
   assert fails the build), and the `as370 -a=` listing was read against it (`ANCSTAGE` now
   `X'088'` in both `MVCK` setups, the ASID capture assembles as `4830 7024` = `LH R3,
   X'024'(0,R7)`, every `CS` still RS-format `D(B)`, nothing dropped at column 72).
+- **2026-08-21 — A regression the first live run could not see, found by re-running 0b.**
+  The gate above (`STC01187`) exercised `ECHO` and the probe verbs; it never issued an
+  `XFER`. Re-running Stage-0b's own deliverables at the new layout — which the moved
+  `stage[]` (+128 → +136) demanded — **hung `TSTUBUF` on its first call**, and the console
+  said why: `NSFV051W CLIENT LIVENESS UNKNOWN (ASCB=00000000 ASID=0000)`.
+  **Cause: a fall-through the insertion broke.** The `XFER` staging block used to end by
+  *falling through* into the shared POST block. Stage-0c inserted the `ORPHAN` staging
+  block between the two, so every `XFER` fell into `ORPHAN` instead and re-staged the
+  identity from the request's probe words — zeros for an `XFER` caller. The guard then
+  correctly answered UNKNOWN, correctly refused to post, and the client waited forever for
+  a reply that must not be sent. **The guard behaved exactly as designed; the routine lied
+  to it.**
+  **Fix:** every staging block now ends with an **explicit `B DOPOST`**, including the one
+  physically ahead of it, with a comment block saying why they must not be "cleaned up".
+  **The lesson is CLAUDE.md §3's, in a new shape.** Not a column-72 merge this time, but the
+  same evidence rule: the assembler is happy, the link is clean, the offset asserts pass,
+  the `as370` listing looks right instruction by instruction — and none of them can see
+  that control now reaches the wrong block. Only running the *other* stage's live gate
+  found it. **An asm change under a moved layout is not validated by re-running the new
+  test; it is validated by re-running the tests of every stage that layout carries.**
+- **2026-08-21 — Final validated state** (probe STC `NSFV` `STC01189`, anchor `00A736C8`).
+  Full Stage-0 regression at the Stage-0c layout, **all CC 0 batch + TSO, 444 PASS / 0
+  FAIL**: `TSTSVC` (0a′ round trip, 50 ECHOs per run), `TSTMVCK` (0b step 1), **`TSTUBUF`
+  (0b step 2 — sizes 0/1/100/2048/5000/10 byte-exact with the guard byte after `ulen`
+  untouched, the discriminating test for the moved staging)** and `TSTDEATH` (0c). The
+  three guard verdicts logged again unchanged, no `NSFV050I` on either LIVE path. Final
+  `NSFV002I NSFV SERVED=126 INFLIGHT=0 REAPED=4 STATE=0`; `P NSFV` → `NSFV095I SVC 239
+  RESTORED` → routine unloaded → `NSFV011I`, **no `NSFV098W`** (drain reached zero, no CSA
+  retained), no dump.
+- **2026-08-21 — One consequence of gating the drain's nudge, recorded honestly.** Because
+  `nsfv_wake_parked` posts only a LIVE client, a client parked on a request the guard
+  cannot classify (UNKNOWN) is **never nudged at quiesce** — it waits until it is cancelled,
+  and the STC retains CSA. That is the safe-side trade in its least pleasant form, and the
+  aborted run above demonstrated it (`NSFV098W 1 CLIENT(S) STILL IN FLIGHT -- CSA
+  RETAINED`, the anchor left allocated). For a real request it cannot arise — the routine
+  always records `R7` — but M5-2 should decide whether an UNKNOWN request at *shutdown*
+  deserves a different answer from an UNKNOWN request at *service* time.

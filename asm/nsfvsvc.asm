@@ -239,6 +239,17 @@ WRINEND  DS    0H
          ST    R3,ANCXASID(,R2)            stage the ASID (Stage-0c)
          LA    R3,STPEND
          ST    R3,ANCSTATE(,R2)            publish PENDING
+         B     DOPOST                      EXPLICIT: see the note below
+*----------------------------------------------------------------------
+*  Every staging block above ends with an EXPLICIT B DOPOST, including the
+*  one immediately ahead of DOPOST.  Before Stage-0c the XFER block simply
+*  fell through into the POST block, and inserting ORPHAN between the two
+*  silently redirected XFER into it -- staging the ORPHAN identity (zeros
+*  for an XFER caller), which the guard then correctly called UNKNOWN and
+*  the client waited forever for a reply that must not be sent.  The
+*  assembler cannot see that, a green link cannot see it, and neither can
+*  a probe that never issues an XFER: it took a live TSTUBUF hang.  Do not
+*  "clean up" these branches.
 *----------------------------------------------------------------------
 *  ORPHAN (Stage-0c probe only, ADR-0040 8).  Stages the request exactly as
 *  ECHO does, EXCEPT that the client identity comes from the request block
@@ -260,6 +271,7 @@ ORPHIN   DS    0H
          ST    R3,ANCXASID(,R2)            stored VERBATIM
          LA    R3,STPEND
          ST    R3,ANCSTATE(,R2)            publish PENDING
+         B     DOPOST                      EXPLICIT: never fall through
 *----------------------------------------------------------------------
 *  Wake the STC: cross-AS branch POST via CVT0PT01, supervisor key 0 (the
 *  exact @@xmpost.c sequence).  Only R9 survives the POST, so preserve our
