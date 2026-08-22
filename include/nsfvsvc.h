@@ -102,6 +102,12 @@
 /* Request functions.  ECHO (Stage-0a') increments the token; XFER (Stage-0b)
  * moves a ubuf app->stack->app through a CSA staging buffer with a byte-wise
  * +1 transform (ADR-0039). */
+/* M5-2a (ADR-0041): carry a frozen NSFRQE across.  The client stages its
+ * NSFRQE into anchor->rqe, the STC dispatches an STC-PRIVATE copy of it, and
+ * the result fields come back in the same slot.  Unlike ECHO/XFER this verb
+ * reaches the real executive -- it is the first non-probe request. */
+#define NSFV_REQ_RQE      6U
+
 #define NSFV_REQ_ECHO     1U
 #define NSFV_REQ_XFER     2U
 
@@ -127,6 +133,9 @@
  * PBUF-aligned; ADR-0039).  A ubuf > 2048 is moved in 2048-byte chunks, one
  * SVC<->STC round trip per chunk. */
 #define NSFV_XFER_CHUNK   2048U
+
+/* The M5-2a request slot: one frozen NSFRQE (spec 10.4, 64 bytes on target). */
+#define NSFV_RQE_SLOT     64U
 
 /* ============================================================
  * NSFV_REQ -- the client's request block (R1 -> here at the SVC).
@@ -231,8 +240,19 @@ typedef struct nsfv_anchor {
     UINT      req_asid;           /* +80 client ASID (ASCBASID, ASCB+X'24')   */
     UINT      reaped;             /* +84 dead requests reclaimed (diagnostic) */
     char      stage[NSFV_XFER_CHUNK]; /* +88 CSA staging (the ubuf bounce)   */
-} NSFV_ANCHOR;                    /* +888 = 2184 bytes                        */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 2184);
+    /* M5-2a request slot (ADR-0041 3): a 64-byte NSFRQE image, APPENDED after
+    ** stage[] so `stage` stays at +136 and every ANC* EQU in nsfvsvc.asm is
+    ** untouched -- the Stage-0c lesson (an asm change under a MOVED layout is
+    ** validated by re-running every stage's live gate) applies here with almost
+    ** no surface.  Declared as bytes, not as an NSFRQE: this header describes a
+    ** TARGET layout, and on the host NSFRQE inflates to 80 bytes on 8-byte
+    ** pointers.  The 64 is guaranteed where it matters by
+    ** NSF_SIZE_ASSERT(NSFRQE, 64) in nsfreq.h, which fires at cc370
+    ** cross-compile.  Single slot by construction -- the 64-slot (= MAXSOC)
+    ** pool is M5-2b. */
+    char      rqe[NSFV_RQE_SLOT];     /* +888 the M5-2a NSFRQE request slot   */
+} NSFV_ANCHOR;                    /* +8C8 = 2248 bytes                        */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 2248);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, version,     8);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,      12);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb, 16);
@@ -249,5 +269,6 @@ NSFV_OFF_ASSERT(NSFV_ANCHOR, xlen,      124);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, req_asid,  128);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, reaped,    132);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, stage,     136);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, rqe,      2184);
 
 #endif /* NSFVSVC_H */

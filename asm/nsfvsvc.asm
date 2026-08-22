@@ -83,6 +83,7 @@ ANCXLEN  EQU   124                F    bytes staged this chunk
 ANCXASID EQU   128                F    req_asid (client ASID)
 ANCREAPD EQU   132                F    reaped (dead reqs reclaimed)
 ANCSTAGE EQU   136                CSA staging buffer (2048)
+ANCRQE   EQU   2184               M5-2a NSFRQE slot (64) ADR-0041
 *  NSFV_REQ field offsets (caller's block, R8 = A(req))
 REQEYE   EQU   0                  CL4  "NSFV"
 REQFUNC  EQU   4                  F    request function
