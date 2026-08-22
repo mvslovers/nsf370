@@ -8,3 +8,25 @@ on:
 jobs:
   build:
     uses: mvslovers/mbt/.github/workflows/build.yml@main
+
+  # Native gcc host suite (`make test-host`) -- the portable C tests run with
+  # the host compiler, no cc370 and no MVS.  The delegated `build` job above
+  # only cross-compiles them, so host-only breakage (a non-portable asm()
+  # alias, a single-core thread race) went unnoticed until it hit a
+  # developer's Linux box.  Runs in parallel with the cross-build.
+  host-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run host test suite
+        run: make test-host
