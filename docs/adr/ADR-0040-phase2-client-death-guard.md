@@ -373,3 +373,33 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
   RETAINED`, the anchor left allocated). For a real request it cannot arise — the routine
   always records `R7` — but M5-2 should decide whether an UNKNOWN request at *shutdown*
   deserves a different answer from an UNKNOWN request at *service* time.
+- **2026-08-22 — Stage-0c COUNTERSIGNED by the maintainer** (review on PR #50; verdict:
+  countersign / merge). **Stage-0c is proven, and it was the last M5 Stage-0 gate — M5-2 is
+  unblocked.** The review states its own proof division, which is worth keeping because it
+  is what a countersign means here: the maintainer independently verified the **control-flow
+  fix** (traced `XFERIN → WRINEND → B DOPOST` jumping over the physically-following
+  `ORPHIN`, and that no staging block falls through), the **classifier and the row-4
+  adaptation**, the truth table, the safe-side and address-only rules, ADR-0040 itself, and
+  the static gates; the **live evidence** (the four runs, the counters, the console
+  verdicts, the cross-build, the 0b regression) is taken from this session's runs, because
+  cross-address-space behaviour is not host-reproducible. Two findings were confirmed as
+  the review's own: that the fall-through was caught by the **right** cross-check
+  ("does the layout shift touch older deliverables?"), and that **§5's refusal to carry
+  ufsd's row 4 corrected the kickoff**, which had carried it over unexamined.
+- **2026-08-22 — Two forward notes from the countersign review, both for M5-2, neither
+  blocking Stage-0c.**
+  1. **The probe scaffolding must NOT survive into M5-2.** `NSFV_REQ_ORPHAN` and the
+     `pascb`/`pasid` request words exist so a batch job can stage a dead identity without
+     killing an address space — necessary for the deterministic gate, and **exactly what
+     the guard must never trust for a real client**. The unforgeable path is the one the
+     ECHO/XFER staging uses: `ASCBASID` off `R7`, from the control block. When M5-2 wires
+     this guard to real sockets, `ORPHAN` and those two fields **come out**; they are
+     scaffolding, not a transport path, and must not be mistaken for one.
+  2. **Extract the classifier's arithmetic and host-test it (M5-2).** The open question
+     this ADR left to the maintainer — whether to split the ASVT arithmetic out the way
+     UFSD did into `ufsd#asv.c` — is answered **yes, in M5-2**: the ASID range check, the
+     AVAIL bit, the address compare and all four verdicts (including the subtle
+     own-ASCB → **LIVE** row and the UNKNOWN cases) are pure deterministic arithmetic, and
+     a host test pins the whole truth table instead of leaning on a live run to exercise
+     every row. **Not** retrofitted into Stage-0c: right-sized for M5-2, which owns this
+     guard on `owner_ascb`.
