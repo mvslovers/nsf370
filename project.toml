@@ -75,6 +75,14 @@ sources = ["test/tstque.c", "src/nsfque.c"]
 # NSFXQ: exit->mainline handoff push/drain ordering. asm/nsfxq.asm is swapped
 # for src/nsfxq_host.c on the host by [host].replace above (on-MVS assembly of
 # nsfxq.asm is deferred to M0-6; not part of the M0-2 CI gate).
+# M5-2a: the Phase-2 NSFRQE crossing (ADR-0041) -- the pure field rules at each
+# of the three hops (caller -> CSA slot -> STC-private copy -> back). Host-only
+# logic; the SVC/CSA/key/POST transport is Stage-0 and not host-simulable.
+[[test]]
+name = "TSTREQX"
+startup = "crt1"
+sources = ["test/tstreqx.c", "src/nsfreqx.c"]
+
 [[test]]
 name = "TSTXQ"
 startup = "crt1"
