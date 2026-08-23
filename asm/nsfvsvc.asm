@@ -84,6 +84,7 @@ ANCXASID EQU   128                F    req_asid (client ASID)
 ANCREAPD EQU   132                F    reaped (dead reqs reclaimed)
 ANCSTAGE EQU   136                CSA staging buffer (2048)
 ANCRQE   EQU   2184               M5-2a NSFRQE slot (64) ADR-0041
+ANCSEPTR EQU   2248               A(STC private key-8 wake ECB)
 *  NSFV_REQ field offsets (caller's block, R8 = A(req))
 REQEYE   EQU   0                  CL4  "NSFV"
 REQFUNC  EQU   4                  F    request function
@@ -347,7 +348,15 @@ DOPOST   DS    0H                 POST/WAIT entry (ECHO + XFER share)
          STM   R14,R12,12(R13)    preserve regs across the POST
          LR    R9,R13             R9: the only reg POST preserves
          L     R10,=X'40000000'   POST completion code (0)
-         LA    R11,ANCSECB(,R2)   A(server_ecb)
+*  POST target: the STC's published key-8 private ECB if it has one, else
+*  the key-0 CSA server_ecb.  The executive WAITs from problem state, where a
+*  key-0 ECB is a documented abend (S047 / X'201'); the Stage-0 probe STC
+*  publishes nothing and keeps its supervisor WAIT on the CSA ECB.
+         L     R11,ANCSEPTR(,R2)  A(STC private key-8 ECB)
+         LTR   R11,R11            published?
+         BNZ   PSTECBX            yes -> post that one
+         LA    R11,ANCSECB(,R2)   no  -> fall back to CSA server_ecb
+PSTECBX  DS    0H
          O     R11,=X'80000000'   POST ECB-address convention bit
          LA    R12,PSTERR         POST error routine
          L     R13,ANCSASCB(,R2)  R13 = server ASCB (POST parameter)

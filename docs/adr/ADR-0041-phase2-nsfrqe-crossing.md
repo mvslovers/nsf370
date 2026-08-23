@@ -294,3 +294,70 @@ M3-1 left there stays available for a future phase that genuinely needs it.
 
 **Poll the CSA slot's `req_state` from the executive instead of an ECB.** Rejected: it
 puts a key-0 read in the loop's hot path every pass, where the private ECB check is free.
+
+---
+
+## Addendum (2026-08-23) — the STC's wake ECB lives in STC-private key-8 storage
+
+Countersigned decision, recorded after the design review. §5 says the executive checks the
+private ECB at the end of each pass; it did not say **how the executive is woken in the
+first place**, and that turned out to have exactly one safe answer.
+
+**The problem.** The Stage-0 probe STC WAITs on `anchor->server_ecb` — which is CSA, key 0
+— and does so **in supervisor state**, with `__super(PSWKEY0)` bracketing the WAIT, for
+that reason. The NSF executive does not have that option: `evt_mainloop` WAITs through
+libc370's `ecb_waitlist` from **problem state, key 8**. Putting a key-0 CSA ECB into that
+ECBLIST is not merely untested — it is a **documented abend**: `ufsd/docs/cross-as-reference.md`
+records `S047` and `X'201'` for exactly "WAIT (SVC 1) issued from problem state for an ECB
+in key-0 storage".
+
+**The decision.** The STC publishes, in the anchor, the address of an ECB in **its own
+key-8 private storage** (`server_ecb_ptr`), and the SVC routine POSTs *that* address
+instead of `&anchor->server_ecb`. The executive then WAITs on ordinary problem-state key-8
+storage and nothing about the WAIT is novel.
+
+The mechanism is not a guess. `ufsd/docs/cross-as-reference.md` documents the mirror image
+as its final working design: *"STC wakes client — `__xmpost(client_ascb, client_ecb_ptr, 0)`
+… client_ecb location: local stack var in ufsdssir, key-8, **NOT** in CSA."* Cross-AS POST
+takes an ASCB and interprets the ECB address in *that* address space; private storage is
+fine. Here the poster sits in the client's address space and the target is the STC, which
+changes nothing about the mechanism.
+
+`server_ecb_ptr` is **appended** (at +2248, after `rqe`), same rule as §3, and **zero means
+"not published"**: the SVC routine then falls back to `&anchor->server_ecb`, so the
+Stage-0 probe STC — which genuinely wants the key-0 CSA ECB it supervisor-WAITs on —
+keeps working byte-for-byte. That fallback is what lets the four Stage-0 gates stay a
+regression rather than becoming a rewrite.
+
+### Publication order
+
+**The ECB address is published BEFORE the SVC slot is stolen, and invalidated AFTER the
+slot is restored.** The slot steal is the "we are open for business" signal; a client must
+never find a stolen slot together with an unpublished or stale ECB address. Teardown runs
+the reverse order for the same reason.
+
+### The mirrored STC-death race — residual risk, recorded
+
+ADR-0040 settled what happens when the **client** dies with a request in flight. This
+addendum introduces the mirror: the STC's wake ECB now lives in STC-**private** storage, so
+if the STC address space dies between a client's anchor validation and its POST, the client
+can POST into storage that has been freed and possibly reused.
+
+This is the same shape as the hazard ADR-0040 §7 recorded honestly in the other direction,
+and it gets the same treatment rather than being inherited silently. Mitigations already in
+the transport: the SVC routine re-validates the anchor eyecatcher and the `ACTIVE` flag
+before it posts, shutdown clears `ACTIVE` before it drains, and the in-flight counter keeps
+CSA alive while any client is inside the routine. The window that remains is narrow and
+open only across an STC memterm.
+
+It is **not closed in M5-2a**, and no client-side check can close it alone — the same
+asymmetry as ADR-0040: the STC checking a client can consult the ASVT, but a client
+checking the STC would need the equivalent lookup on the server's ASCB. That is the natural
+companion to the `owner_ascb` sweep and belongs with it in **(c)/(d)**, not here.
+
+### Operational note
+
+`P NSFV` takes **~27 s** to reach the syslog (MVSCE syslog lag plus the in-flight drain),
+then reports `NSFV095I SVC 239 RESTORED` and ends cleanly. **This is not a hang — do not
+re-issue the stop.** Recorded because the natural reaction to a silent console is to send
+it again, and a second stop against a draining STC is exactly the wrong move.
