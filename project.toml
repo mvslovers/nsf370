@@ -701,6 +701,22 @@ name = "NSF"
 startup = "crt1"
 sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M5-2a the NSFS (Phase-2) STC ---------------------------------------------
+# The executive in its own address space, reached by applications through the
+# private-SVC transport (ADR-0038) instead of a local subtask queue. Source list
+# is NSF's, with src/nsfsmain.c in place of src/nsfmain.c and the crossing
+# (src/nsfreqx.c) + the cross-AS transport (src/nsfsx.c) added.
+#
+# ac = 1: the transport needs __super, a key-0 CSA getmain and a store into the
+# SVCTABLE. NSF itself stays UNAUTHORISED -- which is exactly why this is a
+# separate module and not a mode of that one. The RED LINE is unchanged: the
+# CLIENT stays unauthorised (ADR-0038); the STC does not.
+[[module]]
+name = "NSFS"
+startup = "crt1"
+ac = 1
+sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M3-5 the NSFECHO UDP echo sample (the M3 exit-gate demonstration) ---------
 # The first user-visible NSF program: a UDP echo server over the EZASOKET C API
 # (samples/nsfecho.c). MVS-target only (like NSF -- no host [[test]]; the API
