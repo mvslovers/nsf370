@@ -75,6 +75,14 @@ sources = ["test/tstque.c", "src/nsfque.c"]
 # NSFXQ: exit->mainline handoff push/drain ordering. asm/nsfxq.asm is swapped
 # for src/nsfxq_host.c on the host by [host].replace above (on-MVS assembly of
 # nsfxq.asm is deferred to M0-6; not part of the M0-2 CI gate).
+# M5-2a: the Phase-2 NSFRQE crossing (ADR-0041) -- the pure field rules at each
+# of the three hops (caller -> CSA slot -> STC-private copy -> back). Host-only
+# logic; the SVC/CSA/key/POST transport is Stage-0 and not host-simulable.
+[[test]]
+name = "TSTREQX"
+startup = "crt1"
+sources = ["test/tstreqx.c", "src/nsfreqx.c"]
+
 [[test]]
 name = "TSTXQ"
 startup = "crt1"
@@ -624,6 +632,17 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstsvc.c"]
 
+# -- M5-2a the cross-AS NSFRQE live gate (TSTRQXM) ----------------------------
+# MVS-only (host = false). A THIN client: it links the API layer and the two
+# transport halves, and NO stack -- no device, no executive. Every socket op is
+# executed by the NSFS STC in another address space, which is the M5-2a claim.
+# PREREQUISITE: S NSFS.
+[[test]]
+name = "TSTRQXM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M5 Stage-0b Step 1: the MVCK (Move with Key) probe (TSTMVCK) ------------
 # MVS-only (host = false): MVCK/SSK/storage keys have no host analog. Settles
 # ADR-0038's open promise (ADR-0039 Step 1): MVCP/MVCS are DAS (absent on base
@@ -692,6 +711,35 @@ sources = ["test/mvs/tstdeath.c"]
 name = "NSF"
 startup = "crt1"
 sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+# -- M5-2a the NSFS (Phase-2) STC ---------------------------------------------
+# The executive in its own address space, reached by applications through the
+# private-SVC transport (ADR-0038) instead of a local subtask queue. Source list
+# is NSF's, with src/nsfsmain.c in place of src/nsfmain.c and the crossing
+# (src/nsfreqx.c) + the cross-AS transport (src/nsfsx.c) added.
+#
+# AUTHORISATION -- one mechanism, stated once. The transport needs __super, a
+# key-0 CSA getmain and a store into the SVCTABLE, and what provides that at
+# runtime is clib_apf_setup (SVC 244), called first thing in src/nsfsmain.c.
+# THAT is what lets NSF.LINKLIB stay non-APF, and it matches jcl/NSFS.jcl.
+#
+# ac = 1 is NOT the mechanism and is kept deliberately, as belt-and-braces for
+# a deployment that does APF-authorise the library: there AC(1) makes the STC
+# authorised at entry and clib_apf_setup returns early with rc=0. Note the
+# consequence -- on an APF library that early return never reaches auth_pgm /
+# clib_identify_cthread (libc370 @@apfset.c), so NSFS takes a slightly
+# different start path depending on whether the library happens to be
+# APF-listed. Harmless today because nsfthr_setup() does its own IDENTIFY
+# (src/nsfthr.c), but worth knowing before trusting either path blindly.
+#
+# NSF itself stays UNAUTHORISED -- which is exactly why this is a separate
+# module and not a mode of that one. The RED LINE is unchanged: the CLIENT
+# stays unauthorised (ADR-0038); the STC does not.
+[[module]]
+name = "NSFS"
+startup = "crt1"
+ac = 1
+sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-5 the NSFECHO UDP echo sample (the M3 exit-gate demonstration) ---------
 # The first user-visible NSF program: a UDP echo server over the EZASOKET C API

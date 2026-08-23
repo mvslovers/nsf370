@@ -102,6 +102,12 @@
 /* Request functions.  ECHO (Stage-0a') increments the token; XFER (Stage-0b)
  * moves a ubuf app->stack->app through a CSA staging buffer with a byte-wise
  * +1 transform (ADR-0039). */
+/* M5-2a (ADR-0041): carry a frozen NSFRQE across.  The client stages its
+ * NSFRQE into anchor->rqe, the STC dispatches an STC-PRIVATE copy of it, and
+ * the result fields come back in the same slot.  Unlike ECHO/XFER this verb
+ * reaches the real executive -- it is the first non-probe request. */
+#define NSFV_REQ_RQE      6U
+
 #define NSFV_REQ_ECHO     1U
 #define NSFV_REQ_XFER     2U
 
@@ -127,6 +133,9 @@
  * PBUF-aligned; ADR-0039).  A ubuf > 2048 is moved in 2048-byte chunks, one
  * SVC<->STC round trip per chunk. */
 #define NSFV_XFER_CHUNK   2048U
+
+/* The M5-2a request slot: one frozen NSFRQE (spec 10.4, 64 bytes on target). */
+#define NSFV_RQE_SLOT     64U
 
 /* ============================================================
  * NSFV_REQ -- the client's request block (R1 -> here at the SVC).
@@ -154,8 +163,15 @@ typedef struct nsfv_req {
     UINT      qstate;       /* +24 QUERY out: anchor req_state                */
     UINT      qinfl;        /* +28 QUERY out: anchor inflight                 */
     UINT      qreap;        /* +2C QUERY out: anchor reaped (dead requests)   */
-} NSFV_REQ;                 /* +30 = 48 bytes                                */
-NSF_SIZE_ASSERT(NSFV_REQ, 48);
+    void     *rqeimg;       /* +30 RQE: caller-AS address of the 64-byte NSFRQE
+                            **     image (M5-2a, ADR-0041).  A SEPARATE field
+                            **     from ubuf because a real socket op needs
+                            **     BOTH at once -- ubuf carries the user data,
+                            **     rqeimg the request block.  NSFV_REQ is the
+                            **     transport block, not the frozen contract, so
+                            **     growing it is free; NSFRQE stays 64 B.       */
+} NSFV_REQ;                 /* +34 = 52 bytes                                */
+NSF_SIZE_ASSERT(NSFV_REQ, 52);
 NSFV_OFF_ASSERT(NSFV_REQ, func,   4);
 NSFV_OFF_ASSERT(NSFV_REQ, token,  8);
 NSFV_OFF_ASSERT(NSFV_REQ, rc,    12);
@@ -167,6 +183,7 @@ NSFV_OFF_ASSERT(NSFV_REQ, pasid, 32);
 NSFV_OFF_ASSERT(NSFV_REQ, qstate, 36);
 NSFV_OFF_ASSERT(NSFV_REQ, qinfl, 40);
 NSFV_OFF_ASSERT(NSFV_REQ, qreap, 44);
+NSFV_OFF_ASSERT(NSFV_REQ, rqeimg, 48);
 
 /* ============================================================
  * NSFV_ANCHOR -- the CSA (SP=241, key 0) rendezvous block.
@@ -231,8 +248,51 @@ typedef struct nsfv_anchor {
     UINT      req_asid;           /* +80 client ASID (ASCBASID, ASCB+X'24')   */
     UINT      reaped;             /* +84 dead requests reclaimed (diagnostic) */
     char      stage[NSFV_XFER_CHUNK]; /* +88 CSA staging (the ubuf bounce)   */
-} NSFV_ANCHOR;                    /* +888 = 2184 bytes                        */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 2184);
+    /* M5-2a request slot (ADR-0041 3): a 64-byte NSFRQE image, APPENDED after
+    ** stage[] so `stage` stays at +136 and every ANC* EQU in nsfvsvc.asm is
+    ** untouched -- the Stage-0c lesson (an asm change under a MOVED layout is
+    ** validated by re-running every stage's live gate) applies here with almost
+    ** no surface.  Declared as bytes, not as an NSFRQE: this header describes a
+    ** TARGET layout, and on the host NSFRQE inflates to 80 bytes on 8-byte
+    ** pointers.  The 64 is guaranteed where it matters by
+    ** NSF_SIZE_ASSERT(NSFRQE, 64) in nsfreq.h, which fires at cc370
+    ** cross-compile.  Single slot by construction -- the 64-slot (= MAXSOC)
+    ** pool is M5-2b. */
+    char      rqe[NSFV_RQE_SLOT];     /* +888 the M5-2a NSFRQE request slot   */
+    /* Guard word between the RQE slot and the published wake-ECB address.
+    ** Without it the two are BYTE-ADJACENT, and a one-byte overrun on the
+    ** 64-byte RQE move would write the high byte of server_ecb_ptr -- which
+    ** does not fail cleanly: the routine's LTR/BNZ still sees a non-zero
+    ** pointer, takes the key-8 branch, and issues a key-0 cross-AS POST to a
+    ** CORRUPTED address inside the STC's private storage, with no abend
+    ** guaranteed.  Host-clean, link-clean, live-wrong, aimed at the most
+    ** safety-critical word in the anchor.  Stage-0b set the precedent (a guard
+    ** byte after ulen, asserted untouched by TSTUBUF); this is the same idea
+    ** on the field that can least afford to be wrong.
+    **
+    ** NON-ZERO on purpose: a memset-zeroed anchor must be distinguishable from
+    ** a guard clobbered to zero.  Declared as CHARACTERS, not a UINT, so the
+    ** value is written and compared as a string literal and never as a
+    ** hardcoded byte value (spec 15.3 charset transparency) -- same four bytes,
+    ** readable in a dump either way. */
+    char      rqe_guard[4];           /* +8C8 NSFREQX_GUARD, checked before   */
+                                      /*      every dispatch                  */
+    /* The STC's wake ECB address, in the STC's OWN key-8 private storage
+    ** (ADR-0041 addendum).  The executive WAITs through ecb_waitlist from
+    ** PROBLEM state key 8, and a key-0 CSA ECB in that ECBLIST is a documented
+    ** abend (S047 / X'201', ufsd/docs/cross-as-reference.md), so the SVC
+    ** routine posts THIS address instead of &server_ecb.  Cross-AS POST takes
+    ** an ASCB and interprets the ECB address in that address space, so private
+    ** storage is fine -- ufsd runs the mirror image (STC -> client key-8 stack
+    ** ECB) as its final working design.
+    **
+    ** ZERO means "not published": the routine then falls back to server_ecb,
+    ** which is what the Stage-0 probe STC wants (it supervisor-WAITs on the
+    ** key-0 CSA ECB), so the four Stage-0 gates stay a regression rather than
+    ** becoming a rewrite.  Appended, never inserted (ADR-0041 3). */
+    void     *server_ecb_ptr;         /* +8CC A(STC private key-8 wake ECB)   */
+} NSFV_ANCHOR;                    /* +8D0 = 2256 bytes                        */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 2256);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, version,     8);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,      12);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb, 16);
@@ -249,5 +309,8 @@ NSFV_OFF_ASSERT(NSFV_ANCHOR, xlen,      124);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, req_asid,  128);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, reaped,    132);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, stage,     136);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, rqe,      2184);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, rqe_guard, 2248);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb_ptr, 2252);
 
 #endif /* NSFVSVC_H */
