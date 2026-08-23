@@ -45,6 +45,16 @@ void nsfreqx_dispatch_in(NSFRQE *priv, const NSFRQE *slot,
      * linkage is meaningless on this side of the boundary (ADR-0041 1). */
     priv->q.next = NULL;
 
+    /* The private ECB starts UN-POSTED, and this is load-bearing: completion is
+     * detected by testing the POSTED bit of exactly this word at the end of each
+     * executive pass (ADR-0041 5). In Phase 2 the caller's own ecb is vestigial
+     * -- nsfreq_wait parks on the anchor's reply_ecb -- so a client has no
+     * reason to initialise it, and inheriting stack garbage with the POSTED bit
+     * set would make the STC declare the request complete on the FIRST check,
+     * copy out an untouched retcode and reply. Wrong answer, no abend, nothing
+     * to grep for. */
+    priv->ecb = 0u;
+
     /* THE two rewrites (ADR-0041 2). ubuf: a caller-AS address reads the wrong
      * address space from here. ulen: the count actually staged, so the protocol
      * op reports the true moved count through retcode rather than the count the

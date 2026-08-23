@@ -83,7 +83,11 @@ void nsfreqx_slot_in(NSFRQE *slot, const NSFRQE *caller) asm("NSFRXSIN");
  *            silent over-report, from one wrong field.
  *
  * `q` is zeroed: the private copy is queued on the STC's own request queue, and
- * the caller's linkage means nothing on this side of the boundary.
+ * the caller's linkage means nothing on this side of the boundary.  `ecb` is
+ * zeroed too, and that one is load-bearing: completion is detected by testing
+ * the POSTED bit of this very word (ADR-0041 5), and the caller's ecb is
+ * vestigial in Phase 2 -- inheriting a set POSTED bit would make the STC reply
+ * with an untouched retcode on the first check.
  *
  * `staged` is what nsfreqx_stage_len returned for the slot's ulen (passed in
  * rather than recomputed, so the value that governed the MOVE is provably the

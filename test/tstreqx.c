@@ -89,6 +89,27 @@ int main(void)
              "dispatch_in sets ulen to the staged count");
     CHECK(priv.q.next == NULL,
           "dispatch_in clears q: the caller's linkage never crosses");
+    CHECK_EQ((long)priv.ecb, 0L,
+             "dispatch_in clears the private ecb (completion reads this word)");
+
+    /* The regression that matters: the caller's ecb is VESTIGIAL in Phase 2, so
+     * a client never initialises it. If the private copy inherited a word with
+     * the POSTED bit already set, the STC's end-of-pass check would call the
+     * request complete on its FIRST look and reply with an untouched retcode --
+     * wrong answer, no abend, nothing to grep for. The earlier assertion alone
+     * does not catch this: 0x11223344 happens to have bit 0x40000000 clear. */
+    fill_request(&caller);
+    caller.ecb = 0x40000000u;               /* POSTED bit set on arrival       */
+    nsfreqx_slot_in(&slot, &caller);
+    nsfreqx_dispatch_in(&priv, &slot, stage, nsfreqx_stage_len(slot.ulen));
+    CHECK_EQ((long)(priv.ecb & 0x40000000u), 0L,
+             "a POSTED caller ecb does NOT arrive posted in the private copy");
+    CHECK_EQ((long)slot.ecb, (long)0x40000000u,
+             "the slot still carries the caller's own ecb word untouched");
+
+    fill_request(&caller);
+    nsfreqx_slot_in(&slot, &caller);
+    nsfreqx_dispatch_in(&priv, &slot, stage, nsfreqx_stage_len(slot.ulen));
 
     /* everything else must arrive intact -- the op needs its inputs */
     CHECK_EQ((long)priv.fn, (long)RQ_SENDTO, "fn survives the crossing");
