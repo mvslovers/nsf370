@@ -56,9 +56,9 @@
 #include "nsfreq.h"           /* nsfreq_init / _register_proto / _ecb / ...  */
 #include "nsfsel.h"           /* nsfsel_init (the SELECT engine, M4-5)       */
 #include "nsftcp.h"           /* nsftcp_reserve / _init / _protops (M4-5)    */
-#include "nsfudp.h"
-#include "nsfsx.h"
-#include <clibos.h>          /* clib_apf_setup -- runtime self-authorisation (SVC 244)      */           /* the Phase-2 cross-AS request transport (M5-2a) */           /* nsfudp_reserve / _init / _protops (M4-5)    */
+#include "nsfudp.h"           /* nsfudp_reserve / _init / _protops (M4-5)    */
+#include "nsfsx.h"            /* the Phase-2 cross-AS request transport      */
+#include <clibos.h>           /* clib_apf_setup (SVC 244 self-authorisation) */
 #include <string.h>           /* memcpy / memset (device wiring)             */
 #include <clibstae.h>          /* __estae, ESTAE_CREATE/DELETE */
 #include <clibsdwa.h>          /* SDWA, SDWARCDE, SDWACWT */

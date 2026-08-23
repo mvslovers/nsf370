@@ -718,10 +718,23 @@ sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c",
 # is NSF's, with src/nsfsmain.c in place of src/nsfmain.c and the crossing
 # (src/nsfreqx.c) + the cross-AS transport (src/nsfsx.c) added.
 #
-# ac = 1: the transport needs __super, a key-0 CSA getmain and a store into the
-# SVCTABLE. NSF itself stays UNAUTHORISED -- which is exactly why this is a
-# separate module and not a mode of that one. The RED LINE is unchanged: the
-# CLIENT stays unauthorised (ADR-0038); the STC does not.
+# AUTHORISATION -- one mechanism, stated once. The transport needs __super, a
+# key-0 CSA getmain and a store into the SVCTABLE, and what provides that at
+# runtime is clib_apf_setup (SVC 244), called first thing in src/nsfsmain.c.
+# THAT is what lets NSF.LINKLIB stay non-APF, and it matches jcl/NSFS.jcl.
+#
+# ac = 1 is NOT the mechanism and is kept deliberately, as belt-and-braces for
+# a deployment that does APF-authorise the library: there AC(1) makes the STC
+# authorised at entry and clib_apf_setup returns early with rc=0. Note the
+# consequence -- on an APF library that early return never reaches auth_pgm /
+# clib_identify_cthread (libc370 @@apfset.c), so NSFS takes a slightly
+# different start path depending on whether the library happens to be
+# APF-listed. Harmless today because nsfthr_setup() does its own IDENTIFY
+# (src/nsfthr.c), but worth knowing before trusting either path blindly.
+#
+# NSF itself stays UNAUTHORISED -- which is exactly why this is a separate
+# module and not a mode of that one. The RED LINE is unchanged: the CLIENT
+# stays unauthorised (ADR-0038); the STC does not.
 [[module]]
 name = "NSFS"
 startup = "crt1"

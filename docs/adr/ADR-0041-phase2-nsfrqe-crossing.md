@@ -361,3 +361,44 @@ companion to the `owner_ascb` sweep and belongs with it in **(c)/(d)**, not here
 then reports `NSFV095I SVC 239 RESTORED` and ends cleanly. **This is not a hang — do not
 re-issue the stop.** Recorded because the natural reaction to a silent console is to send
 it again, and a second stop against a draining STC is exactly the wrong move.
+
+### Correction (2026-08-23) — what the 444 Stage-0 asserts actually prove
+
+An earlier note claimed the four Stage-0 gates exercised the key-8 POST path. **They do
+not, and the distinction is the whole point of recording it.**
+
+The probe STC publishes no `server_ecb_ptr`, so `ANCSEPTR` is zero and every one of those
+444 assertions takes the **CSA fallback** branch — `LTR R11,R11 / BNZ PSTECBX` in
+`asm/nsfvsvc.asm` falls through to `LA R11,ANCSECB(,R2)`. So:
+
+- **The 444 Stage-0 asserts prove the FALLBACK branch is intact** — which is exactly what
+  they are there for: they are the regression that says the probe still works unchanged.
+- **The key-8 branch is proven by `TSTRQXM`'s passing rows, and by nothing else.**
+
+Written as one sentence — "the Stage-0 gates cover it" — this reads in six months as
+coverage for a path none of those runs enters. That is this project's most expensive
+failure class (a green result that measures something adjacent to the claim), relocated
+into the documentation, where no test can catch it.
+
+### The parked-request path, first proven 2026-08-23
+
+§5's end-of-pass completion check and the un-posted-private-ECB rule had no live evidence
+until `TSTRQXM` grew its TCP case. Every synchronous verb — INITAPI, SOCKET, BIND,
+GETSOCKNAME, CLOSE, TERMAPI — completes inside the dispatcher and never parks, so the
+twelve rows that passed before it proved the crossing but said nothing about §5. A TCP
+`connect` and `send` do park. Both now complete across the boundary live, which is the
+first evidence that the design in §5 works.
+
+### The moved-length contract is a STREAM contract
+
+Obligation #2's live case is a **TCP `send`**, not a UDP `sendto`, and the reason is
+semantic rather than incidental. `SENDTO` on a datagram socket is **atomic** in BSD and in
+EZASOKET: the whole datagram goes or the call fails. A partial move there is not a short
+write but a **truncated datagram**, and an application looping on the returned count would
+send the remainder as a second datagram and corrupt its own framing. Pinning
+"`SENDTO` 5000 → 2048 moved" would have pinned semantics NSF's own surface contradicts.
+
+A short return is correct, expected and loop-safe exactly where BSD says it is: `send` on
+a connected stream socket. UDP's honest case is the opposite one — a `sendto` above
+`MTU − 28` returns `EMSGSIZE` (spec §11.3, v1 does not fragment), which also proves a
+specific errno crosses from a **protocol** op rather than from the dispatcher.
