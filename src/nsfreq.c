@@ -30,6 +30,23 @@
 /* ---- transport: request queue + requestECB --------------------------------
  * g_reqxq is the CS-safe MPSC handoff (producers = app subtasks; consumer = the
  * executive). g_reqecb is the spec-5.3 requestECB the executive WAITs on. */
+/* The Phase-2 transport, when one has registered (ADR-0041).  NULL = Phase 1,
+ * and then every path below is byte-for-byte what it has been since M3-2: this
+ * is a registration seam in the idiom of evt_set_request / nsfip_register_proto,
+ * not a mode switch, so the 20 modules that link this file are unaffected.
+ *
+ * It is a single `call` op rather than a submit/wait pair because the SVC
+ * transport does the POST and the WAIT inside one invocation (ADR-0038) --
+ * synchronous by construction, so the two cannot be separated on that
+ * transport.  Harmless: NSFEZA uses nsfreq_call at every call site, and there
+ * is no async submit/wait split in the API to preserve. */
+static void (*g_xtransport)(NSFRQE *r);
+
+void nsfreq_set_transport(void (*fn)(NSFRQE *r))
+{
+    g_xtransport = fn;
+}
+
 static XQ     g_reqxq;
 static NSFECB g_reqecb;
 
@@ -96,6 +113,7 @@ void nsfreq_init(void)
     req_stats_init();
     xq_init(&g_reqxq);
     g_reqecb = 0u;
+    g_xtransport = NULL;                /* Phase 1 until a transport registers */
     for (i = 0u; i < NSFREQ_APP_MAX; i++) {
         g_apptab[i].inuse = 0u;
         g_apptab[i].gen   = 1u;         /* token 0 (gen 0, idx 0) never valid   */
@@ -525,6 +543,12 @@ void nsfreq_submit(NSFRQE *r)
     if (r == NULL) {
         return;
     }
+    if (g_xtransport != NULL) {
+        /* Cross-AS: the whole round trip happens here (see above), so the
+         * paired nsfreq_wait has nothing left to do. */
+        g_xtransport(r);
+        return;
+    }
     xq_push(&g_reqxq, &r->q);           /* CS-safe: multiple app TCBs may push  */
     nsfthr_post(&g_reqecb, 0u);         /* real SVC 2 POST -> wake the executive */
 }
@@ -534,11 +558,21 @@ void nsfreq_wait(NSFRQE *r)
     if (r == NULL) {
         return;
     }
+    if (g_xtransport != NULL) {
+        return;                         /* already complete (see nsfreq_submit) */
+    }
     nsfthr_wait((NSFECB *)&r->ecb);     /* block on this request's own ecb      */
 }
 
 void nsfreq_call(NSFRQE *r)
 {
+    if (r == NULL) {
+        return;
+    }
+    if (g_xtransport != NULL) {
+        g_xtransport(r);                /* one SVC = submit + wait             */
+        return;
+    }
     nsfreq_submit(r);
     nsfreq_wait(r);
 }

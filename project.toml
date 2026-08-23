@@ -632,6 +632,17 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstsvc.c"]
 
+# -- M5-2a the cross-AS NSFRQE live gate (TSTRQXM) ----------------------------
+# MVS-only (host = false). A THIN client: it links the API layer and the two
+# transport halves, and NO stack -- no device, no executive. Every socket op is
+# executed by the NSFS STC in another address space, which is the M5-2a claim.
+# PREREQUISITE: S NSFS.
+[[test]]
+name = "TSTRQXM"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M5 Stage-0b Step 1: the MVCK (Move with Key) probe (TSTMVCK) ------------
 # MVS-only (host = false): MVCK/SSK/storage keys have no host analog. Settles
 # ADR-0038's open promise (ADR-0039 Step 1): MVCP/MVCS are DAS (absent on base

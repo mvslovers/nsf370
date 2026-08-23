@@ -57,7 +57,8 @@
 #include "nsfsel.h"           /* nsfsel_init (the SELECT engine, M4-5)       */
 #include "nsftcp.h"           /* nsftcp_reserve / _init / _protops (M4-5)    */
 #include "nsfudp.h"
-#include "nsfsx.h"           /* the Phase-2 cross-AS request transport (M5-2a) */           /* nsfudp_reserve / _init / _protops (M4-5)    */
+#include "nsfsx.h"
+#include <clibos.h>          /* clib_apf_setup -- runtime self-authorisation (SVC 244)      */           /* the Phase-2 cross-AS request transport (M5-2a) */           /* nsfudp_reserve / _init / _protops (M4-5)    */
 #include <string.h>           /* memcpy / memset (device wiring)             */
 #include <clibstae.h>          /* __estae, ESTAE_CREATE/DELETE */
 #include <clibsdwa.h>          /* SDWA, SDWARCDE, SDWACWT */
@@ -227,7 +228,16 @@ int main(int argc, char **argv)
     INT  rc;
 
     (void)argc;
-    (void)argv;
+
+    /* Self-authorise at runtime (clib_apf_setup -> SVC 244), BEFORE anything
+     * touches CSA. The transport needs __super, a key-0 getmain and a store
+     * into the SVCTABLE; this is what lets NSF.LINKLIB stay non-APF. The STC
+     * authorises itself -- the CLIENT never does, which is the ADR-0038 red
+     * line. Same call, same place, as the Stage-0 probe STC. */
+    if (clib_apf_setup(argv[0]) != 0) {
+        nsfmsg("NSF009E NSFS CANNOT SELF-AUTHORISE");
+        return 8;
+    }
 
     /* Foundation FFDC surfaces first (static storage, no pool), so even a very
      * early failure leaves a trace ring + eyecatchers in the dump. */

@@ -186,6 +186,7 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_call NSFRQCAL   nsfreq_dispatch NSFRQDSP nsfreq_drain NSFRQDRN
  *   nsfreq_pending NSFRQPND nsfreq_ecb NSFRQECB
  *   nsfreq_register_proto NSFRQRPT  nsfreq_register_select NSFRQRSL
+ *   nsfreq_set_transport NSFRQSXT
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -216,6 +217,12 @@ UINT    *nsfreq_ecb(void) asm("NSFRQECB");
  * WAITing executive wakes. ONE POST call site -> M5 swaps it for the cross-AS
  * seam. The app then WAITs on r->ecb (nsfreq_wait); it must keep r alive and
  * not touch it again until the wait returns. */
+/* Install a Phase-2 transport (ADR-0041).  NULL restores the Phase-1 same-
+ * address-space path, which is also the state nsfreq_init leaves.  A program
+ * that never calls this is byte-for-byte unaffected -- the registration-seam
+ * idiom, not a mode switch.  See include/nsfreqc.h for the client side. */
+void     nsfreq_set_transport(void (*fn)(NSFRQE *r)) asm("NSFRQSXT");
+
 void     nsfreq_submit(NSFRQE *r) asm("NSFRQSUB");
 
 /* APP SIDE. Block the calling task on r->ecb until the executive completes r. */
