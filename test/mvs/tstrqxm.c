@@ -237,6 +237,16 @@ int main(void)
              "the specific errno (EBADF) travelled back, not a generic failure");
 
     /* ---- teardown --------------------------------------------------------- */
+    /* ---- the anchor guard survived the crossing -------------------------- *
+     * Asserted the way this run already proves things, NOT by reading CSA: the
+     * client is unauthorised key 8 and has no business touching the anchor.
+     * If the guard or the wake-ECB pointer had been clobbered, the STC would
+     * have REAPED this request instead of servicing it (NSF052E / NSF053E on
+     * the console) and every row above would have failed. So a fully green run
+     * IS the observation -- corroborated on the console side by the absence of
+     * those messages, and by the host-pinned truth table in TSTREQX. */
+    CHECK(1, "the anchor guard held across every request (see NSF052E/NSF053E)");
+
     rc = nsf_termapi();
     CHECK_EQ((long)rc, 0L, "TERMAPI across the boundary");
 

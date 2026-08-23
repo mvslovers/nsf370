@@ -18,7 +18,7 @@
 #include "nsfsx.h"
 #include "nsfvsvc.h"          /* NSFV_ANCHOR / NSFV_REQ_* / NSFV_SVCNUM        */
 #include "nsfreq.h"           /* NSFRQE, nsfreq_dispatch                       */
-#include "nsfreqx.h"          /* the host-tested field rules                   */
+#include "nsfreqx.h"          /* the host-tested field rules + guard truth table */
 #include "nsfevtp.h"          /* NSFECB_POSTED                                 */
 
 #include <string.h>
@@ -72,6 +72,9 @@ nsfsx_anchor_alloc(void)
         anchor->flags     = NSFV_ANCHOR_ACTIVE;
         anchor->req_state = NSFV_REQ_FREE;
         anchor->server_ascb = __ascb(0);
+        /* Stamp the RQE-slot guard once, here, under the same key window as
+        ** every other key-0 store. Checked before every dispatch. */
+        memcpy(anchor->rqe_guard, NSFREQX_GUARD, NSFREQX_GUARDLEN);
     }
     __prob(savekey, NULL);
     return anchor;
@@ -397,7 +400,8 @@ nsfsx_drain(void)
 
     /* ---- 2. Take a newly arrived request ---------------------------------- */
     if (!g_busy && g_anchor->req_state == NSFV_REQ_PENDING) {
-        int ok = 0;
+        int ok      = 0;
+        int corrupt = 0;
 
         if (__super(PSWKEY0, &savekey)) return;
 
@@ -409,6 +413,21 @@ nsfsx_drain(void)
             nsfsx_reap();
         } else if (cl == NSFSX_CL_UNKNOWN) {
             g_anchor->req_state = NSFV_REQ_HELD;
+        } else if (!nsfreqx_guard_ok(g_anchor->rqe_guard)) {
+            /* The guard word sits between the RQE slot and server_ecb_ptr, so
+            ** a clobbered guard means the 64-byte RQE move overran -- and the
+            ** next thing past it is the pointer we POST through. Reap; never
+            ** dispatch a slot we cannot trust, and above all never POST. */
+            corrupt = 1;
+            nsfsx_reap();
+        } else if (g_anchor->server_ecb_ptr != (void *)&g_wake_ecb) {
+            /* The pointer itself. The guard catches an overrun that stops
+            ** short of it; this catches corruption OF it, whatever the cause --
+            ** and we are the one party that knows the correct value. A
+            ** corrupted pointer is still non-zero, so the SVC routine would
+            ** happily key-0 POST to a wrong address in our private storage. */
+            corrupt = 2;
+            nsfsx_reap();
         } else if (g_anchor->xfunc == NSFV_REQ_RQE) {
             /* Hop 2: the CSA slot into the STC-private copy.  ubuf is rewritten
             ** to the staging buffer and ulen to the count ACTUALLY staged --
@@ -424,7 +443,14 @@ nsfsx_drain(void)
         }
         __prob(savekey, NULL);
 
-        if (cl == NSFSX_CL_DEAD)
+        if (corrupt == 1)
+            wtof("NSF052E ANCHOR RQE GUARD CLOBBERED -- REQUEST REAPED,"
+                 " NOT POSTED");
+        else if (corrupt == 2)
+            wtof("NSF053E ANCHOR WAKE-ECB POINTER CORRUPT (%08X, EXPECTED"
+                 " %08X) -- REQUEST REAPED, NOT POSTED",
+                 (unsigned)g_anchor->server_ecb_ptr, (unsigned)&g_wake_ecb);
+        else if (cl == NSFSX_CL_DEAD)
             wtof("NSF050I CLIENT DEAD (ASCB=%08X ASID=%04X) -- REQUEST REAPED",
                  lascb, lasid);
         else if (cl == NSFSX_CL_UNKNOWN)

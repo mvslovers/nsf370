@@ -259,6 +259,24 @@ typedef struct nsfv_anchor {
     ** cross-compile.  Single slot by construction -- the 64-slot (= MAXSOC)
     ** pool is M5-2b. */
     char      rqe[NSFV_RQE_SLOT];     /* +888 the M5-2a NSFRQE request slot   */
+    /* Guard word between the RQE slot and the published wake-ECB address.
+    ** Without it the two are BYTE-ADJACENT, and a one-byte overrun on the
+    ** 64-byte RQE move would write the high byte of server_ecb_ptr -- which
+    ** does not fail cleanly: the routine's LTR/BNZ still sees a non-zero
+    ** pointer, takes the key-8 branch, and issues a key-0 cross-AS POST to a
+    ** CORRUPTED address inside the STC's private storage, with no abend
+    ** guaranteed.  Host-clean, link-clean, live-wrong, aimed at the most
+    ** safety-critical word in the anchor.  Stage-0b set the precedent (a guard
+    ** byte after ulen, asserted untouched by TSTUBUF); this is the same idea
+    ** on the field that can least afford to be wrong.
+    **
+    ** NON-ZERO on purpose: a memset-zeroed anchor must be distinguishable from
+    ** a guard clobbered to zero.  Declared as CHARACTERS, not a UINT, so the
+    ** value is written and compared as a string literal and never as a
+    ** hardcoded byte value (spec 15.3 charset transparency) -- same four bytes,
+    ** readable in a dump either way. */
+    char      rqe_guard[4];           /* +8C8 NSFREQX_GUARD, checked before   */
+                                      /*      every dispatch                  */
     /* The STC's wake ECB address, in the STC's OWN key-8 private storage
     ** (ADR-0041 addendum).  The executive WAITs through ecb_waitlist from
     ** PROBLEM state key 8, and a key-0 CSA ECB in that ECBLIST is a documented
@@ -272,9 +290,9 @@ typedef struct nsfv_anchor {
     ** which is what the Stage-0 probe STC wants (it supervisor-WAITs on the
     ** key-0 CSA ECB), so the four Stage-0 gates stay a regression rather than
     ** becoming a rewrite.  Appended, never inserted (ADR-0041 3). */
-    void     *server_ecb_ptr;         /* +8C8 A(STC private key-8 wake ECB)   */
-} NSFV_ANCHOR;                    /* +8CC = 2252 bytes                        */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 2252);
+    void     *server_ecb_ptr;         /* +8CC A(STC private key-8 wake ECB)   */
+} NSFV_ANCHOR;                    /* +8D0 = 2256 bytes                        */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 2256);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, version,     8);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,      12);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb, 16);
@@ -292,6 +310,7 @@ NSFV_OFF_ASSERT(NSFV_ANCHOR, req_asid,  128);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, reaped,    132);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, stage,     136);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, rqe,      2184);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb_ptr, 2248);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, rqe_guard, 2248);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb_ptr, 2252);
 
 #endif /* NSFVSVC_H */

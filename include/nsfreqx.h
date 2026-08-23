@@ -28,7 +28,7 @@
  * load module and clear of NSFRQ* (nsfreq.h):
  *   nsfreqx_stage_len   NSFRXSLN    nsfreqx_slot_in    NSFRXSIN
  *   nsfreqx_dispatch_in NSFRXDIN    nsfreqx_result_out NSFRXROU
- *   nsfreqx_result_in   NSFRXRIN
+ *   nsfreqx_result_in   NSFRXRIN    nsfreqx_guard_ok   NSFRXGRD
  * ========================================================================== */
 
 #ifndef NSFREQX_H
@@ -42,6 +42,14 @@
  * so the pure logic builds on the host, where there is no CSA; the two are tied
  * together by NSFREQX_CHUNK_ASSERT below on the target. */
 #define NSFREQX_CHUNK   2048U
+
+/* The anchor's RQE-slot guard word (NSFV_ANCHOR.rqe_guard).  Four characters,
+ * not a numeric constant: written and compared as a string literal so no
+ * hardcoded byte value appears (spec 15.3 charset transparency), and readable
+ * as text in a dump.  NON-ZERO on purpose -- a memset-zeroed anchor must be
+ * distinguishable from a guard clobbered to zero. */
+#define NSFREQX_GUARD   "RQEG"
+#define NSFREQX_GUARDLEN 4U
 
 /* --------------------------------------------------------------------------
  * nsfreqx_stage_len -- how many bytes of a `ulen`-byte user buffer actually
@@ -119,5 +127,24 @@ void nsfreqx_result_out(NSFRQE *slot, const NSFRQE *priv) asm("NSFRXROU");
  * and its inputs survive untouched.
  * -------------------------------------------------------------------------- */
 void nsfreqx_result_in(NSFRQE *caller, const NSFRQE *slot) asm("NSFRXRIN");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_guard_ok -- is the anchor's RQE-slot guard word intact?
+ *
+ * The RQE slot and the published wake-ECB address are neighbours in the
+ * anchor, so an overrun on the 64-byte RQE move lands on the pointer the STC
+ * POSTs through.  That does NOT fail cleanly: a corrupted pointer is still
+ * non-zero, so the SVC routine takes the key-8 branch and posts key-0 to a
+ * wrong address in the STC's private storage.  The guard turns that silent
+ * wrong-address POST into a named, detectable failure.
+ *
+ * Pure and host-pinned deliberately (TSTREQX): the truth table is arithmetic,
+ * so it belongs in a test rather than resting on a live run -- the same shape
+ * obligation #5's ASVT classifier will use.
+ *
+ * Returns 1 when the guard matches NSFREQX_GUARD, 0 otherwise.  A NULL pointer
+ * answers 0 (not verifiable == not ok) and never faults.
+ * -------------------------------------------------------------------------- */
+int nsfreqx_guard_ok(const char *guard) asm("NSFRXGRD");
 
 #endif /* NSFREQX_H */

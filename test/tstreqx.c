@@ -199,6 +199,38 @@ int main(void)
     CHECK_EQ((long)caller.retcode, (long)NSF_RETERR, "an error retcode travels");
     CHECK_EQ((long)caller.errno_, (long)NSF_EWOULDBLOCK, "its errno_ travels");
 
+    /* ---- the anchor guard-word truth table ----------------------------- *
+     * Host-pinned rather than left to a live run: the RQE slot and the
+     * published wake-ECB address are neighbours in the anchor, and an overrun
+     * onto that pointer does not fail cleanly -- it is still non-zero, so the
+     * SVC routine takes the key-8 branch and POSTs key-0 to a wrong address in
+     * the STC's private storage. Every row below is a way that can happen. */
+    {
+        char g[NSFREQX_GUARDLEN];
+        UINT k;
+
+        memcpy(g, NSFREQX_GUARD, NSFREQX_GUARDLEN);
+        CHECK_EQ((long)nsfreqx_guard_ok(g), 1L,
+                 "the correct guard pattern reads as intact");
+
+        memset(g, 0, sizeof(g));
+        CHECK_EQ((long)nsfreqx_guard_ok(g), 0L,
+                 "a ZEROED guard is bad (why the pattern is not zero)");
+
+        /* Any single byte altered, at any position -- the overrun case is a
+         * clobber of the FIRST byte, but a guard that only caught that one
+         * would miss a short write landing anywhere else in the word. */
+        for (k = 0u; k < NSFREQX_GUARDLEN; k++) {
+            memcpy(g, NSFREQX_GUARD, NSFREQX_GUARDLEN);
+            g[k] = (char)(g[k] + 1);
+            CHECK_EQ((long)nsfreqx_guard_ok(g), 0L,
+                     "a single altered byte makes the guard read as bad");
+        }
+
+        CHECK_EQ((long)nsfreqx_guard_ok(NULL), 0L,
+                 "a NULL guard answers 'not ok' and does not fault");
+    }
+
     /* ---- NULL guards: every entry is defensive ------------------------- */
     nsfreqx_slot_in(NULL, &caller);
     nsfreqx_slot_in(&slot, NULL);

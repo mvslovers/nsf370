@@ -262,7 +262,7 @@ Each of these is a named later sub-step. Seams are laid; none are filled.
 | Deferred | Sub-step |
 |---|---|
 | Concurrency: SVRB per-invocation storage, the 64-slot (= MAXSOC) CSA pool, per-client staging | **(b)** |
-| The **write-out key window** — the read-out still stores into `ubuf` under PSW key 0, so the keyed protection is half-closed. Opens with an empirical probe | **(b)** |
+| The **write-out key window** — the read-out stores into caller-supplied addresses under PSW key 0, so the keyed protection is half-closed. **After M5-2a there are TWO such destinations: `ubuf` and `rqeimg` (the NSFRQE image)** — see the second correction below; the probe must cover both. Opens with an empirical probe | **(b)** |
 | `owner_ascb` sweep for sockets that outlive their request, reusing the ADR-0040 classifier (**not** `ufsd_sess_cleanup`'s ASID-only test); removal of the probe scaffolding (`NSFV_REQ_ORPHAN`, `pascb`/`pasid`) | **(c)** |
 | Security validation of caller-supplied fields; whether **UNKNOWN at shutdown** differs from UNKNOWN at service time; extracting the guard arithmetic for a host test | **(d)** |
 | Two-address-space stress | **(e)** |
@@ -402,3 +402,28 @@ A short return is correct, expected and loop-safe exactly where BSD says it is: 
 a connected stream socket. UDP's honest case is the opposite one — a `sendto` above
 `MTU − 28` returns `EMSGSIZE` (spec §11.3, v1 does not fragment), which also proves a
 specific errno crosses from a **protocol** op rather than from the dispatcher.
+
+### Correction (2026-08-23, second) — the write-out key window has TWO destinations
+
+The deferred-obligations table above carries ADR-0039's wording forward verbatim: *"the
+read-out still stores into `ubuf` under PSW key 0."* **After M5-2a that is no longer the
+whole picture.**
+
+`RQEOUT` now performs **two** key-0 stores into caller-supplied addresses:
+
+| Destination | What it is | Since |
+|---|---|---|
+| `ubuf` | the caller's data buffer, address supplied in the request block | ADR-0039 |
+| **`rqeimg`** | the caller's **64-byte NSFRQE image**, address supplied in the request block | **M5-2a** |
+
+Both are written while the routine runs under PSW key 0, so the hardware does **not** check
+either against the caller's own key. The `rqeimg` one is newer and no less dangerous: it is
+a pointer a client puts in its own `NSFV_REQ`.
+
+**M5-2b's empirical probe must cover both.** This obligation text is the input to that
+step's scope; naming only `ubuf` would scope the probe to one destination and let the
+second go quiet — which is precisely how a known hazard becomes an unknown one.
+
+Note also the distinction the `RQEOUT` header comment previously blurred (now corrected in
+`asm/nsfvsvc.asm`): the **source** key being 0 is correct and harmless — the staging buffer
+and the slot *are* key-0 CSA. The hazard is entirely on the **destination** side.

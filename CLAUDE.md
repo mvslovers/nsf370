@@ -601,8 +601,20 @@ joins the WAIT-gate probe (ADR-0025 defect (2) / #27 class). The STC's wake ECB 
 invalidated after it is restored): the executive WAITs from problem state, where a key-0
 CSA ECB in the ECBLIST is a **documented abend** (S047 / X'201', ufsd cross-AS reference);
 zero means "not published" and the routine falls back to `server_ecb`, which keeps the
-probe STC byte-for-byte. Anchor 2184→**2252** (`rqe`@2184, `server_ecb_ptr`@2248, both
-**appended**, never inserted — the 0c lesson applied preventively); `NSFV_REQ` 48→52
+probe STC byte-for-byte. Anchor 2184→**2256** (`rqe`@2184, **`rqe_guard`@2248**, `server_ecb_ptr`@2252). The
+**guard word** sits between the RQE slot and the published wake-ECB address because they
+would otherwise be byte-adjacent: a one-byte overrun on the 64-byte RQE move would write
+the pointer's high byte, and that does NOT fail cleanly — the routine's `LTR`/`BNZ` still
+sees non-zero, takes the key-8 branch and issues a **key-0 cross-AS POST to a corrupted
+address in the STC's private storage**, no abend guaranteed (the Stage-0b guard-byte
+precedent, applied to the field that can least afford to be wrong). It is a **non-zero**
+4-character eyecatcher (so a zeroed anchor is distinguishable from a clobbered guard) and
+the detection is **two C comparisons in the STC's hop-2 path** — the guard, and
+`server_ecb_ptr` against the STC's own `&g_wake_ecb` — each reaping through the existing
+0c path and **never POSTing**; the asm gained **two EQU values and no instruction**. The
+truth table is host-pinned in TSTREQX. Fields are **appended** where they can be; moving
+`server_ecb_ptr` +2248→+2252 finishes an **unreleased** layout (neither field exists on
+`main`), which is not the case the "never insert" rule guards against; `NSFV_REQ` 48→52
 (`rqeimg`). New modules: **NSFS** (`src/nsfsx.c` + `src/nsfsmain.c`, `ac=1`, generated
 from `nsfmain.c` — three differences) and the client seam `nsfreq_set_transport` +
 `src/nsfreqc.c`, **inert until registered**, so the 20 modules linking `nsfreq.c` and the
@@ -622,7 +634,7 @@ Stage-0 regression at the current layout: **TSTSVC/TSTMVCK/TSTUBUF/TSTDEATH all 
 batch+TSO, 444 PASS** — but those prove the **CSA fallback** branch, NOT the key-8 POST
 (the probe publishes no pointer); the key-8 branch is proven by TSTRQXM alone. NSFS and
 NSFV each start/stop clean, **SVC 239 stolen and RESTORED**, `IEF404I`, no abend, no dump.
-Host **2836→2839** (TSTREQX 51; a **real bug** fixed en route — the private copy inherited
+Host **2788→2846** (TSTREQX 58; a **real bug** fixed en route — the private copy inherited
 the caller's `ecb` word, whose POSTED bit would make the STC reply with an untouched
 `retcode`; the old tests dodged it because `0x11223344 & 0x40000000 == 0`; new assertions
 FAIL against the unfixed code). **Live-unproven and deferred:** the write-out key window

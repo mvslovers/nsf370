@@ -95,3 +95,12 @@ void nsfreqx_result_in(NSFRQE *caller, const NSFRQE *slot)
     caller->p2      = slot->p2;
     caller->p3      = slot->p3;
 }
+
+/* -------------------------------------------------------------------------- */
+int nsfreqx_guard_ok(const char *guard)
+{
+    if (guard == NULL) {
+        return 0;               /* not verifiable is not the same as ok       */
+    }
+    return (memcmp(guard, NSFREQX_GUARD, NSFREQX_GUARDLEN) == 0) ? 1 : 0;
+}

@@ -84,7 +84,8 @@ ANCXASID EQU   128                F    req_asid (client ASID)
 ANCREAPD EQU   132                F    reaped (dead reqs reclaimed)
 ANCSTAGE EQU   136                CSA staging buffer (2048)
 ANCRQE   EQU   2184               M5-2a NSFRQE slot (64) ADR-0041
-ANCSEPTR EQU   2248               A(STC private key-8 wake ECB)
+ANCRQEG  EQU   2248               RQE slot guard word (checked in C)
+ANCSEPTR EQU   2252               A(STC private key-8 wake ECB)
 *  NSFV_REQ field offsets (caller's block, R8 = A(req))
 REQEYE   EQU   0                  CL4  "NSFV"
 REQFUNC  EQU   4                  F    request function
@@ -456,8 +457,13 @@ UDEC1    LR    R4,R3
 *  where the field policy is host-tested, and it is deliberately not
 *  duplicated here in assembler.
 *
-*  The write-out is key 0 (source key 0), as in Stage-0b: the write-out key
-*  window stays open and is M5-2b, not this step.
+*  TWO KEYS, ONE SENTENCE APART -- do not conflate them.  The SOURCE key is 0
+*  because the staging buffer and the slot are key-0 CSA; that half is correct
+*  and harmless.  The HAZARD is the DESTINATION: both moves store into
+*  CALLER-SUPPLIED addresses (ubuf, and now rqeimg) while running under PSW
+*  key 0, so the hardware does NOT check them against the caller's key.  That
+*  window stays open and is M5-2b, not this step -- and after M5-2a it has TWO
+*  destinations, not one.
 *----------------------------------------------------------------------
 RQEOUT   DS    0H
          L     R10,ANCXLEN(,R2)   R10 = remaining = L
