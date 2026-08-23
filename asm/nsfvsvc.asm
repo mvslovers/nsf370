@@ -97,6 +97,7 @@ REQPASI  EQU   32                 F    ORPHAN probe ASID (in)
 REQQSTA  EQU   36                 F    QUERY req_state (out)
 REQQINF  EQU   40                 F    QUERY inflight (out)
 REQQRPD  EQU   44                 F    QUERY reaped (out)
+REQRQEI  EQU   48                 A    RQE: A(caller NSFRQE image)
 *  state + rc constants (mirror nsfvsvc.h)
 STFREE   EQU   0
 STPEND   EQU   1
@@ -112,11 +113,13 @@ FNXFER   EQU   2
 FNORPH   EQU   3                  probe: stage + POST, no WAIT
 FNQUERY  EQU   4                  probe: report anchor state
 FNUNSTG  EQU   5                  probe: release a held slot
+FNRQE    EQU   6                  M5-2a: carry an NSFRQE (ADR-0041)
 *  ASCB field the Stage-0c guard needs (ADR-0040): the caller ASID.  R7 is
 *  A(caller ASCB), set by the SVC FLIH, so the ASID comes from the control
 *  block and NOT from the request -- a client cannot forge its identity.
 ASCBASID EQU   36                 ASCBASID halfword (ASCB+X'24')
 XFCHUNK  EQU   2048               max ulen moved per SVC call
+RQELEN   EQU   64                 frozen NSFRQE size (one MVCK piece)
 MVCKMAX  EQU   255                bytes per MVCK piece
 MVCKK8   EQU   X'80'              MVCK source key 8
 *----------------------------------------------------------------------
@@ -182,6 +185,8 @@ UINCLP   LR    R4,R3
          BE    XFERIN                      yes -> write-in + xlen
          C     R3,=A(FNORPH)               ORPHAN (probe)?
          BE    ORPHIN                      yes -> stage probe identity
+         C     R3,=A(FNRQE)                RQE (M5-2a)?
+         BE    RQEIN                       yes -> stage ubuf + NSFRQE
 *  ECHO: stage the token.  Set xfunc = ECHO so an ECHO after an XFER is not
 *  misdispatched by the STC (which switches on the staged xfunc).
          XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
@@ -274,6 +279,63 @@ ORPHIN   DS    0H
          ST    R3,ANCSTATE(,R2)            publish PENDING
          B     DOPOST                      EXPLICIT: never fall through
 *----------------------------------------------------------------------
+*  RQE write-in (M5-2a, ADR-0041).  Carries a real request across: the user
+*  data AND the 64-byte NSFRQE that describes it.  Two moves, in this order:
+*
+*    1. ubuf -> stage[], clamped L = min(ulen, XFCHUNK), exactly as XFER.
+*       The clamp is what the dispatcher is later told through the NSFRQE's
+*       ulen, so the op reports the count that actually crossed (ADR-0041 2).
+*    2. the caller's NSFRQE image -> ANCRQE, one 64-byte MVCK piece (64 <=
+*       MVCKMAX, so no loop is needed).
+*
+*  Both are source key 8 -> dst key 0, raw D9: as370 mis-assembles the MVCK
+*  mnemonic (drops the R1/R3 registers), see tstmvck.c.  Piece length rides
+*  in R0 because MVCK is not trusted to preserve R1.
+*----------------------------------------------------------------------
+RQEIN    DS    0H
+         L     R0,REQULEN(,R8)             R0 = ulen
+         C     R0,=A(XFCHUNK)              > staging size?
+         BNH   RQISTX
+         L     R0,=A(XFCHUNK)              clamp to staging size
+RQISTX   ST    R0,ANCXLEN(,R2)             xlen = L (kept across WAIT)
+         L     R10,ANCXLEN(,R2)            R10 = remaining = L
+         SLR   R11,R11                     R11 = offset
+RQINLP   LTR   R10,R10                     bytes left? (0 -> skip)
+         BNP   RQINEND
+         LR    R1,R10                      R1 = piece length
+         C     R1,=A(MVCKMAX)
+         BNH   RQINSZ
+         LA    R1,MVCKMAX                  cap at 255
+RQINSZ   LR    R0,R1                       save piece length
+         L     R5,REQUBUF(,R8)             R5 = ubuf base (source B2)
+         ALR   R5,R11
+         LA    R4,ANCSTAGE(,R2)            R4 = &stage (dst B1)
+         ALR   R4,R11
+         LA    R3,MVCKK8                   R3 = source key 8
+         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         ALR   R11,R0                      off += piece
+         SLR   R10,R0                      remaining -= piece
+         B     RQINLP
+RQINEND  DS    0H
+         L     R5,REQRQEI(,R8)             R5 = A(caller RQE) src B2
+         LTR   R5,R5                       no image supplied?
+         BZ    RQINPUB                     then stage nothing
+         LA    R4,ANCRQE(,R2)              R4 = &anchor.rqe (dst B1)
+         LA    R1,RQELEN                   R1 = 64 (one piece)
+         LA    R3,MVCKK8                   R3 = source key 8
+         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+RQINPUB  DS    0H
+         XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
+         LA    R3,FNRQE
+         ST    R3,ANCXFUNC(,R2)            xfunc = RQE
+         ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
+         LH    R3,ASCBASID(,R7)            caller ASID (ASCB+X'24')
+         N     R3,=X'0000FFFF'             halfword, no sign extension
+         ST    R3,ANCXASID(,R2)            stage the ASID (Stage-0c)
+         LA    R3,STPEND
+         ST    R3,ANCSTATE(,R2)            publish PENDING
+         B     DOPOST                      EXPLICIT: never fall through
+*----------------------------------------------------------------------
 *  Wake the STC: cross-AS branch POST via CVT0PT01, supervisor key 0 (the
 *  exact @@xmpost.c sequence).  Only R9 survives the POST, so preserve our
 *  registers with STM/LM into the anchor's 18-word save area; R9 carries the
@@ -326,6 +388,8 @@ PSTOK    DS    0H
          L     R3,REQFUNC(,R8)    request function
          C     R3,=A(FNXFER)      XFER?
          BE    XFEROUT
+         C     R3,=A(FNRQE)       RQE (M5-2a)?
+         BE    RQEOUT
 *  ECHO: copy the echoed token (token+1) back into the caller's block.
          L     R3,ANCTOKEN(,R2)   echoed token
          ST    R3,REQTOKN(,R8)
@@ -370,6 +434,50 @@ UDEC1    LR    R4,R3
          BNE   UDEC1
          SLR   R15,R15            R15 = RCOK
          BR    R14
+*----------------------------------------------------------------------
+*  RQE read-out (M5-2a, ADR-0041).  The mirror of RQEIN, in the same order:
+*  the transformed staging back out to the caller's ubuf (read-direction
+*  data), then the 64-byte NSFRQE image back to the caller's block.
+*
+*  The image is copied WHOLE, but only the STC's result fields differ: the
+*  STC's copy-out writes retcode/errno_/apptok/p1/p2/p3 into the slot and
+*  nothing else (ADR-0041 4), so every caller-owned field still holds the
+*  value the caller sent.  Which fields are actually APPLIED to the caller's
+*  live NSFRQE is decided one level up, in C, by nsfreqx_result_in -- that is
+*  where the field policy is host-tested, and it is deliberately not
+*  duplicated here in assembler.
+*
+*  The write-out is key 0 (source key 0), as in Stage-0b: the write-out key
+*  window stays open and is M5-2b, not this step.
+*----------------------------------------------------------------------
+RQEOUT   DS    0H
+         L     R10,ANCXLEN(,R2)   R10 = remaining = L
+         SLR   R11,R11            R11 = offset
+RQOTLP   LTR   R10,R10            bytes left? (0 -> skip)
+         BNP   RQOTRQE
+         LR    R1,R10             R1 = piece length
+         C     R1,=A(MVCKMAX)
+         BNH   RQOTSZ
+         LA    R1,MVCKMAX         cap at 255
+RQOTSZ   LR    R0,R1              save piece length
+         L     R4,REQUBUF(,R8)    R4 = ubuf base (dst B1)
+         ALR   R4,R11
+         LA    R5,ANCSTAGE(,R2)   R5 = &stage (source B2)
+         ALR   R5,R11
+         SLR   R3,R3              R3 = source key 0
+         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         ALR   R11,R0             off += piece
+         SLR   R10,R0             remaining -= piece
+         B     RQOTLP
+RQOTRQE  DS    0H
+         L     R4,REQRQEI(,R8)    R4 = A(caller NSFRQE) dst B1
+         LTR   R4,R4              no image supplied?
+         BZ    REPLYC             then nothing to give back
+         LA    R5,ANCRQE(,R2)     R5 = &anchor.rqe (source B2)
+         LA    R1,RQELEN          R1 = 64 (one piece)
+         SLR   R3,R3              R3 = source key 0
+         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         B     REPLYC             EXPLICIT: never fall through
 *----------------------------------------------------------------------
 *  Stage-0c probe handlers (ADR-0040 8).  Probe-only: not part of the M5-2
 *  transport.  ORPHRET is the no-WAIT return; DOQUERY reports the anchor's

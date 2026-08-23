@@ -163,8 +163,15 @@ typedef struct nsfv_req {
     UINT      qstate;       /* +24 QUERY out: anchor req_state                */
     UINT      qinfl;        /* +28 QUERY out: anchor inflight                 */
     UINT      qreap;        /* +2C QUERY out: anchor reaped (dead requests)   */
-} NSFV_REQ;                 /* +30 = 48 bytes                                */
-NSF_SIZE_ASSERT(NSFV_REQ, 48);
+    void     *rqeimg;       /* +30 RQE: caller-AS address of the 64-byte NSFRQE
+                            **     image (M5-2a, ADR-0041).  A SEPARATE field
+                            **     from ubuf because a real socket op needs
+                            **     BOTH at once -- ubuf carries the user data,
+                            **     rqeimg the request block.  NSFV_REQ is the
+                            **     transport block, not the frozen contract, so
+                            **     growing it is free; NSFRQE stays 64 B.       */
+} NSFV_REQ;                 /* +34 = 52 bytes                                */
+NSF_SIZE_ASSERT(NSFV_REQ, 52);
 NSFV_OFF_ASSERT(NSFV_REQ, func,   4);
 NSFV_OFF_ASSERT(NSFV_REQ, token,  8);
 NSFV_OFF_ASSERT(NSFV_REQ, rc,    12);
@@ -176,6 +183,7 @@ NSFV_OFF_ASSERT(NSFV_REQ, pasid, 32);
 NSFV_OFF_ASSERT(NSFV_REQ, qstate, 36);
 NSFV_OFF_ASSERT(NSFV_REQ, qinfl, 40);
 NSFV_OFF_ASSERT(NSFV_REQ, qreap, 44);
+NSFV_OFF_ASSERT(NSFV_REQ, rqeimg, 48);
 
 /* ============================================================
  * NSFV_ANCHOR -- the CSA (SP=241, key 0) rendezvous block.
