@@ -694,6 +694,25 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstdeath.c"]
 
+# -- M5-2b1: the write-out fault OBSERVATION test (TSTRQXF) -----------------
+# MVS-only (host = false). NOT a contract gate: M5-2b1 closed the write-out key
+# window, which turns a silent key-0 clobber into a protection exception INSIDE
+# the SVC routine. Recovery is a named open M5-2 item and validation is (d), so
+# what b1 owes is an ASSESSMENT -- this test induces the fault on the machine
+# and reports the anchor state left behind. A DIRTY ANCHOR IS AN EXPECTED
+# FINDING, NOT A FAILURE: the CHECKs assert only that the client survives, the
+# transport still answers and the probe verbs can clean up; the dangling state
+# is reported, never asserted. It measures the IN-direction (the routine reads
+# ubuf before it writes it, so a bad pointer faults the read-in first) -- see
+# the source header for why the out-direction cannot be induced safely.
+# RUN IT LAST, after every other gate, then P NSFS / S NSFS.
+# PREREQUISITE: the NSFS STC must be started. Client stays UNAUTHORISED.
+[[test]]
+name = "TSTRQXF"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstrqxf.c"]
+
 # -- M5-2b step 0: the DESTINATION-KEY probe (TSTMVCD) ----------------------
 # MVS-only (host = false): SSE opcodes, PSW/storage keys, SSK/ISK/LRA and the
 # CSA control blocks have no host analog. Answers the three questions M5-2b1

@@ -427,3 +427,41 @@ second go quiet — which is precisely how a known hazard becomes an unknown one
 Note also the distinction the `RQEOUT` header comment previously blurred (now corrected in
 `asm/nsfvsvc.asm`): the **source** key being 0 is correct and harmless — the staging buffer
 and the slot *are* key-0 CSA. The hazard is entirely on the **destination** side.
+
+### Update (2026-08-23) — the write-out key window is CLOSED for BOTH destinations
+
+M5-2b1 discharges the **mechanism** half of the deferred-obligations row above. Both
+key-0 stores this ADR named — `ubuf` and the M5-2a `rqeimg` — now run inside a narrow
+`SPKA` window set to the **caller's own key**, so the hardware checks each
+caller-supplied destination against the key that owns it. The move is a plain `MVC`
+reached by `EX`; the key comes from `TCBPKF` (TCB+`X'1C'`, reached via `PSATOLD`), never
+a hardcoded 8. The full decision, the rejected `MVCK`-inside-the-window alternative, the
+`as370` listing bytes and the live gates are recorded **append-only in ADR-0039**, which
+framed the obligation — this entry only re-reads the row.
+
+**The obligation row above should now read: mechanism CLOSED for both destinations;
+recovery still OPEN.** Concretely:
+
+| Was | Now |
+|---|---|
+| `ubuf` written under PSW key 0 | written under the caller's key — hardware-checked |
+| `rqeimg` written under PSW key 0 | written under the caller's key — hardware-checked |
+| a wrong/hostile pointer is a **silent clobber** | a wrong/hostile pointer is a **caught `S0C4`** |
+| — | **recovery from that fault: still open**, an M5-2 item ADR-0039 already names |
+
+**What closing it exposed, so the next reader does not have to rediscover it.** A fault in
+the write-out leaves the anchor dirty: `req_state` stuck at **DONE** (the slot busy
+forever, every later request `RCNOREQ`) and `inflight` leaked. That shape is *worse* than
+the in-direction's (which leaves the slot FREE, because the fault precedes publication),
+and it is the input to deciding where recovery lands. ADR-0039's b1 entry carries the
+measured and reasoned assessment in full, including two adjacent findings that are **not**
+b1's to fix: `UNSTAGE` cannot recover a pre-publication leak, and `nsfsx_stop()` does not
+drain `inflight` at all — unlike the Stage-0 probe STC's `nsfv_drain`.
+
+**`XFEROUT` is deliberately untouched** and keeps its key-0 write-out: it is Stage-0b probe
+scaffolding, carries no NSFRQE and no application data, and is already listed for removal
+with the other probe verbs in (c). Do not read its key-0 store as this transport's.
+
+Nothing in this ADR's own subject changed: the anchor layout did not move, `NSFV_REQ` and
+`NSFV_ANCHOR` are unchanged, **NSFRQE stays frozen at 64 bytes**, and the C / EZASOKET /
+EZASMI surfaces are untouched — applications relink only.

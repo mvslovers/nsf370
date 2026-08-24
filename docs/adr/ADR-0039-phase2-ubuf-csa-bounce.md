@@ -291,3 +291,130 @@ carries the open promise, and Stage-0b closes it.
 
   A **toolchain finding** came out of this and is recorded in CLAUDE.md §3: `as370` knows
   neither mnemonic and has **no SSE format at all**. No milestone flipped; §7 is unchanged.
+- **2026-08-23 — M5-2b1: the write-out key window is CLOSED (live on MVSCE).**
+  Resolves obligation 1 above — the mechanism half of it. Fault recovery stays open
+  (see below); address validation was never part of it and remains (d).
+
+  **Mechanism: a narrow `SPKA` window keyed from `TCBPKF`, with a plain `MVC`.**
+  Both of `RQEOUT`'s moves — the staging back to `ubuf`, and since M5-2a the 64-byte
+  NSFRQE image back to `rqeimg` — now run with the PSW key set to the **caller's own**,
+  so the hardware checks each caller-supplied destination against the key that owns it.
+  `RQEIN` is untouched: its destination is the key-0 CSA staging and its source is
+  already keyed through `MVCK`'s `R3`.
+
+  - **`MVC`, not `MVCK`.** b0 measured that under the caller's key *both* operands are
+    reachable — the key-0 CSA staging is not fetch-protected (`ISK` `X'06'`) so it reads,
+    and the caller's private storage is its own key so it writes — so the move no longer
+    needs a keyed instruction at all and the hardware does the checking. Keeping `MVCK`
+    inside the window was **rejected**: its `R3` source key goes through the CR3 key-mask
+    check that already cost `tstmvck.c` an `S0C2`, and under a non-zero PSW key that is an
+    unknown. Buying an unknown back to reuse a proven encoding is the wrong trade.
+  - **`EX` supplies LENGTH-1.** `MVC` carries its length in the instruction, so a variable
+    length needs `EX`, which ORs the register's low byte into a *copy* — storage
+    unmodified, so the routine stays RENT (the same trick `src/nsfreqc.c` uses for the SVC
+    number). The old `MVCK` loop carried a **true** count in `R1`; it is not carried over
+    unchanged. The piece cap moves 255 → **256** (`MVC`'s real maximum; the 255 was an
+    `MVCK` length-ambiguity guard and stays in `RQEIN`).
+  - **Per piece, not once around the loop.** Nine `SPKA` pairs for a 2048-byte transfer
+    cost nothing and buy two things: the only instruction that can fault under the
+    borrowed key is the move itself, and the routine's own bookkeeping never executes
+    under a key it does not control.
+  - **The key comes from `TCBPKF` (TCB+`X'1C'`), not a hardcoded 8.** Byte format verified
+    against the reference rather than assumed: `SYS1.AMODGEN(IKJTCB)` defines `TCBFLAG EQU
+    X'F0'` (the key) and `TCBZERO EQU X'0F'` (must be zero), so the key sits in the high
+    nibble — exactly what `SPKA` reads (bits 24-27 of its operand address), which is why
+    `@@super.c` can go straight from `IC` to `SPKA 0(2)` with no shifting, and why this
+    does the same. The offset is confirmed by counting `IKJTCB` from `TCBRBP` (+0 RBP,
+    +4 PIE, +8 DEB, +12 TIO, +16 CMP, +20 TRN, +24 MSS, **+28 PKF**) and matches libc370
+    `src/clib/getmain.c:40`.
+  - **The TCB is reached by `PSATOLD` (PSA+`X'21C'`), not `R4`.** The ancestor
+    (`igc0024e.asm`) does document `R4 = A(TCB)` at SVC entry, but `R4` is loop scratch in
+    `RQEIN` long before the write-out runs and the POST save/restore preserves the
+    *clobbered* value — so `R4` is **not** the TCB by the time `RQEOUT` is reached.
+    `PSATOLD` is, always. The entry-convention block records both facts.
+  - **`TCBPKF` == 0 makes the window a no-op, and that is correct**: a key-0 caller can
+    already store anywhere, so there is nothing to protect it from. Commented in the
+    source so it is not "fixed" into a hardcoded 8.
+  - **`XFEROUT` deliberately keeps its key-0 write-out.** It is Stage-0b *probe*
+    scaffolding (`TSTUBUF`), carries no NSFRQE and no application data, and is already
+    listed for removal with the other probe verbs. Its key-0 store must not be read as the
+    transport's.
+
+  **`as370 -a=` listing (the gate — a green link proves nothing here):**
+  `SPKA 0(R9)` → `B20A 9000`, `SPKA 0(R12)` → `B20A C000`, `EX R1,MVCPIEC` → `4410 6362`
+  (base `R6`, resolving to the target — not dropped to base 0), and the target
+  `MVC 0(1,R4),0(R5)` → `D200 4000 5000`, length byte `X'00'` so the `EX` OR yields
+  exactly L-1. Also `IPK 0` → `B20B 0000`, `L R9,PSATOLD(,R9)` → `5890 921C`,
+  `IC R3,TCBPKF(,R9)` → `4330 901C`.
+
+  **`IPK` writes `R2`** — the anchor base — so `R2` is parked in `R9` across it and put
+  straight back, once at `RQEOUT` rather than per piece.
+
+  **Live gates, all on MVSCE.** `TSTRQXM` **batch CC 0, 32/32**, with the host peer
+  reporting **9353 bytes byte-exact** — including the new `EX` boundary coverage: a
+  **1-byte** and a **256-byte** send, each verified byte-exact in the direction the window
+  protects (a send stages `ulen` in and the reply moves the same `ulen` back out, so the
+  caller's buffer must survive identical), plus a **whole-buffer sweep** that would catch
+  an overrun past any moved region. The multi-piece path needed no duplicate: a 2048-byte
+  chunk is eight 256-byte pieces and the sweep covers it. The TSO re-run FAILs by design
+  (the one-shot host listener is consumed by the batch run → `errno 61`; batch is the
+  gate, the TSTTCPW/TSTRQXM precedent). Stage-0 regression unchanged and green:
+  `TSTSVC` / `TSTMVCK` / `TSTUBUF` / `TSTDEATH` all **CC 0 batch + TSO**. NSFS and NSFV
+  each start and stop clean, `SVC 239` stolen and restored, `IEF404I`, **no dump**. Host
+  suite unchanged at **2846 PASS / 0 FAIL**.
+
+  ### The fault-path assessment (b1 assesses; it does not fix)
+
+  Closing the window converts a silent key-0 clobber into a protection exception inside
+  the SVC routine. `test/mvs/tstrqxf.c` induces one live and reads the anchor afterwards.
+
+  **Measured.** A bad `ubuf` faults **`S0C4`**, the client's ESTAE catches it (**no dump,
+  client alive**), and the transport still answers. The anchor is left
+  **`req_state` = FREE, `inflight` = 1** — the prediction recorded in the test held.
+
+  **Which direction that actually is, stated because the name misleads.** The routine
+  reads `ubuf` on the way IN (`RQEIN`, `MVCK` source key 8) before it writes it on the way
+  OUT, and both use the same pointer — so any pointer bad enough to fault the write-out
+  faults the read-in **first**. The measurement is therefore of the **pre-existing**
+  in-direction exposure (faulting since `tstmvck.c` scenario 3), **not** of anything b1
+  created. The one pointer class that gets past the read-in is **key-0, non-fetch-protected
+  storage** (`MVCK`'s source-key check permits a key-8 *read* of it; a key-8 *store* is
+  denied) — precisely the case that used to be a silent clobber and that b1 now faults.
+  It cannot be handed to a test safely: the only such storage an unauthorised client can
+  name is system storage, which a window that failed to take would corrupt.
+
+  **Reasoned, not measured — the out direction.** From a fault inside `RQEOUT` the path to
+  `REPLYC` is a straight line with no branches, so nothing after it runs:
+  `req_state` stays **DONE** — the slot is **busy forever** and every later request gets
+  `RCNOREQ`, which is **worse than the in-direction's FREE**; `inflight` stays leaked at 1;
+  `served` was already bumped by the STC but `REQSEQ`/`REQRC` never reach the caller; the
+  staging keeps the reply data. Unlike the in-direction case, `UNSTAGE` *can* recover this
+  one, because the slot is not FREE.
+
+  **The PSW key on the fault path — the one thing b1 could have made worse.** `SPKA
+  0(R12)` does not execute on the fault path, so the program check occurs with the key
+  still borrowed. It makes no difference and the run confirms it: the borrowed key is the
+  caller's **own**, RTM unwinds the SVRB and resumes the caller's RB with the caller's PSW,
+  and the client went on to issue QUERY and UNSTAGE and to run stdio normally. §1b's narrow
+  window is why — the routine's own bookkeeping never runs under the borrowed key.
+
+  **Two further findings, reported and deliberately not fixed here.**
+  1. **`UNSTAGE` cannot recover a pre-publication leak.** It early-returns when the slot is
+     FREE, so the probe's own cleanup verb does not reach the in-direction leak measured
+     above. Scaffolding, due for removal with the other probe verbs in (c).
+  2. **`nsfsx_stop()` does not drain `inflight` at all** — it clears ACTIVE, wakes a parked
+     client, then unloads the router and frees the CSA unconditionally. `P NSFS` therefore
+     completed same-second with `inflight` = 2 and is unaffected by the leak. Note this
+     differs from the Stage-0 probe STC: `nsfv.c` **does** drain (10 s ceiling, and a
+     timeout means retain CSA, never free anyway). Pre-existing asymmetry, recorded here so
+     the next reader does not assume symmetry; teardown policy is not b1's to change.
+     **What makes this actionable rather than trivia:** the leak is **per-fault and
+     unbounded over the STC's life** — nothing ever gives it back, since `UNSTAGE` cannot
+     reach it and no path in `nsfsx.c` decrements `inflight` except a normal reply. It is
+     inert **today** only because the NSFS side never reads the count. It stops being inert
+     the moment **(b2/b3)** adds a real drain or a slot pool that consults it.
+
+  **b1 does not worsen the exposure.** The fault class already existed; b1 converts a
+  silent key-0 clobber into a caught fault and leaves the dangling-state shapes exactly as
+  they were. **Recovery remains the open M5-2 item this ADR already names**; the assessment
+  above is its input.

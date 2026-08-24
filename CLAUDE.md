@@ -656,9 +656,9 @@ test (**d**), 2-AS stress (**e**); the mirrored **STC-death race** is recorded a
 risk in ADR-0041, not closed. The TSO re-run of TSTRQXM FAILs by design (one-shot host
 listener consumed by the batch run → `errno 61`; batch is the gate — the TSTTCPW
 precedent). [[nsf370-m5-2a-status]]
-**M5-2b0 (the destination-key probe) — DONE, live-green.** M5-2b is the second of the
-five sub-steps; **M5 stays in progress and no milestone flips**. **b0**
-(`test/mvs/tstmvcd.c`, ADR-0039 annotation,
+**M5-2b0 (the destination-key probe) and M5-2b1 (the write-out key window) — DONE,
+live-green; b1 pending countersign.** M5-2b is the second of the five sub-steps; **M5 stays
+in progress and no milestone flips**. **b0** (`test/mvs/tstmvcd.c`, ADR-0039 annotation,
 TSTMVCD **58 PASS CC 0 batch+TSO**) answered three questions and fixed nothing: a
 **destination-keyed move does NOT exist** here — `MVCDK`/`MVCSK` both take an **operation
 exception (S0C1)** in supervisor state, the prediction recorded in the source before the
@@ -674,9 +674,51 @@ byte-exact** because it is not fetch-protected (bit `& X'08'` clear) — so unde
 caller's key both halves of the move are reachable, no landing area needed. **CSA budget:
 2064 KB total** (correction: the GDA has **no** CSA size field — `CVT+X'230'` → `GDA+8
 CSAPQEP` → `PQE+20 PQESIZE`/`+24 PQEREGN`), largest `SP=241` `GETMAIN` **≥ 1 MB** (a floor:
-the doubling search is capped at 1 MB and never failed). **b0 touches no production code**: it is a
-mechanism probe (it self-auths via SVC 244 and needs no probe STC), and its whole output
-is the measurement the write-out key window in **b1** is then built on.
+the doubling search is capped at 1 MB and never failed). **b1** (ADR-0039 + ADR-0041
+annotations) closes the window on **both** M5-2a destinations, `ubuf` **and** `rqeimg`:
+`RQEOUT`'s two moves run inside a **narrow per-piece `SPKA` window keyed from `TCBPKF`**
+(TCB+`X'1C'`, high nibble, verified against `SYS1.AMODGEN(IKJTCB)`: `TCBFLAG EQU X'F0'` /
+`TCBZERO EQU X'0F'` — which is why libc370 goes straight `IC`→`SPKA` with no shifting),
+the TCB reached by **`PSATOLD`** and NOT `R4` (the ancestor documents `R4 = A(TCB)` at SVC
+entry, but `R4` is loop scratch in `RQEIN` and the POST save/restore preserves the
+*clobbered* value). The move is a **plain `MVC` reached by `EX`** — b0 proved a keyed move
+is unnecessary under the caller's key, and `MVCK` inside a non-zero PSW key would put its
+`R3` through the CR3 key-mask check that already cost `tstmvck.c` an `S0C2`. **`EX`
+supplies LENGTH-1** (the piece cap moves 255→**256**; the 255 was an `MVCK` ambiguity guard
+and stays in `RQEIN`), and it ORs into a **copy**, so the routine stays RENT. `IPK` writes
+`R2` — the anchor base — so `R2` is parked across it, once, not per piece. **`RQEIN` is
+untouched** (its destination is key-0 CSA and its source is already keyed via `MVCK` `R3`),
+and **`XFEROUT` deliberately keeps its key-0 store** as Stage-0b probe scaffolding.
+**Gates:** the `as370 -a=` listing is the gate and was checked — `SPKA 0(R9)`→`B20A 9000`,
+`SPKA 0(R12)`→`B20A C000`, `EX R1,MVCPIEC`→`4410 6362` (base `R6`, not dropped to base 0),
+target `MVC 0(1,R4),0(R5)`→`D200 4000 5000` (length byte `X'00'`, so the OR yields exactly
+L-1). **TSTRQXM batch CC 0, 32/32** with the host peer verifying **9353 bytes byte-exact**,
+including the new **`EX` boundary**: 1-byte and 256-byte sends each byte-exact in the
+direction the window protects, plus a whole-buffer sweep for overrun (the multi-piece path
+needs no duplicate — a 2048 chunk is eight 256-byte pieces). Stage-0 regression green:
+**TSTSVC/TSTMVCK/TSTUBUF/TSTDEATH all CC 0 batch+TSO**; NSFS and NSFV start/stop clean,
+`SVC 239` restored, **no dump**; host **2846 PASS / 0 FAIL**. **The fault-path assessment
+(b1 assesses, it does not fix — recovery stays the open M5-2 item ADR-0039 names):**
+`test/mvs/tstrqxf.c` induces the fault live — **`S0C4`, caught, no dump, client alive,
+transport not wedged** — and reads the anchor back: **`req_state` FREE, `inflight` leaked
+at 1**, as predicted. **That measures the IN direction, not the out:** `RQEIN` reads `ubuf`
+before `RQEOUT` writes it and both use the same pointer, so any pointer bad enough to fault
+the write-out faults the read-in first — the **pre-existing** exposure. The one class that
+gets past the read-in is **key-0 non-fetch-protected storage** (`MVCK` permits a key-8
+read; a key-8 store is denied) — exactly the old silent clobber, and exactly what cannot be
+handed to a test safely. The out direction is therefore **reasoned from a branchless code
+path**: `req_state` stuck at **DONE** (slot busy forever, later requests `RCNOREQ` — *worse*
+than the in-direction), `inflight` leaked, staging retained; `UNSTAGE` *can* recover that
+one. **The PSW key does not leak usefully** — `SPKA` back never runs on the fault path, but
+the borrowed key is the caller's own and RTM resumes the caller's RB with the caller's PSW;
+measured, since the client went on to QUERY, UNSTAGE and run stdio normally. **Two adjacent
+findings, reported not fixed:** `UNSTAGE` early-returns on a FREE slot so it **cannot
+recover a pre-publication leak**, and **`nsfsx_stop()` does not drain `inflight` at all**
+(it frees the CSA unconditionally — `P NSFS` was same-second with `inflight` = 2), unlike
+the probe STC's `nsfv_drain` (10 s ceiling, retain-CSA on timeout). **b1 does not worsen
+the exposure:** the fault class pre-existed; b1 turns a silent key-0 clobber into a caught
+fault and leaves the dangling-state shapes unchanged. Anchor layout unmoved, **NSFRQE still
+frozen at 64 B**, C/EZASOKET/EZASMI surfaces unchanged — apps relink only.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 

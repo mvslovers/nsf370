@@ -124,6 +124,20 @@ XFCHUNK  EQU   2048               max ulen moved per SVC call
 RQELEN   EQU   64                 frozen NSFRQE size (one MVCK piece)
 MVCKMAX  EQU   255                bytes per MVCK piece
 MVCKK8   EQU   X'80'              MVCK source key 8
+MVCMAX   EQU   256                bytes per MVC piece (write-out)
+*  M5-2b1: the caller's storage key, for the write-out SPKA window.
+*  PSATOLD (PSA+X'21C') is A(the current TCB) -- the CALLER's TCB, since an
+*  SVC routine runs under the issuing task.  The ancestor (igc0024e.asm) does
+*  document R4 = A(TCB) at SVC entry, but R4 is loop scratch in RQEIN long
+*  before the write-out runs and the POST save/restore preserves the CLOBBERED
+*  value, so R4 is NOT the TCB by the time RQEOUT is reached -- PSATOLD is,
+*  always, and it is what libc370 itself uses (src/clib/getmain.c:40).
+*  TCBPKF (TCB+X'1C') holds the key in its HIGH nibble with the low nibble
+*  defined zero (IKJTCB: TCBFLAG EQU X'F0', TCBZERO EQU X'0F'), which is
+*  exactly the byte SPKA wants -- SPKA takes bits 24-27 of its operand address
+*  -- so it is used with no shifting, the same way @@super.c does.
+PSATOLD  EQU   540                PSA+X'21C' = A(current TCB)
+TCBPKF   EQU   28                 TCB+X'1C'  = task storage key
 *----------------------------------------------------------------------
          USING NSFVSVC,R6         base = our entry (R6, FLIH-set)
          B     NSFVGO             skip the STC-patched anchor word
@@ -408,8 +422,13 @@ PSTOK    DS    0H
 *  XFER read-out: MVCK the transformed staging (source key 0) back out to
 *  the caller's ubuf (dst key 0), L = ANCXLEN bytes (reloaded from CSA --
 *  it survived POST/WAIT), <= 255 bytes/piece, offset recomputed.  Piece
-*  length saved in R0 to advance (MVCK not trusted to preserve R1).  The
-*  write-out is key 0 in Stage-0b; M5-2 tightens the write-side key.
+*  length saved in R0 to advance (MVCK not trusted to preserve R1).
+*
+*  THIS PATH KEEPS THE KEY-0 WRITE-OUT, deliberately.  M5-2b1 closed the
+*  window on RQEOUT -- the M5-2 transport -- and left XFER alone: XFER is
+*  Stage-0b PROBE scaffolding (TSTUBUF), it carries no NSFRQE and no
+*  application data, and it is already listed for removal with the rest of
+*  the probe verbs.  Do not read its key-0 store as the transport's.
 *----------------------------------------------------------------------
 XFEROUT  DS    0H
          L     R10,ANCXLEN(,R2)   R10 = remaining = L
@@ -457,30 +476,44 @@ UDEC1    LR    R4,R3
 *  where the field policy is host-tested, and it is deliberately not
 *  duplicated here in assembler.
 *
-*  TWO KEYS, ONE SENTENCE APART -- do not conflate them.  The SOURCE key is 0
-*  because the staging buffer and the slot are key-0 CSA; that half is correct
-*  and harmless.  The HAZARD is the DESTINATION: both moves store into
-*  CALLER-SUPPLIED addresses (ubuf, and now rqeimg) while running under PSW
-*  key 0, so the hardware does NOT check them against the caller's key.  That
-*  window stays open and is M5-2b, not this step -- and after M5-2a it has TWO
-*  destinations, not one.
+*  THE DESTINATION-KEY WINDOW (M5-2b1, ADR-0039).  Both moves below store into
+*  CALLER-SUPPLIED addresses -- ubuf, and since M5-2a the 64-byte NSFRQE image
+*  -- so under the routine's own PSW key 0 the hardware would NOT check either
+*  against the caller's key, and a wrong or hostile pointer would be a silent
+*  clobber.  Both therefore run inside a NARROW SPKA window set to the
+*  CALLER's key: see MOVEOUT below, which is the only code that leaves key 0.
+*
+*  The SOURCE key was never the hazard -- the staging buffer and the slot ARE
+*  key-0 CSA and reading them is correct.  Do not conflate the two halves.
 *----------------------------------------------------------------------
 RQEOUT   DS    0H
+*  Window setup, ONCE: R12 = the key to restore, R9 = the caller's key.
+*  IPK writes R2 -- our anchor base -- so R2 is parked across it and put
+*  straight back.  R9 and R12 are untouched by the loop and by MOVEOUT.
+         LR    R9,R2              park the anchor base across IPK
+         IPK   0                  R2 = the PSW key we run under
+         LR    R12,R2             R12 = key to restore
+         LR    R2,R9              anchor base back
+         SLR   R9,R9
+         L     R9,PSATOLD(,R9)    R9 = A(caller TCB)
+         SLR   R3,R3
+         IC    R3,TCBPKF(,R9)     caller's key, high nibble
+         LR    R9,R3              R9 = SPKA operand
          L     R10,ANCXLEN(,R2)   R10 = remaining = L
          SLR   R11,R11            R11 = offset
 RQOTLP   LTR   R10,R10            bytes left? (0 -> skip)
          BNP   RQOTRQE
          LR    R1,R10             R1 = piece length
-         C     R1,=A(MVCKMAX)
+         C     R1,=A(MVCMAX)
          BNH   RQOTSZ
-         LA    R1,MVCKMAX         cap at 255
-RQOTSZ   LR    R0,R1              save piece length
+         LA    R1,MVCMAX          cap at 256
+RQOTSZ   LR    R0,R1              save TRUE piece length
          L     R4,REQUBUF(,R8)    R4 = ubuf base (dst B1)
          ALR   R4,R11
          LA    R5,ANCSTAGE(,R2)   R5 = &stage (source B2)
          ALR   R5,R11
-         SLR   R3,R3              R3 = source key 0
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         BCTR  R1,0               EX takes LENGTH-1
+         BAL   R15,MOVEOUT        move under the caller's key
          ALR   R11,R0             off += piece
          SLR   R10,R0             remaining -= piece
          B     RQOTLP
@@ -489,10 +522,39 @@ RQOTRQE  DS    0H
          LTR   R4,R4              no image supplied?
          BZ    REPLYC             then nothing to give back
          LA    R5,ANCRQE(,R2)     R5 = &anchor.rqe (source B2)
-         LA    R1,RQELEN          R1 = 64 (one piece)
-         SLR   R3,R3              R3 = source key 0
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         LA    R1,RQELEN-1        R1 = 63 (EX length-1)
+         BAL   R15,MOVEOUT        move under the caller's key
          B     REPLYC             EXPLICIT: never fall through
+*----------------------------------------------------------------------
+*  MOVEOUT -- the write-out key window (M5-2b1, ADR-0039).  Moves R1+1 bytes
+*  from 0(R5) to 0(R4) with the PSW key set to the CALLER's, so the hardware
+*  checks the caller-supplied DESTINATION against the key that owns it.  In:
+*  R1 = length-1, R4 = dst, R5 = src, R9 = caller key, R12 = key to restore.
+*  Link R15.  Nothing but the move runs under the borrowed key -- the window
+*  is per piece, not around the loop, so the routine's own bookkeeping is
+*  never executed under a key it does not control, and the ONLY instruction
+*  that can take a protection exception is the move itself.
+*
+*  A plain MVC, not MVCK: b0 (tstmvcd.c) measured that under the caller's key
+*  BOTH operands are reachable -- the key-0 CSA staging is not fetch-protected
+*  (ISK X'06') so it reads, and the caller's private storage is its own key so
+*  it writes.  MVCK inside a non-zero PSW key would put its R3 source key
+*  through the CR3 key-mask check that already cost tstmvck.c an S0C2; buying
+*  that unknown back to reuse an encoding would be the wrong trade.  MVC takes
+*  its length from the instruction, hence EX -- which ORs R1's low byte into a
+*  COPY and modifies no storage, so the routine stays RENT (the same trick
+*  src/nsfreqc.c uses for the SVC number).
+*
+*  IF TCBPKF READS 0 the window is a no-op and there is no protection.  That
+*  is CORRECT, not a bug: a key-0 caller can already store anywhere, so there
+*  is nothing to protect it from.  Do not "fix" this into a hardcoded key 8.
+*----------------------------------------------------------------------
+MOVEOUT  DS    0H
+         SPKA  0(R9)              -> the caller's key
+         EX    R1,MVCPIEC         move R1+1 bytes
+         SPKA  0(R12)             -> back to our own key
+         BR    R15
+MVCPIEC  MVC   0(1,R4),0(R5)      EX target: length from R1
 *----------------------------------------------------------------------
 *  Stage-0c probe handlers (ADR-0040 8).  Probe-only: not part of the M5-2
 *  transport.  ORPHRET is the no-WAIT return; DOQUERY reports the anchor's

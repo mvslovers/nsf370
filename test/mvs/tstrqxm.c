@@ -44,8 +44,18 @@
  * of the parked-request path -- ADR-0041 5's end-of-pass completion check and
  * the un-posted-private-ECB fix.  Until this test, that design is live-unproven.
  *
+ * M5-2b1 ADDS THE EX BOUNDARY.  The write-out now runs under a narrow SPKA
+ * window with a plain MVC whose length comes from EX -- and EX supplies
+ * LENGTH-1, so 1 and 256 are the two ends of one piece and the classic place
+ * for an off-by-one to hide.  Both are sent, and byte-exactness is checked in
+ * the direction the window actually protects: the reply moves the SAME ulen
+ * bytes back OUT into the caller's buffer, so after a send that buffer must
+ * still hold the pattern.  A wrong length, a wrong offset or a lost restore
+ * shows up as a corrupted buffer, and the whole-buffer sweep at the end
+ * catches an overrun anywhere in the run rather than only where it was aimed.
+ *
  * PEER: samples/host/shortwrite_listener.py must be running on the host:
- *   python3 shortwrite_listener.py 192.168.200.2 3003 --expect 9096
+ *   python3 shortwrite_listener.py 192.168.200.2 3003 --expect 9353
  */
 #include "nsfeza.h"
 #include "nsfsoc.h"      /* NSF_AF_INET / NSF_SOCK_DGRAM */
@@ -69,7 +79,7 @@
 
 /* One pattern buffer drained by every TCP send at a running offset, so the
  * host peer sees ONE contiguous stream it can verify against pat(0..N-1). */
-#define SW_TOTAL   9096u
+#define SW_TOTAL   9353u                /* 1 + 256 + 2048*4 + 904 (see below) */
 
 static char g_big[SW_TOTAL];
 
@@ -78,6 +88,20 @@ static char g_big[SW_TOTAL];
 static unsigned char pat(unsigned i)
 {
     return (unsigned char)(i * 7u + (i >> 5) + 0x23u);
+}
+
+/* g_big[from .. from+n) still holds the pattern?  A send stages ulen bytes IN
+ * and the reply moves the same ulen bytes back OUT, so a correct write-out
+ * leaves the caller's buffer identical; any length, offset or key error in
+ * the M5-2b1 window shows here as a mismatch. */
+static int pat_ok(unsigned from, unsigned n)
+{
+    unsigned i;
+
+    for (i = from; i < from + n; i++) {
+        if ((unsigned char)g_big[i] != pat(i)) return 0;
+    }
+    return 1;
 }
 
 int main(void)
@@ -189,7 +213,20 @@ int main(void)
 
     if (rc == 0) {
         UINT off = 0u;
-        int  n1, n2, n3, n4, n5;
+        int  n0, n1, n2, n3, n4, n5;
+
+        /* M5-2b1: the EX length-1 boundary, both ends of one MVC piece. */
+        n0 = nsf_send(s, &g_big[off], 1, 0);
+        CHECK_EQ((long)n0, 1L, "SEND of 1 byte (the EX length-1 floor)");
+        CHECK(pat_ok(off, 1u),
+              "the 1-byte write-out came back byte-exact");
+        if (n0 > 0) off += (UINT)n0;
+
+        n0 = nsf_send(s, &g_big[off], 256, 0);
+        CHECK_EQ((long)n0, 256L, "SEND of 256 bytes (one whole MVC piece)");
+        CHECK(pat_ok(off, 256u),
+              "the 256-byte write-out came back byte-exact");
+        if (n0 > 0) off += (UINT)n0;
 
         /* Exactly one chunk must NOT be clamped -- the boundary either side. */
         n1 = nsf_send(s, &g_big[off], (INT)NSFREQX_CHUNK, 0);
@@ -225,6 +262,14 @@ int main(void)
 
         CHECK_EQ((long)off, (long)SW_TOTAL,
                  "the short-write loop moved every byte (host verifies them)");
+
+        /* The multi-piece path needs no duplicate: a 2048-byte chunk is eight
+         * 256-byte MVC pieces, and every send above already round-tripped its
+         * bytes back out.  One sweep over the whole buffer confirms all of it
+         * at once -- and catches an overrun PAST a moved region, which a
+         * per-send check aimed at the moved bytes would miss. */
+        CHECK(pat_ok(0u, SW_TOTAL),
+              "every write-out byte-exact, no overrun (whole-buffer sweep)");
     }
 
     rc = nsf_close(s);
