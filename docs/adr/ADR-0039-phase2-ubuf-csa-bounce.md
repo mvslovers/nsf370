@@ -221,3 +221,73 @@ carries the open promise, and Stage-0b closes it.
      client whose chunking assumption drifts from the routine's gets **silent truncation**
      where it should get a short count. (Stage-0b is safe only because its client and the
      routine share the constant and every size is asserted byte-exact.)
+- **2026-08-23 — M5-2b Step 0: the destination-key probe (`TSTMVCD`; live on MVSCE,
+  batch + TSO **CC 0**, **58 PASS / 0 FAIL** = 29 × 2).** This is the empirical probe
+  obligation 1 above says the write-out key window "opens with". It **measures and
+  decides nothing** — which mechanism M5-2b1 adopts is b1's call, made with this data.
+  No production file was touched: `test/mvs/tstmvcd.c` + its `project.toml` entry only.
+  Like `TSTMVCK` it is a **mechanism** probe and self-authorises (SVC 244), so the
+  ADR-0038 unauthorised-client red line does not bear on it; unlike `TSTUBUF`/`TSTDEATH`
+  it needs **no probe STC** (no anchor, no SVC, no rendezvous).
+
+  **1. A destination-keyed move does NOT exist on this target.** The prediction recorded
+  in the source before the run held: `MVCDK` and `MVCSK` both take an **operation
+  exception — `S0C1`, `try` rc `000C1000`** — and neither touched its destination. Probed
+  in **supervisor** state deliberately: from problem state a real `MVCDK` would first fail
+  the CR3 key-mask check with `S0C2`, which is shape-identical to "absent", so supervisor
+  state leaves the operation exception as the only expected failure. Corroborated from
+  primary source *before* the run: Hercules `opcode.c` gates both `GENx___x390x900`
+  (S/390 + z/Arch only — the S/370 slot of each is `operation_exception`) and MVSCE's
+  `local.cnf` sets `ARCHMODE S/370`. The **whole SSE pair** is absent, not one opcode —
+  the same shape of answer this ADR got for `MVCP`/`MVCS`.
+
+  **Two corrections to the briefed hypothesis, both from primary source, both material.**
+  The opcodes are **`E50F` (MVCDK) / `E50E` (MVCSK)**, not `B20F`/`B20E`. And the register
+  convention is **R0 bits 24-31 = length MINUS ONE, R1 bits 24-27 = key** (Hercules
+  `control.c`: `l = GR_L(0) & 0xFF` "operand length-1 from register 0"; `k = GR_L(1) &
+  0xF0`), not "count in R1, key in R0". SSE is opcode(2) | `B1 D1` | `B2 D2`, so with
+  B1 = 4 (destination) and B2 = 5 (source) the **listing bytes gated by `as370 -a=`** are
+  `E50F40005000` and `E50E40005000`.
+
+  **2. An `SPKA` window DOES close the write-out hole.** Supervisor state throughout,
+  `SPKA` to the caller's key 8 around the access and back to 0; **`IPK` is read INSIDE the
+  window on every arm and read `X'80'` every time**, so a non-faulting store could never be
+  confused with "`SPKA` never took":
+  - key-8 store into **key-8** storage **succeeds** and the bytes land — the baseline;
+  - key-8 store into **key-0** storage **FAULTS `S0C4`** (protection, `try` rc `000C4000`),
+    measured on **two independent destinations**: a `GETMAIN SP=241` block taken in key 0
+    — the production anchor pattern, `ISK` key byte `X'06'`, i.e. key 0 — **and** one of
+    the program's own frames `SSK`'d to key 0 and `ISK`-confirmed. Both faulted `S0C4`.
+    **This is the check that matters, and it is unambiguous: the window protects.**
+  - key-8 **fetch** from that key-0 CSA block **succeeds byte-exact** (`C3D4E5F6` read
+    back), because the block is **not fetch-protected** — `ISK` byte `X'06'`, fetch-protect
+    bit (`& X'08'`) clear. Behaviour and bit agree, asserted as such.
+
+  So a window of this shape protects the destination *and* can still read the key-0
+  staging source. The **destination** side was measured too: a job's own private storage —
+  which is what `ubuf` and `rqeimg` are — reads `ISK` key byte `X'8E'`, i.e. **key 8,
+  fetch-protected**, so under `SPKA` 8 it is the caller's own key on both counts and the
+  fetch-protect bit is irrelevant to a store. **Inferred, not measured, and deliberately
+  not a recommendation** (b1 owns the choice): with the key-0 CSA source readable under
+  key 8 and the key-8 private destination writable under key 8, a plain `MVC` inside the
+  window covers **both halves** of the move, which makes a third shape — `SPKA` to the
+  caller's key plus `MVCK` with an explicit source key 0 — unnecessary in the common case.
+
+  **3. CSA budget on MVSCE — with a correction: the GDA has NO CSA size field.**
+  `SYS1.AMODGEN(IHAGDA)`, read on the live system, maps `GDA+0` flags, `+4 VRDREG`,
+  **`+8 CSAPQEP`** — a *PQE pointer*. The size is one hop further, in the PQE (`IHAPQE`:
+  `+8 PQEFPQE`, `+20 PQESIZE`, `+24 PQEREGN`). Chain used, and asserted in the probe:
+  `CVT → CVTGDA (CVT+X'230') → GDA+8 CSAPQEP → PQE+20 PQESIZE / +24 PQEREGN`, with the
+  `PQEFPQE` chain walked bounded because more than one PQE may describe the region.
+  - **Total CSA = 2 113 536 bytes (2064 KB)**, described by **one** PQE, region at
+    `X'009E0000'`.
+  - **Largest `GETMAIN SP=241` that succeeds: ≥ 1 MB.** The coarse doubling search is
+    capped at 1 MB by the probe itself and never failed, so this is a **floor**, not the
+    maximum; powers of two understate the true largest by up to 2× in any case.
+  - **The two numbers are different quantities and neither is *free* CSA.** b3 needs a
+    **contiguous** allocation, which is the second number; against its ≈ 142 KB pool
+    (64 × (2048 staging + 64 RQE + state)) the measurement is comfortable, but that
+    reading is b3's to make. Every probe block was freed on every path; nothing is held.
+
+  A **toolchain finding** came out of this and is recorded in CLAUDE.md §3: `as370` knows
+  neither mnemonic and has **no SSE format at all**. No milestone flipped; §7 is unchanged.
