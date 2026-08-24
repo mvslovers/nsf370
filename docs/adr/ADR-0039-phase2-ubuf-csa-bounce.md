@@ -418,3 +418,155 @@ carries the open promise, and Stage-0b closes it.
   silent key-0 clobber into a caught fault and leaves the dangling-state shapes exactly as
   they were. **Recovery remains the open M5-2 item this ADR already names**; the assessment
   above is its input.
+- **2026-08-23 — M5-2b1 follow-up: the gate now DISCRIMINATES, and the window's
+  scope is narrower than "closed" suggests.** Two separate things came out of the
+  countersign, and only the first is about the mechanism.
+
+  ### 1. The discriminating case, and the revert that proves it
+
+  The b1 entry above was honest that `tstrqxf.c` measured the **IN** direction and
+  therefore said nothing about b1 — it is green on unmodified code too. Of the one class
+  that *would* discriminate, it said, verbatim:
+
+  > *"It cannot be handed to a test safely: the only such storage an unauthorised client
+  > can name is system storage, which a window that failed to take would corrupt."*
+
+  **That sentence is right about the class and wrong about "safely", and it is superseded
+  here** — quoted in full so that a reader who meets it above, or greps for it, lands on
+  this correction. The premise it rests on ("the only such storage an unauthorised client
+  can name is system storage") is what fails: NSF's **own** CSA anchor is key-0
+  non-fetch-protected storage too, and the client can name it. The class can therefore be
+  constructed without putting any system storage at risk.
+
+  **The class**: `ubuf` in **key-0, non-fetch-protected** storage. `MVCK`'s source-key
+  check permits the key-8 read-in of it, so the pointer gets **past** `RQEIN`; the old
+  key-0 write-out then clobbered it **silently**. Under the window that store must fault.
+
+  **How it is built safely** — `ubuf` points **into the anchor's own staging buffer** at a
+  non-zero offset (`&stage[1024]`, 64 bytes). Two consequences, both deliberate:
+  - the only storage at risk is NSF's own scratch, overwritten by the next request;
+  - source and destination are then both inside `stage[]`, so the routine moves
+    `stage[1024..]` → `stage[0..]` on the way in and exactly the reverse on the way out.
+    **A window that failed to take performs a byte-identical round trip** — a
+    staging-to-staging copy, not a clobber. Which is also why the discriminator is
+    fault-vs-no-fault and never a content comparison: the content is identical either way.
+
+  **Finding the anchor from an unauthorised client — a new fact, and it is not what the
+  kickoff assumed.** `nsfreqc_init` does **not** read the SVC table; it issues a `QUERY`
+  and nothing else. The only SVCTABLE chase in the tree is in `src/nsfv.c` / `src/nsfsx.c`,
+  and both `__super` into key 0 first — because they need key 0 for the **store**. So no
+  unauthorised client-side discovery path existed, and whether one could exist was an open
+  question. **Measured: it can.** A problem-state key-8 client chased, hop by hop under
+  `___try` (per hop, so a failure names the hop), all the way through:
+  `CVT X'0001D048'` → `SCVT X'0001D510'` → `SVCTABLE X'0000FA60'` →
+  `svcentry[239].svcepa = X'00A6F208'` → `+NSFV_ANCH_OFF` → anchor `X'00A6F688'`,
+  eyecatcher `"NSFVANCR"` confirmed. **The SVC table is readable from problem state key 8
+  on this system.** Read-only; the test never stores.
+
+  **Self-validating, and it has to be** — three independent facts are established before
+  the request is issued, and no two of them would do:
+  1. the anchor **eyecatcher** reads `"NSFVANCR"` — the chase found NSF's anchor, not an
+     arbitrary address;
+  2. a key-8 **READ** of the target **succeeds** — mapped, and not fetch-protected (any
+     readable address satisfies this alone);
+  3. a key-8 **STORE** into the target **faults `S0C4`** — store-protected against this
+     client's key (any unwritable address satisfies this alone).
+
+  Together they pin the target as key-0-without-fetch-protection, **which is what makes the
+  `S0C4` the request then takes a KEY fault and not the fault of a bad address** — the one
+  way this test could have passed for the wrong reason. The read-in succeeding inside the
+  routine is a fourth confirmation: it could not have succeeded against fetch-protected
+  storage.
+
+  **The revert, run because a gate that has never been seen to fail is not a gate.**
+  The `SPKA` pair was commented out of `MOVEOUT` (verified out in the `as370 -a=` listing:
+  `MOVEOUT` reduced to `EX R1,MVCPIEC` + `BR R15`, no `B20A` bytes), rebuilt, deployed,
+  NSFS recycled, and the suite re-run:
+
+  | `MOVEOUT` | (B) result | TSTRQXF |
+  |---|---|---|
+  | window IN | `try` rc `000C4000` — **`S0C4`** | **24/24 batch + 24/24 TSO, CC 0** |
+  | window OUT | `try` rc `00000000` — the request **RETURNED**, `req.rc=0`, the store landed | **23/24 each, CC 1** |
+  | window RESTORED | `try` rc `000C4000` — **`S0C4`** again | **24/24 batch + 24/24 TSO, CC 0** |
+
+  **Exactly one assertion moved** — the gate — and everything else stayed green in all
+  three states, including the whole chase, both pre-checks and every (A) assertion. The
+  restored listing is byte-identical to the one recorded in the b1 entry above
+  (`SPKA 0(R9)` → `B20A 9000`, `EX R1,MVCPIEC` → `4410 6362`, `SPKA 0(R12)` → `B20A C000`,
+  target `MVC` → `D200 4000 5000`), and the restored state was re-measured rather than
+  assumed. Note the reverted run's post-state: `req_state` **FREE**, request completed
+  normally — i.e. the difference really is the fault and nothing else.
+
+  **The OUT-direction dangling state is now MEASURED, not reasoned.** The b1 entry
+  predicted it from a branchless code path; the run confirms it exactly: `req_state`
+  stuck at **DONE** (2), `inflight` leaked. And, as predicted, **`UNSTAGE` *can* recover
+  this one** (the slot is published, so `DOUNSTG` does not early-return): `DONE` → `FREE`
+  with the count given back, measured 2 → 1.
+
+  ### 2. The scope correction: the RQE path, not the SVC boundary
+
+  **The write-out key window is closed on the RQE path. It is NOT closed at the SVC
+  boundary.** The b1 entry recorded that `XFEROUT` deliberately keeps its key-0 store, and
+  that decision stands — but "the write-out key window is closed" read on its own is
+  false, and a reader who stops there will conclude something wrong.
+
+  Precisely: **`FNXFER` is a reachable SVC verb.** It is dispatched by the same routine, on
+  the same slot-take path, and `test/mvs/tstubuf.c` — an **unauthorised** client — drives
+  it today. So `XFEROUT` still writes a **caller-supplied `ubuf` under PSW key 0**, reachable
+  by any client that can issue the SVC. That is not a hypothetical left over from a probe;
+  it is a live path with the exact shape this ADR set out to close.
+
+  **This changes the character of the (c) obligation.** Removing the probe scaffolding
+  (`NSFV_REQ_ORPHAN`, `pascb`/`pasid`, and with them `XFER`/`XFEROUT`) was listed as
+  hygiene — "scaffolding, not a transport path". **It is a security item**: removing those
+  verbs is what actually closes the boundary, and until it happens the key-0 write-out
+  survives in the tree behind a verb an unauthorised caller can reach.
+
+  **It is deliberately NOT pulled forward.** `TSTMVCK`, `TSTUBUF` and `TSTDEATH` all ride
+  those verbs and are the regression for every step after this one; gating or removing them
+  now would trade a documented exposure for a blind one.
+
+  ### 3. `LRA` + `SSK` on a pageable frame — recorded so a settled conclusion is not reopened
+
+  Manufacturing a protected page by `LRA`-ing a virtual page and `SSK`-ing the real frame
+  is **not reliable**: three different real frames turned up for the same virtual page
+  across three runs. If MVS steals and rebinds the page between the `SSK` and the access,
+  the key was set on a frame the program no longer has. The technique is used in
+  `tstmvcd.c` **2.2b** and in `tstmvck.c` **scenario 3**, which this ADR cites as evidence.
+
+  **The direction of the error decides whether anything is invalidated, and it is
+  one-directional.** Both tests expect the access to **fault**. A lost key means **no
+  fault**, which means the assertion **FAILS**. Checked against every `SSK`-dependent
+  assertion in both files, not just the headline one:
+  - `tstmvcd.c` 2.2b's `ISK` read-back (`"the own frame is now KEY 0"`) reads from the
+    **saved real address**, so it remains a true statement about that frame and cannot mask
+    the store check;
+  - `tstmvck.c` scenario 3's `keyback` is logged (`wtof`) and never asserted;
+  - every remaining `SSK`-dependent assertion in both files is a fault expectation.
+
+  So the technique yields **false negatives, never false positives**. **A run in which the
+  assertion PASSED is trustworthy, and Stage-0b's conclusion stands unchanged.** Note also
+  that `tstmvcd.c` **2.2a** — the `GETMAIN SP=241` destination — uses **no `SSK` at all**
+  (the block is key 0 by allocation), so the two-independent-destinations argument in the
+  b0 entry above rests on a destination this hazard cannot touch.
+
+  Recorded in CLAUDE.md §3 as a technique caveat, and filed as an issue against
+  `tstmvcd.c` 2.2b — an environmentally flaky gate erodes trust in every other gate, so it
+  needs fixing (page-fix before `SSK`, or drop the check and let 2.2a carry the
+  conclusion), but that is its own step and is **not** done here.
+
+  ### 4. Two adjacent findings filed, neither fixed here
+
+  Both were reported in the b1 entry above and are now issues, so they do not live only in
+  an ADR paragraph: **`nsfsx_stop()` never drains `inflight`** (marked a **prerequisite for
+  b3**, which is where a slot pool starts consulting the count), and **`UNSTAGE` early-
+  returns on a FREE slot** so it cannot recover a pre-publication leak.
+
+  **Nothing in the mechanism changed in this follow-up.** No production source was touched:
+  `asm/nsfvsvc.asm` is byte-identical to the b1 entry's listing, the anchor layout did not
+  move, `NSFRQE` stays frozen at 64 bytes, and the C / EZASOKET / EZASMI surfaces are
+  unchanged. Full regression re-run and green: `TSTRQXM` **batch CC 0, 32/32** with the
+  host peer verifying **9353 bytes byte-exact**; `TSTSVC` / `TSTMVCK` / `TSTUBUF` /
+  `TSTDEATH` **444 PASS, 0 FAIL, CC 0 batch + TSO**; `TSTRQXF` **48 PASS** (batch + TSO);
+  NSFS and NSFV each start and stop clean, `SVC 239` stolen and restored every cycle,
+  `IEF404I`, **no dump**; host suite **2846 PASS / 0 FAIL**. No milestone flipped.

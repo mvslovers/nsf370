@@ -187,6 +187,25 @@ Violating one is a review-blocking defect, not a style nit.
   RR `08`/`09`) and `MVCDK`/`MVCSK` (SSE `E50F`/`E50E`, and **absent on this
   target** — they take `S0C1`, ADR-0039). `LRA` (RX `B1`) *is* in the table.
   **The `as370 -a=` listing is the gate on the emitted bytes — never a green link.**
+- **`SSK` sets the key on a REAL frame, and a pageable page moves underneath it.**
+  `SSK`/`ISK` take a *real* address, so manufacturing a protected page means
+  `LRA` the virtual page → `SSK` the real frame → touch the virtual page. If MVS
+  steals and rebinds that page in between, **the key was set on a frame the
+  program no longer has** — measured as three different real frames for the same
+  virtual page across three runs. Used in `test/mvs/tstmvcd.c` 2.2b and
+  `test/mvs/tstmvck.c` scenario 3. **The direction of the error is what decides
+  whether it invalidates a conclusion, and it is one-directional:** both tests
+  expect the access to **fault**, so a lost key means no fault means the
+  assertion **FAILS** — verified against *every* `SSK`-dependent assertion in
+  both files (2.2b's `ISK` read-back reads the *saved real address*, so it stays
+  a true statement about that frame and cannot mask the store check;
+  `tstmvck.c`'s `keyback` is logged, never asserted). So the technique yields
+  **false negatives, never false positives**: a run in which the assertion
+  PASSED is trustworthy, and ADR-0039's Stage-0b conclusion stands unchanged —
+  do not reopen it on the strength of "the technique is flaky". Prefer a
+  destination needing no `SSK` at all (a `GETMAIN SP=241` block is key 0 by
+  allocation — `tstmvcd.c` 2.2a, which this hazard cannot touch) and keep the
+  `SSK` variant only as a second, independent reading.
 - **Exception:** a routine the OS invokes as an *exit* (not called from C) is not
   a C callee and does not get `FUNHEAD` — e.g. `NSFTMEXP`, the STIMER exit.
 - **Reviewer checklist (assembler):** a new C-callable routine uses
@@ -719,6 +738,44 @@ the probe STC's `nsfv_drain` (10 s ceiling, retain-CSA on timeout). **b1 does no
 the exposure:** the fault class pre-existed; b1 turns a silent key-0 clobber into a caught
 fault and leaves the dangling-state shapes unchanged. Anchor layout unmoved, **NSFRQE still
 frozen at 64 B**, C/EZASOKET/EZASMI surfaces unchanged — apps relink only.
+**b1 follow-up — the gate now DISCRIMINATES, and the window's scope is narrower than
+"closed".** No production source touched (`asm/nsfvsvc.asm` byte-identical, anchor layout
+unmoved, NSFRQE still 64 B). (1) **The discriminating case exists after all.** b1 said the
+one class that would discriminate — `ubuf` in **key-0 non-fetch-protected** storage, which
+gets PAST the key-8 read-in — could not be handed to a test safely; right about the class,
+wrong about "safely". `tstrqxf.c` now points `ubuf` at **the anchor's own staging buffer**
+(`&stage[1024]`, 64 B): the only storage at risk is NSF's own scratch, and source+dst are
+both inside `stage[]`, so a window that failed to take performs a **byte-identical round
+trip** rather than a clobber. Self-validating on three independent facts — the anchor
+eyecatcher, a key-8 READ that **succeeds**, a key-8 STORE that **faults** — which is what
+makes the observed `S0C4` a KEY fault and not a bad address. **New measured fact:** the
+**SVC table is readable from problem state key 8** — an unauthorised client chased
+`CVT 0001D048 → SCVT 0001D510 → SVCTABLE 0000FA60 → svcentry[239].svcepa 00A6F208 →
++NSFV_ANCH_OFF → anchor 00A6F688` hop-by-hop under `___try` (the kickoff's claim that
+`nsfreqc_init` already does this is **wrong** — it only issues a QUERY; the only SVCTABLE
+chase in the tree is `nsfv.c`/`nsfsx.c`, both `__super`'d into key 0 for the STORE).
+**The revert proves it discriminates:** window IN → `S0C4`, **24/24 batch + TSO CC 0**;
+`SPKA` pair commented out (verified out in the `as370 -a=` listing) → the request
+**RETURNS rc=0, the store lands**, **23/24 CC 1**; window RESTORED → `S0C4` again,
+**24/24 CC 0**, listing byte-identical to b1's. **Exactly one assertion moves.** The
+OUT-direction dangling state is now **measured**, not reasoned: `req_state` stuck at
+**DONE**, `inflight` leaked, and **`UNSTAGE` DOES recover it** (published slot), unlike the
+in-direction. (2) **Scope correction, in the ADRs:** the write-out key window is closed on
+the **RQE path**, NOT at the **SVC boundary** — **`FNXFER` is a reachable verb** driven by
+`tstubuf.c`, an **unauthorised** client, and `XFEROUT` still stores a caller-supplied
+`ubuf` under PSW key 0. So **removing the probe scaffolding is a SECURITY item, not only
+hygiene** (M5-2c obligation amended); deliberately **not** pulled forward, since
+TSTMVCK/TSTUBUF/TSTDEATH are the regression for every later step. (3) **`LRA`+`SSK` on a
+pageable frame is unreliable** (three real frames for one virtual page across three runs) —
+CLAUDE.md §3 caveat added **with the direction stated**: these tests expect a fault, so a
+lost key **fails** the assertion — **false negatives only**, a passing run is trustworthy
+and Stage-0b's conclusion stands (2.2a's `GETMAIN SP=241` destination uses no `SSK` at all).
+(4) **Four issues filed, none fixed here:** `tstmvcd.c` 2.2b flakiness, `tstmvck.c`'s
+hardcoded `SSK` restore, **`nsfsx_stop()` never drains `inflight` (marked a b3
+PREREQUISITE)**, `UNSTAGE` on a FREE slot. Regression green: TSTRQXM **batch CC 0 32/32**
+(host peer **9353 bytes byte-exact**), TSTSVC/TSTMVCK/TSTUBUF/TSTDEATH **444 PASS CC 0
+batch+TSO**, TSTRQXF **48 PASS**, NSFS+NSFV start/stop clean, `SVC 239` restored, **no
+dump**; host **2846 PASS / 0 FAIL**. **No milestone flip.**
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 

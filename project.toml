@@ -694,17 +694,27 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstdeath.c"]
 
-# -- M5-2b1: the write-out fault OBSERVATION test (TSTRQXF) -----------------
-# MVS-only (host = false). NOT a contract gate: M5-2b1 closed the write-out key
-# window, which turns a silent key-0 clobber into a protection exception INSIDE
-# the SVC routine. Recovery is a named open M5-2 item and validation is (d), so
-# what b1 owes is an ASSESSMENT -- this test induces the fault on the machine
-# and reports the anchor state left behind. A DIRTY ANCHOR IS AN EXPECTED
-# FINDING, NOT A FAILURE: the CHECKs assert only that the client survives, the
-# transport still answers and the probe verbs can clean up; the dangling state
-# is reported, never asserted. It measures the IN-direction (the routine reads
-# ubuf before it writes it, so a bad pointer faults the read-in first) -- see
-# the source header for why the out-direction cannot be induced safely.
+# -- M5-2b1: the write-out fault tests (TSTRQXF) ----------------------------
+# MVS-only (host = false). TWO scenarios asking different questions.
+# (A) UNREADABLE ubuf -- OBSERVATION ONLY, green on unmodified code too: the
+# routine reads ubuf on the way IN before it writes it on the way OUT, both
+# through the same pointer, so a bad pointer faults the read-in first. That is
+# the PRE-EXISTING exposure, not one b1 created.
+# (B) THE DISCRIMINATING CASE -- the gate b1 earns. ubuf points into KEY-0,
+# NON-FETCH-PROTECTED storage: the one class that gets PAST the key-8 read-in
+# and that the old key-0 write-out then clobbered SILENTLY. Under the M5-2b1
+# SPKA window that store must fault S0C4; remove the window and it succeeds.
+# Built SAFELY -- the target is the anchor's OWN staging buffer at a non-zero
+# offset (reached via the routine EP in the SVC table, read-only, hop by hop
+# under try()), so a window that failed to take would perform a byte-identical
+# staging-to-staging round trip rather than corrupt anything. Three
+# confirmations gate it: the anchor eyecatcher, a key-8 READ that succeeds, and
+# a key-8 STORE that faults.
+# A DIRTY ANCHOR IS AN EXPECTED FINDING, NOT A FAILURE: recovery is a named
+# open M5-2 item and validation is (d), so the CHECKs assert only that the
+# client survives, the transport still answers, the probe verbs can clean up --
+# plus, in (B), the fault itself. The dangling state is reported, never
+# asserted.
 # RUN IT LAST, after every other gate, then P NSFS / S NSFS.
 # PREREQUISITE: the NSFS STC must be started. Client stays UNAUTHORISED.
 [[test]]
