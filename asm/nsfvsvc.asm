@@ -47,8 +47,15 @@
 *                                  L R5,REQRQEI).  Use TCBRBP instead.
 *   R6   A(entry point) = base     yes (and it is our USING base -- preserve
 *                                  it across the POST or nothing addresses)
-*   R7   A(caller ASCB)            yes, but only until DOPOST stages it into
-*                                  ANCRASCB; nothing after the POST reads it
+*   R7   A(caller ASCB)            REASSIGNED at CLAIMOK: the ASCB and ASID
+*                                  are recorded in the slot there, while R7
+*                                  still holds them, and R7 then becomes
+*                                  A(our slot) for the rest of the routine.
+*                                  It is SAVED ACROSS THE POST like the
+*                                  anchor base -- nothing afterwards can
+*                                  re-derive which slot is ours, because the
+*                                  claim is long past and a fresh scan would
+*                                  find a DIFFERENT free slot.
 *   R13  issuer R13                overwritten (POST parameter); the FLIH
 *                                  gives the issuer its own R13 back
 *   R14  return address            yes -- must be preserved across the POST
@@ -91,25 +98,38 @@ R15      EQU   15
 *  NSFV_ANCHOR field offsets -- MIRROR of include/nsfvsvc.h (guarded there
 *  by NSF_SIZE_ASSERT at cross-compile).
 *----------------------------------------------------------------------
+*  Global header (M5-2b3: the anchor is a header + a 64-slot array).
 ANCEYE   EQU   0                  CL8  "NSFVANCR"
+ANCVER   EQU   8                  F    version -- checked below
 ANCFLAG  EQU   12                 F    ACTIVE = X'80000000'
-ANCSECB  EQU   16                 F    server_ecb  (STC WAIT target)
+ANCSECB  EQU   16                 F    server_ecb (fallback WAIT)
 ANCSASCB EQU   20                 A    server_ascb (POST target)
 ANCINFL  EQU   24                 F    inflight
-ANCSTATE EQU   28                 F    req_state
-ANCTOKEN EQU   32                 F    req_token
-ANCRECB  EQU   36                 F    reply_ecb   (our WAIT target)
-ANCRASCB EQU   40                 A    req_ascb    (caller ASCB)
-ANCSERVD EQU   44                 F    served
-ANCSAVE  EQU   48                 18F  DEAD (b2) -- see DOPOST
-ANCXFUNC EQU   120                F    transform (ECHO/XFER)
-ANCXLEN  EQU   124                F    bytes staged this chunk
-ANCXASID EQU   128                F    req_asid (client ASID)
-ANCREAPD EQU   132                F    reaped (dead reqs reclaimed)
-ANCSTAGE EQU   136                CSA staging buffer (2048)
-ANCRQE   EQU   2184               M5-2a NSFRQE slot (64) ADR-0041
-ANCRQEG  EQU   2248               RQE slot guard word (checked in C)
-ANCSEPTR EQU   2252               A(STC private key-8 wake ECB)
+ANCSERVD EQU   28                 F    served
+ANCREAPD EQU   32                 F    reaped (dead reqs reclaimed)
+ANCSEPTR EQU   36                 A    A(STC private key-8 wake ECB)
+ANCNSLOT EQU   40                 F    nslots -- THE SCAN'S BOUND
+ANCEXH   EQU   44                 F    exhausted (ENOBUFS count)
+ANCSLOTS EQU   48                 the slot array base
+*  Per slot, addressed off R7 (the slot base).  ADR-0042 5.
+SLSTATE  EQU   0                  F    req_state -- THE CS CLAIM WORD
+SLTOKEN  EQU   4                  F    req_token
+SLRECB   EQU   8                  F    reply_ecb (this client's WAIT)
+SLRASCB  EQU   12                 A    req_ascb (caller ASCB)
+SLASID   EQU   16                 F    req_asid (client ASID)
+SLXFUNC  EQU   20                 F    transform (ECHO/XFER/RQE)
+SLXLEN   EQU   24                 F    bytes staged this chunk
+SLRQE    EQU   28                 NSFRQE image (64) ADR-0041
+SLRQEG   EQU   92                 CL4  slot guard word (checked in C)
+SLSTAGE  EQU   96                 CSA staging buffer (2048)
+SLOTLEN  EQU   2144               one slot -- the scan's stride
+*  ANCSAVE is GONE (issue #61).  It was dead as a save area from M5-2b2, when
+*  the POST save area moved into the SVRB's RBEXSAVE, and was kept only
+*  because removing it would shift every later field.  b3 moves the layout
+*  anyway, so it comes out here for free -- and b2's five-word self-check
+*  goes with it: one-time evidence, collected, recorded in ADR-0038.  Carrying
+*  five stores and three CLCs per request forever to re-prove a settled fact
+*  is not a trade worth making on the hot path.
 *  NSFV_REQ field offsets (caller's block, R8 = A(req))
 REQEYE   EQU   0                  CL4  "NSFV"
 REQFUNC  EQU   4                  F    request function
@@ -124,15 +144,26 @@ REQQSTA  EQU   36                 F    QUERY req_state (out)
 REQQINF  EQU   40                 F    QUERY inflight (out)
 REQQRPD  EQU   44                 F    QUERY reaped (out)
 REQRQEI  EQU   48                 A    RQE: A(caller NSFRQE image)
+REQSLOT  EQU   52                 F    in: probe idx; out: claimed
+REQSEXP  EQU   56                 F    SLOT probe: expected state
+REQSNEW  EQU   60                 F    SLOT probe: state to set
 *  state + rc constants (mirror nsfvsvc.h)
 STFREE   EQU   0
 STPEND   EQU   1
 STDONE   EQU   2
 STHELD   EQU   3                  STC declined (UNKNOWN client)
+STCLAIM  EQU   4                  claimed, staging in progress (b3)
 RCOK     EQU   0
 RCINVAL  EQU   4
 RCCORR   EQU   8
-RCNOREQ  EQU   12
+RCNOREQ  EQU   12                 named slot busy (probe paths)
+RCNOBUF  EQU   16                 POOL FULL -> ENOBUFS (ADR-0042 7)
+*  Anchor layout version.  MUST match ANCVER in the anchor the STC built.
+*  NSFVSVC is a SEPARATE load module from NSFS and a mid-chain deploy failure
+*  silently keeps the previous one (CLAUDE.md 5) -- a stale routine against a
+*  moved layout is a wild CSA store, not a wrong answer.  Two instructions
+*  turn that into RCCORR.  Bump with every layout move or it is decorative.
+ANCVERNO EQU   2                  NSFV_ANCHOR_VER
 *  request functions + MVCK copy constants (mirror nsfvsvc.h)
 FNECHO   EQU   1
 FNXFER   EQU   2
@@ -140,6 +171,7 @@ FNORPH   EQU   3                  probe: stage + POST, no WAIT
 FNQUERY  EQU   4                  probe: report anchor state
 FNUNSTG  EQU   5                  probe: release a held slot
 FNRQE    EQU   6                  M5-2a: carry an NSFRQE (ADR-0041)
+FNSLOT   EQU   7                  probe: CS one named slot's state
 *  ASCB field the Stage-0c guard needs (ADR-0040): the caller ASID.  R7 is
 *  A(caller ASCB), set by the SVC FLIH, so the ASID comes from the control
 *  block and NOT from the request -- a client cannot forge its identity.
@@ -197,7 +229,6 @@ PSATOLD  EQU   540                PSA+X'21C' = A(current TCB)
 *  while the routine runs but not across a suspension) did NOT occur.
 RBEXSAVE EQU   96                 SVRB+X'60' (IHARB, RBSECPTR-relative)
 RBEXSVLN EQU   48                 L'RBEXSAVE -- 12 words, NOT 18
-RBEXSVSN EQU   16                 our sentinel, past the 16 bytes used
 TCBRBP   EQU   0                  TCB+0 = A(current RB) = A(SVRB)
 TCBPKF   EQU   28                 TCB+X'1C'  = task storage key
 *----------------------------------------------------------------------
@@ -219,29 +250,85 @@ NSFVGO   DS    0H
          BZ    BADANC             not published -> CORRUPT
          CLC   ANCEYE(8,R2),=CL8'NSFVANCR'
          BNE   BADANC
+*  LAYOUT VERSION (M5-2b3).  NSFVSVC is a separate load module from NSFS and
+*  a mid-chain deploy failure silently keeps the previous one, so a stale
+*  routine against a moved layout is reachable -- and it would stride the
+*  scan by the wrong slot length or walk off the end of the allocation.
+*  Two instructions turn an IPL-class wild store into a clean RCCORR.
+         L     R3,ANCVER(,R2)     anchor layout version
+         C     R3,=A(ANCVERNO)    the one we were built for?
+         BNE   BADANC             stale routine or stale STC
          TM    ANCFLAG(R2),X'80'  ACTIVE?  (X'80000000' high byte)
          BNO   BADANC             quiescing -> CORRUPT
 *----------------------------------------------------------------------
-*  Stage-0c probe verbs that take NO slot and change no in-flight state:
-*  QUERY reports the anchor's request state, UNSTAGE gives back a slot the
-*  STC deliberately did not release (ADR-0040 8).  Both have to work while
-*  the slot is BUSY -- that is the state the probe needs to observe -- so
-*  they branch out ahead of the slot-take below.
+*  Probe verbs that NAME a slot instead of claiming one, and change no
+*  in-flight state: QUERY reports one slot's state, UNSTAGE gives back a
+*  slot the STC deliberately did not release (ADR-0040 8), SLOT compare-and-
+*  swaps one slot's state so a test can pre-claim (ADR-0042).  All three
+*  have to work while a slot is BUSY -- that is the state the probe needs to
+*  observe -- so they branch out ahead of the claim below.
 *----------------------------------------------------------------------
          L     R3,REQFUNC(,R8)    request function
          C     R3,=A(FNQUERY)
          BE    DOQUERY
          C     R3,=A(FNUNSTG)
          BE    DOUNSTG
+         C     R3,=A(FNSLOT)
+         BE    DOSLOT
 *----------------------------------------------------------------------
-*  Take the one request slot (single-client sequential probe: reject a
-*  concurrent client rather than corrupt the slot).  Reject BEFORE the
-*  in-flight increment, so a rejected caller leaves inflight untouched.
-*  Any non-FREE state is busy -- including HELD (ADR-0040 6).
+*  CLAIM A SLOT (M5-2b3, ADR-0042).  CS each slot's OWN state word from
+*  FREE to CLAIMED; first success wins.  A failed CS means another client
+*  took that slot, so the walk ADVANCES -- it never retries the same slot,
+*  because there is nothing to retry: the slot is gone.
+*
+*  ABA-FREE BY CONSTRUCTION: the location being compared IS the resource.
+*  There is no head pointer whose value could return to a previous state
+*  while the thing it names changed underneath it, which is why this design
+*  has no free list -- see asm/nsfxq.asm's header, which forbids exactly the
+*  per-element pop a free list would need.
+*
+*  THE BOUND COMES FROM THE ANCHOR (ANCNSLOT), NOT FROM AN EQU HERE.  The
+*  party that knows how much storage exists is the party that allocated it.
+*  With the version check above this is belt and braces, and both are two
+*  instructions.
+*
+*  NO INDEX MULTIPLY: the cursor is a POINTER advanced by LA, which is why
+*  the slot is not padded to a power of two (2144 fits an LA displacement).
+*  R9 counts the index alongside it, purely so the caller can be told which
+*  slot served it -- the live reuse and skip checks are statements about
+*  that number.
+*
+*  THIS LOOP DOES NOT RUN UNDER A BORROWED KEY.  A claim needs an
+*  interlocked compare; that is serialisation, not protection.  MOVEOUT
+*  stays the only block in this routine that leaves key 0.
+*
+*  Exhaustion is rejected BEFORE the in-flight increment, so a caller that
+*  got no slot leaves inflight untouched.
 *----------------------------------------------------------------------
-         L     R3,ANCSTATE(,R2)
-         LTR   R3,R3              FREE (== 0)?
-         BNZ   SLOTBSY            no -> NOREQ
+         LA    R10,ANCSLOTS(,R2)  R10 = &slots[0]
+         L     R11,ANCNSLOT(,R2)  R11 = nslots (the allocator's count)
+         LTR   R11,R11            a pool at all?
+         BNP   POOLFUL            no -> ENOBUFS, never scan
+         SLR   R9,R9              R9 = slot index
+CLAIMLP  DS    0H
+         SLR   R3,R3              R3 = FREE (the comparand)
+         LA    R4,STCLAIM         R4 = CLAIMED (swap-in)
+         CS    R3,R4,SLSTATE(R10) free ? take it : R3 = actual
+         BE    CLAIMOK            ours
+         LA    R9,1(,R9)          next index
+         LA    R10,SLOTLEN(,R10)  next slot (pointer walk)
+         BCT   R11,CLAIMLP
+         B     POOLFUL            every slot taken -> ENOBUFS
+CLAIMOK  DS    0H
+         ST    R9,REQSLOT(,R8)    tell the caller which slot
+*  Record the identity while R7 is still the FLIH's caller ASCB -- it comes
+*  from the control block, never from the request, so it cannot be forged
+*  (ADR-0040).  R7 becomes the SLOT BASE immediately afterwards.
+         ST    R7,SLRASCB(,R10)   caller ASCB (POST target)
+         LH    R3,ASCBASID(,R7)   caller ASID (ASCB+X'24')
+         N     R3,=X'0000FFFF'    halfword, no sign extension
+         ST    R3,SLASID(,R10)    stage the ASID (Stage-0c)
+         LR    R7,R10             R7 = A(our slot) from here on
 *----------------------------------------------------------------------
 *  Mark in-flight (shutdown clears ACTIVE and drains this to zero before it
 *  frees the CSA).  CS loop = the in-flight __uinc of Stage-0a's SSI router.
@@ -267,17 +354,13 @@ UINCLP   LR    R4,R3
          BE    RQEIN                       yes -> stage ubuf + NSFRQE
 *  ECHO: stage the token.  Set xfunc = ECHO so an ECHO after an XFER is not
 *  misdispatched by the STC (which switches on the staged xfunc).
-         XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
+         XC    SLRECB(4,R7),SLRECB(R7)     reply_ecb = 0
          L     R3,REQTOKN(,R8)             read caller token
-         ST    R3,ANCTOKEN(,R2)            stage token
+         ST    R3,SLTOKEN(,R7)             stage token
          LA    R3,FNECHO
-         ST    R3,ANCXFUNC(,R2)            xfunc = ECHO
-         ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
-         LH    R3,ASCBASID(,R7)            caller ASID (ASCB+X'24')
-         N     R3,=X'0000FFFF'             halfword, no sign extension
-         ST    R3,ANCXASID(,R2)            stage the ASID (Stage-0c)
+         ST    R3,SLXFUNC(,R7)             xfunc = ECHO
          LA    R3,STPEND
-         ST    R3,ANCSTATE(,R2)            publish PENDING
+         ST    R3,SLSTATE(,R7)             publish PENDING
          B     DOPOST
 *----------------------------------------------------------------------
 *  XFER write-in.  Clamp L = min(ulen, XFCHUNK): a > chunk ulen would run
@@ -294,8 +377,8 @@ XFERIN   DS    0H
          C     R0,=A(XFCHUNK)              > staging size?
          BNH   XFISTX
          L     R0,=A(XFCHUNK)              clamp to staging size
-XFISTX   ST    R0,ANCXLEN(,R2)             xlen = L
-         L     R10,ANCXLEN(,R2)            R10 = remaining = L
+XFISTX   ST    R0,SLXLEN(,R7)              xlen = L
+         L     R10,SLXLEN(,R7)             R10 = remaining = L
          SLR   R11,R11                     R11 = offset
 WRINLP   LTR   R10,R10                     bytes left? (0 -> skip)
          BNP   WRINEND
@@ -306,7 +389,7 @@ WRINLP   LTR   R10,R10                     bytes left? (0 -> skip)
 WRINSZ   LR    R0,R1                       save piece length
          L     R5,REQUBUF(,R8)             R5 = ubuf base (source B2)
          ALR   R5,R11
-         LA    R4,ANCSTAGE(,R2)            R4 = &stage (dst B1)
+         LA    R4,SLSTAGE(,R7)             R4 = &stage (dst B1)
          ALR   R4,R11
          LA    R3,MVCKK8                   R3 = source key 8
          DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
@@ -314,15 +397,11 @@ WRINSZ   LR    R0,R1                       save piece length
          SLR   R10,R0                      remaining -= piece
          B     WRINLP
 WRINEND  DS    0H
-         XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
+         XC    SLRECB(4,R7),SLRECB(R7)     reply_ecb = 0
          LA    R3,FNXFER
-         ST    R3,ANCXFUNC(,R2)            xfunc = XFER
-         ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
-         LH    R3,ASCBASID(,R7)            caller ASID (ASCB+X'24')
-         N     R3,=X'0000FFFF'             halfword, no sign extension
-         ST    R3,ANCXASID(,R2)            stage the ASID (Stage-0c)
+         ST    R3,SLXFUNC(,R7)             xfunc = XFER
          LA    R3,STPEND
-         ST    R3,ANCSTATE(,R2)            publish PENDING
+         ST    R3,SLSTATE(,R7)             publish PENDING
          B     DOPOST                      EXPLICIT: see the note below
 *----------------------------------------------------------------------
 *  Every staging block above ends with an EXPLICIT B DOPOST, including the
@@ -344,17 +423,21 @@ WRINEND  DS    0H
 *  which is exactly what a client that died mid-request leaves behind.
 *----------------------------------------------------------------------
 ORPHIN   DS    0H
-         XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
+         XC    SLRECB(4,R7),SLRECB(R7)     reply_ecb = 0
          L     R3,REQTOKN(,R8)             read caller token
-         ST    R3,ANCTOKEN(,R2)            stage token
+         ST    R3,SLTOKEN(,R7)             stage token
          LA    R3,FNECHO
-         ST    R3,ANCXFUNC(,R2)            transform stays ECHO
+         ST    R3,SLXFUNC(,R7)             transform stays ECHO
+*  OVERWRITE the identity the claim recorded: the probe hands the STC an
+*  identity naming an address space that is not there, so the guard has
+*  something to classify DEAD.  This is the ONE place a request-supplied
+*  identity is used, and it is scaffolding due out in M5-2c.
          L     R3,REQPASC(,R8)             probe ASCB
-         ST    R3,ANCRASCB(,R2)            stored VERBATIM
+         ST    R3,SLRASCB(,R7)             stored VERBATIM
          L     R3,REQPASI(,R8)             probe ASID
-         ST    R3,ANCXASID(,R2)            stored VERBATIM
+         ST    R3,SLASID(,R7)              stored VERBATIM
          LA    R3,STPEND
-         ST    R3,ANCSTATE(,R2)            publish PENDING
+         ST    R3,SLSTATE(,R7)             publish PENDING
          B     DOPOST                      EXPLICIT: never fall through
 *----------------------------------------------------------------------
 *  RQE write-in (M5-2a, ADR-0041).  Carries a real request across: the user
@@ -375,8 +458,8 @@ RQEIN    DS    0H
          C     R0,=A(XFCHUNK)              > staging size?
          BNH   RQISTX
          L     R0,=A(XFCHUNK)              clamp to staging size
-RQISTX   ST    R0,ANCXLEN(,R2)             xlen = L (kept across WAIT)
-         L     R10,ANCXLEN(,R2)            R10 = remaining = L
+RQISTX   ST    R0,SLXLEN(,R7)              xlen = L (kept across WAIT)
+         L     R10,SLXLEN(,R7)             R10 = remaining = L
          SLR   R11,R11                     R11 = offset
 RQINLP   LTR   R10,R10                     bytes left? (0 -> skip)
          BNP   RQINEND
@@ -387,7 +470,7 @@ RQINLP   LTR   R10,R10                     bytes left? (0 -> skip)
 RQINSZ   LR    R0,R1                       save piece length
          L     R5,REQUBUF(,R8)             R5 = ubuf base (source B2)
          ALR   R5,R11
-         LA    R4,ANCSTAGE(,R2)            R4 = &stage (dst B1)
+         LA    R4,SLSTAGE(,R7)             R4 = &stage (dst B1)
          ALR   R4,R11
          LA    R3,MVCKK8                   R3 = source key 8
          DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
@@ -398,20 +481,16 @@ RQINEND  DS    0H
          L     R5,REQRQEI(,R8)             R5 = A(caller RQE) src B2
          LTR   R5,R5                       no image supplied?
          BZ    RQINPUB                     then stage nothing
-         LA    R4,ANCRQE(,R2)              R4 = &anchor.rqe (dst B1)
+         LA    R4,SLRQE(,R7)               R4 = &slot.rqe (dst B1)
          LA    R1,RQELEN                   R1 = 64 (one piece)
          LA    R3,MVCKK8                   R3 = source key 8
          DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
 RQINPUB  DS    0H
-         XC    ANCRECB(4,R2),ANCRECB(R2)   reply_ecb = 0
+         XC    SLRECB(4,R7),SLRECB(R7)     reply_ecb = 0
          LA    R3,FNRQE
-         ST    R3,ANCXFUNC(,R2)            xfunc = RQE
-         ST    R7,ANCRASCB(,R2)            caller ASCB (POST target)
-         LH    R3,ASCBASID(,R7)            caller ASID (ASCB+X'24')
-         N     R3,=X'0000FFFF'             halfword, no sign extension
-         ST    R3,ANCXASID(,R2)            stage the ASID (Stage-0c)
+         ST    R3,SLXFUNC(,R7)             xfunc = RQE
          LA    R3,STPEND
-         ST    R3,ANCSTATE(,R2)            publish PENDING
+         ST    R3,SLSTATE(,R7)             publish PENDING
          B     DOPOST                      EXPLICIT: never fall through
 *----------------------------------------------------------------------
 *  Wake the STC: cross-AS branch POST via CVT0PT01, supervisor key 0 (the
@@ -420,46 +499,32 @@ RQINPUB  DS    0H
 *  save-area pointer.  R2 (anchor), R8 (A(req)), R14 (return) all restore
 *  from the save area afterward, and the later WAIT (SVC 1) preserves R2-R14.
 *----------------------------------------------------------------------
-DOPOST   DS    0H                 POST/WAIT entry (ECHO + XFER share)
-*  PER-INVOCATION save area (M5-2b2).  Was ANCSAVE -- ONE 18-word block in the
-*  CSA anchor that every invocation in every address space computed the same
-*  address for and stored into.  Now the SVRB's own extended save area, which
-*  the FLIH allocates per SVC invocation, so two clients in two address spaces
-*  get two areas with no lock and no pool.  See the RBEXSAVE block above.
+DOPOST   DS    0H                 POST/WAIT entry (all verbs share)
+*  PER-INVOCATION save area (M5-2b2): the SVRB's own extended save area,
+*  which the FLIH allocates per SVC invocation, so two clients in two address
+*  spaces get two areas with no lock and no pool.  See the RBEXSAVE block
+*  above -- and note that A(SVRB) comes from TCBRBP, NOT from R5, which is
+*  the MVCK source pointer in RQEIN and holds A(caller image) by now.
 *
-*  ANCSAVE is DEAD as a save area and STAYS in the anchor: removing it would
-*  shift every field after it and cost a full four-gate Stage-0 round for
-*  nothing, and b3 moves the layout anyway, so it comes out there for free.
-*  Its first five words now carry b2's SELF-CHECK, which TSTRQXF reads back
-*  out of CSA -- positive proof the new home is real and not merely unused:
-*    +0  the area address claimed (must be OUTSIDE the anchor)
-*    +4  sentinel intact BEFORE the POST (the stamp took at all)
-*    +8  sentinel intact AFTER the POST
-*    +12 sentinel intact AFTER the WAIT
-*    +16 the restored R2/R6 still work (the REGISTER half, not just the tail)
+*  FIVE registers now, not four: R7 (the SLOT BASE, M5-2b3) joins R2, R6 and
+*  R8 plus R14.  Nothing after the POST can re-derive which slot is ours --
+*  the claim is long past and the scan would find a different free one -- so
+*  R7 is as load-bearing across the POST as the anchor base itself.
 *
-*  THREE STATES, NOT TWO: 1 = ran and passed, 2 = ran and FAILED, 0 = NEVER
-*  WRITTEN.  With a pass/fail pair of 1/0 a word that was never reached is
-*  indistinguishable from one that ran and failed -- and those are different
-*  faults with different next steps ("the sentinel was dead" vs "control never
-*  got there").  Same contract TSTRQXF already uses for its CC 20 skip code.
-*  +0 is an address, not a state; +16 is 1-or-never-written by construction --
-*  reaching it IS the pass -- so 0 there means control did not arrive.
+*  b2's five-word self-check is GONE with ANCSAVE (issue #61).  It was
+*  one-time evidence that this home is real; it has been collected, it is
+*  recorded in ADR-0038, and TSTRQXF (C) is converted into the pool's own
+*  positive check rather than deleted -- same shape of evidence, aimed at
+*  what is now unproven instead of what is now settled.
          SLR   R9,R9
          L     R9,PSATOLD(,R9)    A(current TCB)
          L     R9,TCBRBP(,R9)     A(current RB) = our SVRB
          LA    R9,RBEXSAVE(,R9)   R9 -> SVRB extended save area
-         ST    R9,ANCSAVE(,R2)    self-check: the area we claimed
-         MVC   RBEXSVSN(4,R9),=CL4'B2SV'   stamp the sentinel
-         LA    R3,2               2 = ran and FAILED
-         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
-         BNE   PSTSV0
-         LA    R3,1               1 = ran and passed
-PSTSV0   ST    R3,ANCSAVE+4(,R2)  the stamp took
-         ST    R14,0(,R9)         the four live across the POST
+         ST    R14,0(,R9)         the five live across the POST
          ST    R2,4(,R9)
          ST    R6,8(,R9)
          ST    R8,12(,R9)
+         ST    R7,16(,R9)         the slot base -- not re-derivable
          L     R10,=X'40000000'   POST completion code (0)
 *  POST target: the STC's published key-8 private ECB if it has one, else
 *  the key-0 CSA server_ecb.  The executive WAITs from problem state, where a
@@ -477,22 +542,18 @@ PSTECBX  DS    0H
          L     R15,16(,R15)       R15 = CVT (absolute location 16)
          L     R15,CVT0PT01-CVTMAP(,R15)   POST branch entry
          BALR  R14,R15
-         L     R14,0(,R9)         restore the four
+         L     R14,0(,R9)         restore the five
          L     R2,4(,R9)
          L     R6,8(,R9)
          L     R8,12(,R9)
-*  Self-check, POST half, before anything else can touch the area.
-         LA    R3,2               2 = ran and FAILED
-         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
-         BNE   PSTSV1
-         LA    R3,1               1 = ran and passed
-PSTSV1   ST    R3,ANCSAVE+8(,R2)  sentinel survived the POST
+         L     R7,16(,R9)         the slot base
          B     PSTOK
 PSTERR   DS    0H                 POST failed: STC ASCB gone
          L     R14,0(,R9)
          L     R2,4(,R9)
          L     R6,8(,R9)
          L     R8,12(,R9)
+         L     R7,16(,R9)         the slot base
          B     PSTFAIL
 PSTOK    DS    0H
 *  ORPHAN leaves here: the STC is awake, the request is in flight, and this
@@ -506,25 +567,11 @@ PSTOK    DS    0H
 *  rule does NOT transfer -- the routine never leaves key 0.  On wake the STC
 *  has either serviced us (state -> DONE) or, on quiesce, posted us to bail.
 *----------------------------------------------------------------------
-         LA    R3,ANCRECB(,R2)    A(reply_ecb)
+         LA    R3,SLRECB(,R7)     A(our slot's reply_ecb)
          WAIT  1,ECB=(R3)
-*  Self-check, WAIT half -- the far side of the round trip: a real task
-*  switch, the STC's cross-AS POST and an SVC 1.  R9 is POST-preserved and the
-*  WAIT (SVC 1) preserves R2-R14, so R9 still addresses the area.
-         LA    R3,2               2 = ran and FAILED
-         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
-         BNE   PSTSV2
-         LA    R3,1               1 = ran and passed
-PSTSV2   ST    R3,ANCSAVE+12(,R2) sentinel survived the WAIT
          CLC   ANCEYE(8,R2),=CL8'NSFVANCR'   anchor there?
          BNE   WGONE              freed while parked -> bail
-*  The REGISTER half.  Reaching here means the restored R2 still addresses the
-*  anchor AND the restored R6 still resolves our literal pool -- the CLC above
-*  needs both -- so the 16 bytes actually stored into came back, not merely the
-*  sentinel sitting in the untouched tail.
-         LA    R3,1
-         ST    R3,ANCSAVE+16(,R2)
-         L     R3,ANCSTATE(,R2)
+         L     R3,SLSTATE(,R7)
          C     R3,=A(STDONE)      serviced?
          BNE   WQUIES             no -> quiesce wake, bail
 *----------------------------------------------------------------------
@@ -537,7 +584,7 @@ PSTSV2   ST    R3,ANCSAVE+12(,R2) sentinel survived the WAIT
          C     R3,=A(FNRQE)       RQE (M5-2a)?
          BE    RQEOUT
 *  ECHO: copy the echoed token (token+1) back into the caller's block.
-         L     R3,ANCTOKEN(,R2)   echoed token
+         L     R3,SLTOKEN(,R7)    echoed token
          ST    R3,REQTOKN(,R8)
          B     REPLYC
 *----------------------------------------------------------------------
@@ -553,7 +600,7 @@ PSTSV2   ST    R3,ANCSAVE+12(,R2) sentinel survived the WAIT
 *  the probe verbs.  Do not read its key-0 store as the transport's.
 *----------------------------------------------------------------------
 XFEROUT  DS    0H
-         L     R10,ANCXLEN(,R2)   R10 = remaining = L
+         L     R10,SLXLEN(,R7)    R10 = remaining = L
          SLR   R11,R11            R11 = offset
 RDOTLP   LTR   R10,R10            bytes left? (0 -> skip)
          BNP   REPLYC
@@ -564,7 +611,7 @@ RDOTLP   LTR   R10,R10            bytes left? (0 -> skip)
 RDOTSZ   LR    R0,R1              save piece length
          L     R4,REQUBUF(,R8)    R4 = ubuf base (dst B1)
          ALR   R4,R11
-         LA    R5,ANCSTAGE(,R2)   R5 = &stage (source B2)
+         LA    R5,SLSTAGE(,R7)    R5 = &stage (source B2)
          ALR   R5,R11
          SLR   R3,R3             R3 = source key 0
          DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
@@ -576,8 +623,13 @@ REPLYC   DS    0H
          ST    R3,REQSEQ(,R8)
          SLR   R3,R3
          ST    R3,REQRC(,R8)      caller rc = OK
+*  RELEASE BY A PLAIN ST, NOT BY CS (ADR-0042 2).  The owner releasing its
+*  own slot races with nobody: no other client can claim a slot that is not
+*  FREE, and we are the only party that turns it FREE.  S/370 stores are
+*  ordered, so this is simply the last store after everything the client
+*  will read -- which is why it comes AFTER the read-out above.
          LA    R3,STFREE
-         ST    R3,ANCSTATE(,R2)   DONE -> FREE
+         ST    R3,SLSTATE(,R7)    DONE -> FREE (this slot only)
          L     R3,ANCINFL(,R2)
 UDEC1    LR    R4,R3
          BCTR  R4,0
@@ -636,7 +688,7 @@ RQEOUT   DS    0H
          SLR   R3,R3
          IC    R3,TCBPKF(,R9)     caller's key, high nibble
          LR    R9,R3              R9 = SPKA operand (borrow)
-         L     R10,ANCXLEN(,R2)   R10 = remaining = L
+         L     R10,SLXLEN(,R7)    R10 = remaining = L
          SLR   R11,R11            R11 = offset
 RQOTLP   LTR   R10,R10            bytes left? (0 -> skip)
          BNP   RQOTRQE
@@ -647,7 +699,7 @@ RQOTLP   LTR   R10,R10            bytes left? (0 -> skip)
 RQOTSZ   LR    R0,R1              save TRUE piece length
          L     R4,REQUBUF(,R8)    R4 = ubuf base (dst B1)
          ALR   R4,R11
-         LA    R5,ANCSTAGE(,R2)   R5 = &stage (source B2)
+         LA    R5,SLSTAGE(,R7)    R5 = &stage (source B2)
          ALR   R5,R11
          BCTR  R1,0               EX takes LENGTH-1
          BAL   R15,MOVEOUT        move under the caller's key
@@ -658,7 +710,7 @@ RQOTRQE  DS    0H
          L     R4,REQRQEI(,R8)    R4 = A(caller NSFRQE) dst B1
          LTR   R4,R4              no image supplied?
          BZ    REPLYC             then nothing to give back
-         LA    R5,ANCRQE(,R2)     R5 = &anchor.rqe (source B2)
+         LA    R5,SLRQE(,R7)      R5 = &slot.rqe (source B2)
          LA    R1,RQELEN-1        R1 = 63 (EX length-1)
          BAL   R15,MOVEOUT        move under the caller's key
          B     REPLYC             EXPLICIT: never fall through
@@ -705,11 +757,43 @@ MOVEOUT  DS    0H
          BR    R15
 MVCPIEC  MVC   0(1,R4),0(R5)      EX target: length from R1
 *----------------------------------------------------------------------
-*  Stage-0c probe handlers (ADR-0040 8).  Probe-only: not part of the M5-2
-*  transport.  ORPHRET is the no-WAIT return; DOQUERY reports the anchor's
-*  state to a client that cannot read CSA itself; DOUNSTG releases a slot the
-*  STC declined to release, so the probe leaves no in-flight count behind and
-*  the STC still stops clean.
+*  SLOTADR -- resolve a caller-supplied slot INDEX to a slot address.
+*
+*  In:  R3 = index, R2 = anchor.  Out: R10 = A(slot).  Clobbers R3, R4.
+*  Link R15.  On an out-of-range index it does NOT return: it branches
+*  straight to SLOTBAD, so no caller can accidentally continue with an
+*  address it never computed.
+*
+*  RANGE-CHECKED AGAINST THE ANCHOR'S OWN nslots, the same bound the claim
+*  scan uses.  An unchecked index here would compute an address outside the
+*  allocation and STORE through it -- the IPL-class overrun ADR-0039 3 names,
+*  reached from a probe verb rather than from a move.
+*
+*  The index is walked, not multiplied: at most 64 LA/BCT iterations on a
+*  probe path, and the routine then contains no multiply at all, which keeps
+*  "the scan performs no index multiply" (ADR-0042 4) literally true rather
+*  than true-of-the-scan-only.
+*----------------------------------------------------------------------
+SLOTADR  DS    0H
+         L     R4,ANCNSLOT(,R2)   the allocator's count
+         CLR   R3,R4              index < nslots?
+         BNL   SLOTBAD            no -> reject, do not compute
+         LA    R10,ANCSLOTS(,R2)  R10 = &slots[0]
+         LTR   R3,R3              index 0?
+         BZ    SLOTADX
+SLOTALP  LA    R10,SLOTLEN(,R10)  walk one slot
+         BCT   R3,SLOTALP
+SLOTADX  BR    R15
+*----------------------------------------------------------------------
+*  Probe handlers (Stage-0c ADR-0040 8, extended by M5-2b3 ADR-0042).
+*  PROBE-ONLY: none of this is part of the M5-2 transport, and all of it is
+*  due out in M5-2c -- which is a SECURITY item, not hygiene, because these
+*  verbs are reachable by an unauthorised client.
+*
+*  ORPHRET is the no-WAIT return; DOQUERY reports ONE slot's state plus the
+*  global counters to a client that cannot read CSA itself; DOUNSTG releases
+*  a named slot the STC declined to release; DOSLOT compare-and-swaps a named
+*  slot's state so a test can pre-claim.
 *----------------------------------------------------------------------
 ORPHRET  DS    0H                 orphan: no WAIT, no decrement
          SLR   R3,R3
@@ -717,8 +801,13 @@ ORPHRET  DS    0H                 orphan: no WAIT, no decrement
          SLR   R15,R15
          BR    R14
 *
-DOQUERY  DS    0H                 report state (no slot, no change)
-         L     R3,ANCSTATE(,R2)
+*  QUERY: req.slot names the slot whose state to report; the counters are
+*  global.  Changes nothing, and works while the slot is busy -- that is the
+*  state the probe needs to observe.
+DOQUERY  DS    0H
+         L     R3,REQSLOT(,R8)    which slot?
+         BAL   R15,SLOTADR        R10 = A(slot) or -> SLOTBAD
+         L     R3,SLSTATE(,R10)
          ST    R3,REQQSTA(,R8)
          L     R3,ANCINFL(,R2)
          ST    R3,REQQINF(,R8)
@@ -731,14 +820,16 @@ DOQUERY  DS    0H                 report state (no slot, no change)
          SLR   R15,R15
          BR    R14
 *
-*  UNSTAGE: FREE the slot and give one in-flight count back, but never take
-*  the count below zero -- the STC may already have reaped this request.
+*  UNSTAGE: FREE a named slot and give one in-flight count back, but never
+*  take the count below zero -- the STC may already have reaped this request.
 DOUNSTG  DS    0H
-         L     R3,ANCSTATE(,R2)
+         L     R3,REQSLOT(,R8)    which slot?
+         BAL   R15,SLOTADR        R10 = A(slot) or -> SLOTBAD
+         L     R3,SLSTATE(,R10)
          LTR   R3,R3              already FREE?
          BZ    UNSTRC             yes -> nothing to give back
          SLR   R3,R3
-         ST    R3,ANCSTATE(,R2)   -> FREE
+         ST    R3,SLSTATE(,R10)   -> FREE
          L     R3,ANCINFL(,R2)
 UNSTLP   LTR   R3,R3              never below zero
          BZ    UNSTRC
@@ -751,12 +842,38 @@ UNSTRC   DS    0H
          ST    R3,REQRC(,R8)      caller rc = OK
          SLR   R15,R15
          BR    R14
+*
+*  SLOT (M5-2b3): CS one named slot's state from req.sexpect to req.snew, so
+*  a test can pre-claim slots and then observe that the scan SKIPS exactly
+*  those, or fill the pool and observe ENOBUFS.  An unauthorised client
+*  cannot store into CSA itself; this routine (key 0) can.
+*
+*  IT IS A CS, NOT A BLIND STORE, for the same reason the reaper is: a blind
+*  "set slot i to CLAIMED" would stomp a LIVE claim if the test miscounted,
+*  and that failure would present as a pool bug.  A failed compare answers
+*  RCNOREQ, so the test asserts the pre-claim TOOK rather than inferring it
+*  from the absence of a complaint (CLAUDE.md 8.5).
+*
+*  Touches no in-flight count: it moves a slot between states, it does not
+*  make or finish a request.
+DOSLOT   DS    0H
+         L     R3,REQSLOT(,R8)    which slot?
+         BAL   R15,SLOTADR        R10 = A(slot) or -> SLOTBAD
+         L     R3,REQSEXP(,R8)    R3 = expected (comparand)
+         L     R4,REQSNEW(,R8)    R4 = new state (swap-in)
+         CS    R3,R4,SLSTATE(R10) took it?
+         BNE   SLOTBSY            no -> NOREQ, and say so
+         ST    R3,REQQSTA(,R8)    report the state we replaced
+         SLR   R3,R3
+         ST    R3,REQRC(,R8)      caller rc = OK
+         SLR   R15,R15
+         BR    R14
 *----------------------------------------------------------------------
 *  Bail paths.
 *----------------------------------------------------------------------
 WQUIES   DS    0H                 quiesce wake: give inflight back
          LA    R3,STFREE          so the shutdown drain completes
-         ST    R3,ANCSTATE(,R2)
+         ST    R3,SLSTATE(,R7)
          L     R3,ANCINFL(,R2)
 UDEC2    LR    R4,R3
          BCTR  R4,0
@@ -768,7 +885,7 @@ UDEC2    LR    R4,R3
 *
 PSTFAIL  DS    0H                 POST failed: undo publish + uinc
          LA    R3,STFREE
-         ST    R3,ANCSTATE(,R2)
+         ST    R3,SLSTATE(,R7)
          L     R3,ANCINFL(,R2)
 UDEC3    LR    R4,R3
          BCTR  R4,0
@@ -788,8 +905,37 @@ BADANC   DS    0H                 anchor bad (our caller): write rc
          ST    R15,REQRC(,R8)
          BR    R14
 *
-SLOTBSY  DS    0H                 slot busy: write rc
+SLOTBSY  DS    0H                 named slot busy: write rc
          LA    R15,RCNOREQ
+         ST    R15,REQRC(,R8)
+         BR    R14
+*
+*  Pool exhausted (M5-2b3).  Every slot taken, or an anchor claiming zero
+*  slots.  ENOBUFS and RETURN -- no spinning and no WAIT: this runs in
+*  SUPERVISOR STATE, KEY 0, INSIDE A CLIENT'S ADDRESS SPACE, on that client's
+*  TCB.  Spinning there burns a dispatchable unit at key 0 waiting on an
+*  unrelated address space; waiting there parks a task holding an SVRB on
+*  something nothing reliably posts.  A full pool is a HEALTHY stack with no
+*  slot right now, which is what nsfreqx_rc_errno turns into NSF_ENOBUFS.
+*
+*  Reached BEFORE the in-flight increment, so a caller that got no slot
+*  leaves inflight untouched -- which is what the live exhaustion check
+*  asserts.
+POOLFUL  DS    0H
+         L     R3,ANCEXH(,R2)     diagnostic: how often
+UEXHLP   LR    R4,R3
+         LA    R4,1(,R4)
+         CS    R3,R4,ANCEXH(R2)
+         BNE   UEXHLP
+         LA    R15,RCNOBUF
+         ST    R15,REQRC(,R8)
+         BR    R14
+*
+*  A probe verb named a slot index at or past nslots.  Reject WITHOUT
+*  computing an address: an unchecked index would store outside the
+*  allocation.
+SLOTBAD  DS    0H
+         LA    R15,RCINVAL
          ST    R15,REQRC(,R8)
          BR    R14
 *

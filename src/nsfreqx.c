@@ -184,12 +184,14 @@ int nsfreqx_slot_legal(UINT from, UINT to)
         /* PENDING is the publish; FREE is the bail-before-publish path. */
         return (to == NSFREQX_ST_PENDING || to == NSFREQX_ST_FREE);
     case NSFREQX_ST_PENDING:
+        /* CLAIMED is the REAPER taking ownership before it clears the slot;
+         * FREE is the STC servicing path releasing without a clear. */
         return (to == NSFREQX_ST_DONE || to == NSFREQX_ST_HELD ||
-                to == NSFREQX_ST_FREE);
+                to == NSFREQX_ST_FREE || to == NSFREQX_ST_CLAIMED);
     case NSFREQX_ST_HELD:
-        return (to == NSFREQX_ST_FREE);
+        return (to == NSFREQX_ST_FREE || to == NSFREQX_ST_CLAIMED);
     case NSFREQX_ST_DONE:
-        return (to == NSFREQX_ST_FREE);
+        return (to == NSFREQX_ST_FREE || to == NSFREQX_ST_CLAIMED);
     default:
         return 0;
     }

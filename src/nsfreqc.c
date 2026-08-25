@@ -74,15 +74,19 @@ nsfreqc_call(NSFRQE *r)
     nsfreqc_svc(&req);
 
     if (req.rc != NSFV_RC_OK) {
-        /* The transport itself failed -- the request never reached the stack
-         * (anchor gone / STC quiescing / slot busy). Report an API failure
-         * rather than leaving the caller's block holding whatever it had.
-         * ESHUTDOWN, not a new errno: the frozen NSFRQE layout is unaffected
-         * either way, but adding to the errno set is a scope question, and
-         * "stack is shutting down" is the honest reading of every rc the
-         * routine can return here (CORRUPT / NOREQ / INVALID). */
+        /* The transport itself failed -- the request never reached the stack.
+         * Report an API failure rather than leaving the caller's block holding
+         * whatever it had.
+         *
+         * WHICH failure matters since M5-2b3 (ADR-0042 7).  Before the pool
+         * every rc meant "no STC / stack shutting down" and all of them mapped
+         * to ESHUTDOWN.  Exhaustion breaks that: a full pool is a HEALTHY,
+         * running stack that has no slot right now, and telling the
+         * application ESHUTDOWN would tell it to give up where the correct
+         * answer is to retry.  nsfreqx_rc_errno is that mapping, host-pinned
+         * by TSTREQX so the distinction cannot quietly collapse back. */
         r->retcode = NSF_RETERR;
-        r->errno_  = NSF_ESHUTDOWN;
+        r->errno_  = nsfreqx_rc_errno(req.rc);
         return;
     }
 
@@ -105,6 +109,7 @@ nsfreqc_init(void)
     memset(&req, 0, sizeof(req));
     memcpy(req.eye, NSFV_REQ_EYE, 4);
     req.func = NSFV_REQ_QUERY;
+    req.slot = 0;               /* QUERY names a slot since b3; 0 always exists */
     req.rc   = -1;
 
     nsfreqc_svc(&req);

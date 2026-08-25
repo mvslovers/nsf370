@@ -835,7 +835,12 @@ sources = ["samples/nsftecho.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c",
 name = "NSFV"
 startup = "crt1"
 ac = 1
-sources = ["src/nsfv.c"]
+# nsfreqx.c comes along for the SLOT-POOL ARITHMETIC only (M5-2b3, ADR-0042):
+# the probe STC classifies client liveness with the same host-pinned
+# nsfreqx_classify the production STC uses, rather than carrying a second
+# hand-written copy of that truth table. It is pure C with no dependencies --
+# no CSA, no SVC, no keys -- so it adds nothing else to this module.
+sources = ["src/nsfv.c", "src/nsfreqx.c"]
 
 # -- M5 Stage-0a' the private SVC routine (NSFVSVC) ---------------------------
 # The routine a stolen SVC slot dispatches, in the CALLER's address space, to

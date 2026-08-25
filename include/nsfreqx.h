@@ -247,9 +247,19 @@ int nsfreqx_slot_action(UINT state, int verdict,
  *   CLAIMED -> FREE      SVC routine, bail before publishing (POST failed)
  *   PENDING -> DONE      STC, serviced
  *   PENDING -> HELD      STC, client liveness UNKNOWN
- *   PENDING -> FREE      STC, reaping a DEAD client
  *   HELD    -> FREE      UNSTAGE, or a later reap
  *   DONE    -> FREE      SVC routine, releasing its own slot
+ *   P/H/D   -> CLAIMED   THE REAPER taking ownership (see below)
+ *   CLAIMED -> FREE      also the reaper's release, after it has cleared
+ *
+ * CLAIMED MEANS "OWNED, NOT AVAILABLE" -- not "owned by a client".  The
+ * reaper is an owner too, and it has to be: reclaiming a slot means CLEARING
+ * a dead client's data out of CSA, and clearing storage it does not yet own
+ * is precisely the race the CS is there to prevent.  So the reap is two
+ * moves, not one: CS from the observed state to CLAIMED (which no other
+ * party can claim), then clear, then a plain store to FREE.  Reaping
+ * straight to FREE would open a window in which a new client claims the slot
+ * and starts staging into storage the reaper is still wiping.
  *
  * Everything else is illegal, and the illegal ones are the interesting ones:
  * FREE -> PENDING would publish a slot nobody claimed, and CLAIMED -> DONE

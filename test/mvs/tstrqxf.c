@@ -153,6 +153,7 @@
  * THE RED LINE IS UNCHANGED: the client is UNAUTHORISED and never self-auths.
  */
 #include "nsfvsvc.h"
+#include "nsfreqx.h"   /* NSFREQX_GUARD -- the per-slot guard word */
 #include "nsfreq.h"         /* NSFRQE -- the 64-byte image the request carries */
 #include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                      */
 #include <clibtry.h>        /* ___try -- capture the abend, no dump            */
@@ -241,11 +242,12 @@ xf_req_init(NSFV_REQ *req, UINT func)
 }
 
 static int
-xf_query(UINT *state, UINT *infl, UINT *reap)
+xf_query_slot(UINT idx, UINT *state, UINT *infl, UINT *reap)
 {
     NSFV_REQ req;
 
     xf_req_init(&req, NSFV_REQ_QUERY);
+    req.slot = idx;                 /* QUERY names a slot since M5-2b3      */
     nsfv_svc_issue(&req);
     if (state) *state = req.qstate;
     if (infl)  *infl  = req.qinfl;
@@ -254,12 +256,37 @@ xf_query(UINT *state, UINT *infl, UINT *reap)
 }
 
 static int
+xf_query(UINT *state, UINT *infl, UINT *reap)
+{
+    return xf_query_slot(0u, state, infl, reap);
+}
+
+static int
 xf_unstage(void)
 {
     NSFV_REQ req;
 
     xf_req_init(&req, NSFV_REQ_UNSTAGE);
+    req.slot = 0u;
     nsfv_svc_issue(&req);
+    return req.rc;
+}
+
+/* The SLOT probe verb (M5-2b3): CS one named slot from `expect` to `set`.
+ * PROBE SCAFFOLDING, due out in M5-2c.  Returns the router rc -- NSFV_RC_OK
+ * when the compare took, NSFV_RC_NOREQ when it did not, so a test can assert
+ * the pre-claim HAPPENED instead of inferring it. */
+static int
+xf_slot_cas(UINT idx, UINT expect, UINT set, UINT *replaced)
+{
+    NSFV_REQ req;
+
+    xf_req_init(&req, NSFV_REQ_SLOT);
+    req.slot    = idx;
+    req.sexpect = expect;
+    req.snew    = set;
+    nsfv_svc_issue(&req);
+    if (replaced) *replaced = req.qstate;
     return req.rc;
 }
 
@@ -359,27 +386,26 @@ xf_hop(const char *name, int (*body)(void), void *in, int *failed)
  * path.  Same contract as this file's CC 20 skip code, applied to the
  * routine's own evidence.  The assertions want 1; the PRINTED line is what
  * makes 1/2/1/1 and 1/0/1/1 distinguishable to a human reading the spool. */
-static UINT g_sv[5];
+static UINT g_pool_ver;
+static UINT g_pool_n;
+static UINT g_pool_guards;      /* slots whose guard word is stamped        */
 
-static const char *
-xf_state(UINT v)
-{
-    switch (v) {
-    case 1u:  return "ran+passed";
-    case 2u:  return "RAN+FAILED";
-    case 0u:  return "NEVER WRITTEN";
-    default:  return "?? unexpected";
-    }
-}
-
+/* (C) read the pool's published shape out of CSA, key 8, read-only -- exactly
+ * as (B) already proved works on this block. */
 static int
-t_read_save(void)
+t_read_pool(void)
 {
-    const volatile UINT *p = (const volatile UINT *)&g_anchor->csasave[0];
-    int                  i;
+    const volatile NSFV_ANCHOR *a = (const volatile NSFV_ANCHOR *)g_anchor;
+    UINT i;
 
-    for (i = 0; i < 5; i++) {
-        g_sv[i] = p[i];
+    g_pool_ver    = a->version;
+    g_pool_n      = a->nslots;
+    g_pool_guards = 0;
+    for (i = 0; i < g_pool_n && i < NSFV_NSLOTS; i++) {
+        if (memcmp((const void *)g_anchor->slots[i].rqe_guard,
+                   NSFREQX_GUARD, NSFREQX_GUARDLEN) == 0) {
+            g_pool_guards++;
+        }
     }
     return 0;
 }
@@ -594,7 +620,11 @@ main(void)
     }
 
     g_anchor = (NSFV_ANCHOR *)anch;
-    g_stagep = (volatile unsigned char *)&g_anchor->stage[XF_STAGE_OFF];
+    /* Slot 0's staging (M5-2b3): still NSF's OWN scratch, which is what makes
+     * pointing ubuf at it safe -- a window that failed to take performs a
+     * byte-identical round trip inside stage[] rather than clobbering anything
+     * that matters. */
+    g_stagep = (volatile unsigned char *)&g_anchor->slots[0].stage[XF_STAGE_OFF];
     printf("  anchor = %08X, target = &stage[%u] = %08X, len = %u\n",
            (unsigned)g_anchor, (unsigned)XF_STAGE_OFF, (unsigned)g_stagep,
            (unsigned)XF_STAGE_LEN);
@@ -720,69 +750,105 @@ main(void)
              "the slot is FREE again (UNSTAGE reaches a PUBLISHED slot)");
 
     /* ==================================================================== *
-     * (C) M5-2b2: the POST save area is PER-INVOCATION.  A POSITIVE check.
+     * (C) M5-2b3: THE SLOT POOL IS REAL.  A POSITIVE check.
      *
-     * Every gate in the set already runs through DOPOST, so a WRONG area that
-     * MVS merely happens not to use would pass all of them -- and the first
-     * attempt at b2 proved that is not theoretical: it put the save area in
-     * the CLIENT's own storage (A(SVRB) taken from R5, which RQEIN clobbers)
-     * and every gate stayed green while the routine scribbled over the test's
-     * variables.  So the routine records what it observed and (C) reads it
-     * back out of CSA -- read-only, from key 8, exactly as (B) already proved
-     * works on this block.
+     * This part used to read back b2's five save-area self-check words.  That
+     * evidence has been collected -- the SVRB's RBEXSAVE is a genuine
+     * per-invocation area, a canary survives both the POST and the WAIT -- it
+     * is recorded in ADR-0038, and carrying five stores and three CLCs per
+     * request forever to re-prove it was not worth the hot path (issue #61).
      *
-     * (B)'s request is the invocation reported on: it reached DOPOST, posted,
-     * waited and was serviced.  QUERY and UNSTAGE branch out BEFORE the
-     * slot-take, so neither goes through DOPOST nor disturbs the evidence.
+     * So the part is CONVERTED, not deleted: the same SHAPE of evidence
+     * (stamp something, read it back, prove it took) aimed at what is now
+     * unproven.  Every gate in the set runs through the claim, so a pool that
+     * is subtly wrong -- a stride the assembler and C disagree about -- would
+     * pass all of them while the routine wrote into the wrong slot.
+     *
+     * THE STRIDE CROSS-CHECK IS THE POINT.  The C side computes &slots[i] from
+     * sizeof(NSFV_SLOT); the assembler walks LA Rn,SLOTLEN(,Rn).  Those are two
+     * hand-maintained numbers in two languages, and NOTHING ELSE IN THE SUITE
+     * COMPARES THEM -- a size assert cannot, because both sides would still be
+     * internally consistent.  Here the routine is asked to change slot i and
+     * the test reads slot i back through the C struct: they agree, or the two
+     * strides differ and this is the only place that says so.
      * ==================================================================== */
-    printf("\n--- (C) M5-2b2: the POST save area is per-invocation ---\n");
+    printf("\n--- (C) M5-2b3: the slot pool is real ---\n");
 
     failed = 0;
-    (void)xf_hop("SAVE", t_read_save, NULL, &failed);
-    CHECK(failed == 0, "the ANCSAVE self-check words are readable from key 8");
-    printf("  area   = %08X\n", (unsigned)g_sv[0]);
-    printf("  stamp  = %u (%s)\n",  (unsigned)g_sv[1], xf_state(g_sv[1]));
-    printf("  postok = %u (%s)\n",  (unsigned)g_sv[2], xf_state(g_sv[2]));
-    printf("  waitok = %u (%s)\n",  (unsigned)g_sv[3], xf_state(g_sv[3]));
-    printf("  regok  = %u (%s)\n",  (unsigned)g_sv[4], xf_state(g_sv[4]));
-    printf("  key: 1 = ran and passed | 2 = ran and FAILED (the sentinel was"
-           " dead) |\n");
-    printf("       0 = NEVER WRITTEN (control did not get there -- a"
-           " different fault)\n");
-    wtof("TSTRQXF: (C) area=%08X %u/%u/%u/%u (1=pass 2=fail 0=unwritten)",
-         (unsigned)g_sv[0], (unsigned)g_sv[1], (unsigned)g_sv[2],
-         (unsigned)g_sv[3], (unsigned)g_sv[4]);
+    (void)xf_hop("POOL", t_read_pool, NULL, &failed);
+    CHECK(failed == 0, "the pool header is readable from key 8");
+    printf("  version = %u (expected %u)\n",
+           (unsigned)g_pool_ver, (unsigned)NSFV_ANCHOR_VER);
+    printf("  nslots  = %u (expected %u)\n",
+           (unsigned)g_pool_n, (unsigned)NSFV_NSLOTS);
+    printf("  slots with a stamped guard word: %u of %u\n",
+           (unsigned)g_pool_guards, (unsigned)g_pool_n);
+    wtof("TSTRQXF: (C) ver=%u nslots=%u guards=%u",
+         (unsigned)g_pool_ver, (unsigned)g_pool_n, (unsigned)g_pool_guards);
 
-    CHECK(g_sv[0] != 0u, "the routine recorded the save area it claimed");
-    CHECK(g_sv[0] < (UINT)(void *)g_anchor
-          || g_sv[0] >= (UINT)(void *)g_anchor + sizeof(NSFV_ANCHOR),
-          "the save area is OUTSIDE the anchor (no longer shared CSA)");
-    /* And outside the CLIENT too -- the first attempt's failure mode was a
-     * save area inside our own storage, which is neither shared CSA nor
-     * per-invocation, and which no "outside the anchor" test would catch. */
-    CHECK(g_sv[0] < (UINT)(void *)&g_image
-          || g_sv[0] >= (UINT)(void *)&g_image + 4096u,
-          "the save area is NOT in the client's own storage either");
+    CHECK_EQ((long)g_pool_ver, (long)NSFV_ANCHOR_VER,
+             "the anchor carries the layout version the routine checks");
+    CHECK_EQ((long)g_pool_n, (long)NSFV_NSLOTS,
+             "the allocator published the slot count the scan is bounded by");
+    /* Not "the first one" and not "at least one": ALL of them.  A wrong slot
+     * stride on the C side would leave guards landing at addresses the loop
+     * does not look at, so this is a statement about the whole array. */
+    CHECK_EQ((long)g_pool_guards, (long)NSFV_NSLOTS,
+             "EVERY slot's guard word is stamped (the array is really 64 slots"
+             " at the stride C computes)");
 
-    /* Each wants 1.  A 2 means the check ran and the sentinel was dead; a 0
-     * means the check never ran at all -- read the printed key above before
-     * chasing either. */
-    CHECK_EQ((long)g_sv[1], 1L,
-             "the sentinel stamp took at all (before the POST) [2=stamp failed,"
-             " 0=never reached]");
-    CHECK_EQ((long)g_sv[2], 1L,
-             "POST half: the sentinel survived the branch POST [2=clobbered by"
-             " the POST, 0=never reached]");
-    CHECK_EQ((long)g_sv[3], 1L,
-             "WAIT half: the sentinel survived the WAIT -- a task switch, the"
-             " STC's cross-AS POST and an SVC 1 [2=clobbered, 0=never reached]");
-    /* +16 is 1-or-never-written by construction: reaching the store IS the
-     * pass, because the post-WAIT eyecatcher CLC it sits behind needs both a
-     * good R2 and a good R6.  So 0 here means control did not arrive. */
-    CHECK_EQ((long)g_sv[4], 1L,
-             "REGISTER half: the restored R2 and R6 both still work, so the"
-             " 16 bytes actually stored into came back -- not just the tail"
-             " [0=never reached; this word has no failure state]");
+    /* ---- the stride cross-check: does the ASSEMBLER agree with C? -------
+     * Ask the routine to move a named slot FREE -> HELD, then read that slot
+     * back through the C struct.  If the assembler's SLOTLEN differed from
+     * sizeof(NSFV_SLOT), the routine would have changed a DIFFERENT address
+     * and the read-back would still say FREE.
+     *
+     * Slot 3, not slot 0: at slot 0 the two strides cannot disagree, because
+     * index 0 needs no walk at all.  A test that only ever touched slot 0
+     * would pass with ANY stride -- which is the whole failure this check
+     * exists to catch. */
+    {
+        UINT before = 99u, after = 99u, replaced = 99u;
+        int  crc;
+
+        (void)xf_query_slot(3u, &before, NULL, NULL);
+        CHECK_EQ((long)before, (long)NSFV_REQ_FREE,
+                 "stride check: slot 3 starts FREE");
+
+        crc = xf_slot_cas(3u, NSFV_REQ_FREE, NSFV_REQ_HELD, &replaced);
+        /* Assert the pre-set TOOK.  The verb is a CS precisely so this is an
+         * observation and not an inference (CLAUDE.md 8.5). */
+        CHECK_EQ((long)crc, (long)NSFV_RC_OK,
+                 "stride check: the SLOT verb's compare-and-swap took");
+        CHECK_EQ((long)replaced, (long)NSFV_REQ_FREE,
+                 "stride check: it replaced the state we predicted");
+
+        after = g_anchor->slots[3].req_state;      /* read through the C struct */
+        printf("  slot 3 via C after the routine set it: %u (want %u)\n",
+               (unsigned)after, (unsigned)NSFV_REQ_HELD);
+        CHECK_EQ((long)after, (long)NSFV_REQ_HELD,
+                 "STRIDE CROSS-CHECK: the assembler's SLOTLEN walk and C's"
+                 " &slots[3] are the same address");
+
+        /* And put it back, so the pool is left exactly as it was found. */
+        crc = xf_slot_cas(3u, NSFV_REQ_HELD, NSFV_REQ_FREE, NULL);
+        CHECK_EQ((long)crc, (long)NSFV_RC_OK, "stride check: slot 3 restored");
+        CHECK_EQ((long)g_anchor->slots[3].req_state, (long)NSFV_REQ_FREE,
+                 "stride check: slot 3 reads FREE again");
+    }
+
+    /* ---- the range check rejects instead of computing an address -------- */
+    {
+        UINT dummy = 0;
+        int  brc   = xf_query_slot(NSFV_NSLOTS, &dummy, NULL, NULL);
+
+        CHECK_EQ((long)brc, (long)NSFV_RC_INVALID,
+                 "an index AT nslots is rejected (not an off-by-one into the"
+                 " word past the array)");
+        brc = xf_query_slot(0xFFFFu, &dummy, NULL, NULL);
+        CHECK_EQ((long)brc, (long)NSFV_RC_INVALID,
+                 "a wild index is rejected without computing an address");
+    }
 
     /* ---- the transport still works end to end -------------------------- */
     rc = xf_query(&st2, &in2, &rp2);

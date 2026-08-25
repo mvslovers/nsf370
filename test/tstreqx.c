@@ -382,6 +382,14 @@ int main(void)
                  1L, "legal: HELD -> FREE (unstaged)");
         CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_DONE, NSFREQX_ST_FREE),
                  1L, "legal: DONE -> FREE (the owner releases)");
+        /* The reaper takes ownership before clearing -- clearing storage it
+         * does not own is the race the CS exists to prevent. */
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_PENDING, NSFREQX_ST_CLAIMED),
+                 1L, "legal: PENDING -> CLAIMED (the reaper takes ownership)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_HELD, NSFREQX_ST_CLAIMED),
+                 1L, "legal: HELD -> CLAIMED (the reaper)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_DONE, NSFREQX_ST_CLAIMED),
+                 1L, "legal: DONE -> CLAIMED (the reaper)");
 
         /* The illegal ones are the interesting ones. */
         CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_FREE, NSFREQX_ST_PENDING),

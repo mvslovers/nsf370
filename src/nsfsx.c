@@ -28,12 +28,11 @@
 #include <ihascvt.h>          /* SCVT (scvtsvct), SVCTABLE, SVCENTRY           */
 #include <ihaasvt.h>          /* ASVT (asvtmaxu, asvtenty) -- liveness guard   */
 
-#define NSFSX_ASVT_AVAIL  0x80000000U   /* ASVTAVAI: the entry is free         */
-
-/* Client-liveness verdicts (ADR-0040, used as proven -- not redesigned). */
-#define NSFSX_CL_LIVE     0
-#define NSFSX_CL_DEAD     1
-#define NSFSX_CL_UNKNOWN  2
+/* Shutdown drain (issue #55).  Same shape and cadence as the probe STC's
+ * nsfv_drain: nudge, poll to a ceiling, settle, re-check. */
+#define NSFSX_DRAIN_POLL    10U  /* 0.10 s per poll                            */
+#define NSFSX_DRAIN_MAX    100U  /* 100 * 0.10 s = 10 s ceiling                */
+#define NSFSX_DRAIN_SETTLE  20U  /* 0.20 s after inflight reaches zero         */
 
 /* --------------------------------------------------------------------------
  * Transport state.  Single client / single slot BY CONSTRUCTION (ADR-0041 3):
@@ -50,9 +49,16 @@ static int           g_svc_stolen;
 /* The executive's wake target: STC-private, key 8 (ADR-0041 addendum). */
 static NSFECB        g_wake_ecb;
 
-/* The request the executive is working on, and whether one is in flight. */
+/* The request the executive is working on, and whether one is in flight.
+ *
+ * ONE at a time, deliberately (ADR-0042 10).  b3 makes the CLAIM concurrent --
+ * 64 clients can have requests outstanding -- but SERVICE stays serialised:
+ * one private NSFRQE, one busy flag, and a record of WHICH SLOT is being
+ * served, because the drain can no longer assume there is only one.
+ * Concurrent service is b4. */
 static NSFRQE        g_priv;
 static int           g_busy;
+static NSFV_SLOT    *g_busy_slot;
 
 /* ==========================================================================
  * CSA anchor
@@ -68,13 +74,24 @@ nsfsx_anchor_alloc(void)
     if (anchor) {
         memset(anchor, 0, sizeof(NSFV_ANCHOR));
         memcpy(anchor->eye, "NSFVANCR", 8);
-        anchor->version   = 1;
+        unsigned i;
+
+        anchor->version   = NSFV_ANCHOR_VER;
         anchor->flags     = NSFV_ANCHOR_ACTIVE;
-        anchor->req_state = NSFV_REQ_FREE;
         anchor->server_ascb = __ascb(0);
-        /* Stamp the RQE-slot guard once, here, under the same key window as
-        ** every other key-0 store. Checked before every dispatch. */
-        memcpy(anchor->rqe_guard, NSFREQX_GUARD, NSFREQX_GUARDLEN);
+        /* PUBLISH THE SLOT COUNT (ADR-0042 6).  The SVC routine bounds its
+        ** scan by THIS field, never by its own EQU: the party that knows how
+        ** much storage exists is the party that allocated it, and NSFVSVC is
+        ** a separate load module that can be stale against this one. */
+        anchor->nslots    = NSFV_NSLOTS;
+        anchor->exhausted = 0;
+        /* Stamp every slot's guard once, here, under the same key window as
+        ** every other key-0 store.  Checked before every dispatch.  memset
+        ** already left the states FREE, which is the value the claim CS
+        ** compares against. */
+        for (i = 0; i < NSFV_NSLOTS; i++)
+            memcpy(anchor->slots[i].rqe_guard, NSFREQX_GUARD,
+                   NSFREQX_GUARDLEN);
     }
     __prob(savekey, NULL);
     return anchor;
@@ -94,6 +111,46 @@ nsfsx_anchor_free(void)
     freemain(g_anchor);
     __prob(savekey, NULL);
     g_anchor = NULL;
+}
+
+/* ==========================================================================
+ * Largest contiguous SP=241 block still available, in bytes.
+ *
+ * b0 measured CSA TOTAL (2064 KB on MVSCE) and a FLOOR on the largest
+ * contiguous block -- its doubling search was capped at 1 MB and never failed,
+ * so it never reported what was actually free.  This closes that gap in the
+ * direction that matters: run AFTER the pool is taken, it says how much
+ * headroom is left once NSF has had its 134 KB.
+ *
+ * Safe because getmain RETURNS NULL on failure rather than abending -- which
+ * nsfsx_anchor_alloc already depends on.  Doubling, then a binary refine, and
+ * every probe block is freed again immediately.  Caller must be in key 0.
+ * ========================================================================== */
+#define NSFSX_PROBE_CAP  (2048U * 1024U)    /* stop above any plausible CSA   */
+
+static unsigned
+nsfsx_csa_largest(void)
+{
+    unsigned lo = 0;
+    unsigned hi;
+    void    *p;
+
+    /* Double until it fails: lo is the last size that worked. */
+    for (hi = 4096U; hi <= NSFSX_PROBE_CAP; hi <<= 1) {
+        p = getmain(hi, 241);
+        if (!p) break;
+        freemain(p);
+        lo = hi;
+    }
+    if (hi > NSFSX_PROBE_CAP) return lo;    /* more than we care to measure   */
+
+    /* Refine between lo (works) and hi (does not), to 4 KB. */
+    while (hi - lo > 4096U) {
+        unsigned mid = lo + ((hi - lo) >> 1);
+        p = getmain(mid, 241);
+        if (p) { freemain(p); lo = mid; } else { hi = mid; }
+    }
+    return lo;
 }
 
 /* ==========================================================================
@@ -216,40 +273,63 @@ nsfsx_svc_restore(void)
  * Caller must already be in key 0.
  * ========================================================================== */
 static int
-nsfsx_client_state(void)
+nsfsx_client_state(const NSFV_SLOT *slot)
 {
-    CVT      *cvt;
-    ASVT     *asvt;
-    unsigned  asid;
-    unsigned  entry;
+    CVT  *cvt;
+    ASVT *asvt;
 
-    if (!g_anchor->req_ascb) return NSFSX_CL_UNKNOWN;
+    /* The POINTER CHASE is platform and stays here; the ARITHMETIC -- the
+    ** range check, the asid-1 index, the AVAIL bit, the address compare and
+    ** all four verdicts -- is nsfreqx_classify, host-pinned by TSTREQX.  That
+    ** split is what turned this function per-slot without re-deriving the
+    ** truth table by hand, which is where a classifier gets copied wrong. */
     cvt = CVTPTR;
-    if (!cvt) return NSFSX_CL_UNKNOWN;
+    if (!cvt) return NSFREQX_CL_UNKNOWN;
     asvt = (ASVT *)cvt->cvtasvt;
-    if (!asvt || asvt->asvtmaxu == 0U) return NSFSX_CL_UNKNOWN;
-    asid = g_anchor->req_asid;
-    if (asid == 0U || asid > asvt->asvtmaxu) return NSFSX_CL_UNKNOWN;
+    if (!asvt) return NSFREQX_CL_UNKNOWN;
 
-    entry = (unsigned)asvt->asvtenty[asid - 1U];
-    if (entry & NSFSX_ASVT_AVAIL)                  return NSFSX_CL_DEAD;
-    if (entry != (unsigned)g_anchor->req_ascb)     return NSFSX_CL_DEAD;
-    return NSFSX_CL_LIVE;
+    return nsfreqx_classify((UINT)slot->req_ascb, slot->req_asid,
+                            (UINT)asvt->asvtmaxu,
+                            (const UINT *)asvt->asvtenty);
 }
 
-/* Reap a request whose client the guard proved DEAD: give the in-flight count
- * back, clear the staging, release the slot -- and never post into it. */
-static void
-nsfsx_reap(void)
+/* Reap a slot whose client the guard proved DEAD: give the in-flight count
+ * back, clear the staging, release the slot -- and never post into it.
+ *
+ * TWO MOVES, NOT ONE, AND THE FIRST IS A CS (ADR-0042 2).  This is the one
+ * real ABA in the design: between observing a slot as reapable and reclaiming
+ * it, the owner can complete, release, and a NEW client can claim it.  A blind
+ * store to FREE would then hand one slot to two owners -- the worst failure
+ * this layer can produce.
+ *
+ * So: CS the observed state to CLAIMED, which no other party can claim; only
+ * then clear; then a plain store to FREE.  Reaping STRAIGHT to FREE would be
+ * a smaller version of the same bug -- a new client could claim the slot and
+ * begin staging into storage this function is still wiping.
+ *
+ * A failed compare means the world changed underneath us and the request we
+ * meant to reap no longer exists: tolerate it and move on, changing nothing.
+ * Returns 1 if the slot was reclaimed.  Caller must already be in key 0. */
+static int
+nsfsx_reap(NSFV_SLOT *slot, UINT observed)
 {
-    memset(g_anchor->stage, 0, sizeof(g_anchor->stage));
-    memset(g_anchor->rqe,   0, sizeof(g_anchor->rqe));
-    g_anchor->xlen      = 0;
-    g_anchor->req_ascb  = NULL;
-    g_anchor->req_asid  = 0;
-    g_anchor->req_state = NSFV_REQ_FREE;
+    UINT want = observed;
+
+    if (__cas((unsigned *)&slot->req_state, (unsigned *)&want,
+              NSFV_REQ_CLAIMED) != 0) {
+        return 0;               /* raced -- not ours to reclaim               */
+    }
+
+    memset(slot->stage, 0, sizeof(slot->stage));
+    memset(slot->rqe,   0, sizeof(slot->rqe));
+    slot->xlen     = 0;
+    slot->req_ascb = NULL;
+    slot->req_asid = 0;
+    slot->req_state = NSFV_REQ_FREE;    /* plain ST: we own it outright now   */
+
     if (g_anchor->inflight) g_anchor->inflight--;
     g_anchor->reaped++;
+    return 1;
 }
 
 /* ==========================================================================
@@ -260,8 +340,25 @@ nsfsx_start(void)
 {
     g_anchor = nsfsx_anchor_alloc();
     if (!g_anchor) {
-        wtof("NSF045E CANNOT ALLOCATE CSA ANCHOR");
+        /* NAME THE SIZE.  The pool is one contiguous SP=241 GETMAIN, and the
+        ** operator's next question is always "how much did it want" -- the
+        ** same posture as the SVC slot steal, which refuses rather than
+        ** falling back. */
+        wtof("NSF045E CANNOT ALLOCATE %u BYTES OF CSA FOR %u REQUEST SLOTS"
+             " -- NSFS NOT STARTED",
+             (unsigned)sizeof(NSFV_ANCHOR), (unsigned)NSFV_NSLOTS);
         return -1;
+    }
+    {   /* Diagnostic: what is left after we took ours. */
+        unsigned char savekey;
+        if (!__super(PSWKEY0, &savekey)) {
+            unsigned left = nsfsx_csa_largest();
+            __prob(savekey, NULL);
+            wtof("NSF055I CSA POOL %u BYTES (%u SLOTS X %u)"
+                 " -- LARGEST FREE BLOCK NOW %u",
+                 (unsigned)sizeof(NSFV_ANCHOR), (unsigned)NSFV_NSLOTS,
+                 (unsigned)sizeof(NSFV_SLOT), left);
+        }
     }
     if (nsfsx_router_load()) {
         nsfsx_anchor_free();
@@ -294,26 +391,93 @@ nsfsx_start(void)
     return 0;
 }
 
+/* Wait out a fraction of a second without a busy loop. */
+static void
+nsfsx_pause(unsigned hsec)
+{
+    NSFECB local = 0;               /* nobody posts it; the timer does        */
+    ecb_timed_wait((ECB *)&local, hsec, 0);
+}
+
+/* Nudge EVERY parked client so it bails out of its WAIT.
+ *
+ * The probe STC's single-slot nsfv_wake_parked does not survive the pool: with
+ * 64 clients claimed and service serialised, 63 are legitimately parked at any
+ * moment, and a drain that woke one and then timed out on the other 63 would
+ * look exactly like a hang.  Caller must already be in key 0. */
+static void
+nsfsx_wake_parked(void)
+{
+    unsigned i;
+
+    for (i = 0; i < g_anchor->nslots; i++) {
+        NSFV_SLOT *slot = &g_anchor->slots[i];
+
+        if (slot->req_state == NSFV_REQ_FREE) continue;
+        if (!slot->req_ascb)                  continue;
+        if (nsfsx_client_state(slot) != NSFREQX_CL_LIVE) continue;
+        __xmpost(slot->req_ascb, &slot->reply_ecb, 0);
+    }
+}
+
+/* Drain to zero in flight, or report that we could not (issue #55).
+ *
+ * Before b3 this did not exist and nsfsx_stop freed the CSA unconditionally.
+ * That was INERT while nothing read the count -- and the pool makes it live,
+ * not only after a fault: 63 clients parked on their own reply ECBs during
+ * ORDINARY operation all count as in flight, and freeing CSA underneath them
+ * is a wild-store generator in every one of their address spaces.
+ *
+ * The asymmetry decides it, the same way it decides the death guard:
+ * retaining CSA leaks 134 KB until IPL; freeing it under a live client
+ * corrupts that client. */
+static int
+nsfsx_drain_inflight(void)
+{
+    volatile unsigned *inflight = &g_anchor->inflight;
+    unsigned           n;
+
+    for (n = 0; n < NSFSX_DRAIN_MAX; n++) {
+        if (*inflight == 0) {
+            nsfsx_pause(NSFSX_DRAIN_SETTLE);
+            return (*inflight == 0);     /* re-check: catch a racing entry    */
+        }
+        nsfsx_wake_parked();
+        nsfsx_pause(NSFSX_DRAIN_POLL);
+    }
+    return 0;
+}
+
 void
 nsfsx_stop(void)
 {
     unsigned char savekey;
+    int           drained = 0;
 
     /* Reverse of start: no new client can enter once the slot is restored. */
     nsfsx_svc_restore();
 
     if (g_anchor && !__super(PSWKEY0, &savekey)) {
-        /* Clear ACTIVE so a client parked in the routine bails, invalidate the
-        ** published ECB address (this storage dies with the STC), and wake
-        ** anyone waiting so they are not stranded. */
+        /* Clear ACTIVE so a client parked in the routine bails, and invalidate
+        ** the published ECB address (this storage dies with the STC), BEFORE
+        ** nudging: a woken client must find the anchor already quiescing. */
         g_anchor->flags &= ~NSFV_ANCHOR_ACTIVE;
         g_anchor->server_ecb_ptr = NULL;
-        if (g_anchor->req_ascb && nsfsx_client_state() == NSFSX_CL_LIVE)
-            __xmpost(g_anchor->req_ascb, &g_anchor->reply_ecb, 0);
+        drained = nsfsx_drain_inflight();
         __prob(savekey, NULL);
     }
+
     nsfsx_router_unload();
-    nsfsx_anchor_free();
+
+    if (g_anchor && !drained) {
+        /* RETAIN the CSA.  Leaking it costs 134 KB until IPL; freeing it with
+        ** clients still inside the routine corrupts their address spaces. */
+        wtof("NSF054W %u CLIENT(S) STILL IN FLIGHT -- CSA RETAINED",
+             g_anchor->inflight);
+        g_anchor = NULL;
+    } else {
+        nsfsx_anchor_free();
+    }
     wtof("NSF044I NSFS TRANSPORT STOPPED");
 }
 
@@ -337,10 +501,29 @@ nsfsx_ecb(void)
 int
 nsfsx_pending(void)
 {
+    unsigned i;
+
     if (g_anchor == NULL) return 0;
-    if (!g_busy && g_anchor->req_state == NSFV_REQ_PENDING) return 1;
-    if (g_busy && (g_priv.ecb & NSFECB_POSTED)) return 1;
+    if (g_busy) return (g_priv.ecb & NSFECB_POSTED) ? 1 : 0;
+    for (i = 0; i < g_anchor->nslots; i++) {
+        if (g_anchor->slots[i].req_state == NSFV_REQ_PENDING) return 1;
+    }
     return 0;
+}
+
+/* The first slot with a published request, or NULL.  Lowest index first, so
+ * the order is defined rather than incidental -- a test that pre-claims slots
+ * and predicts which one serves next needs this to be a rule. */
+static NSFV_SLOT *
+nsfsx_next_pending(void)
+{
+    unsigned i;
+
+    for (i = 0; i < g_anchor->nslots; i++) {
+        if (g_anchor->slots[i].req_state == NSFV_REQ_PENDING)
+            return &g_anchor->slots[i];
+    }
+    return NULL;
 }
 
 /* ==========================================================================
@@ -360,110 +543,133 @@ nsfsx_drain(void)
 
     if (g_anchor == NULL) return;
 
-    /* ---- 1. Finish a completed request ------------------------------------
+    /* ---- 1. Finish the completed request ----------------------------------
      * The executive has run soc_complete on the private copy, so retcode /
      * errno_ / the fn-specific outputs are set.  Copy ONLY those back
      * (ADR-0041 4 -- notably NOT ubuf, which holds the STC's staging address
-     * in the private copy), re-check the client, then reply. */
-    if (g_busy && (g_priv.ecb & NSFECB_POSTED)) {
+     * in the private copy), re-check the client, then reply.
+     *
+     * g_busy_slot, not a scan: the slot being served is the one that was
+     * PENDING when we took it, and it is no longer PENDING now. */
+    if (g_busy && g_busy_slot && (g_priv.ecb & NSFECB_POSTED)) {
+        NSFV_SLOT *slot = g_busy_slot;
+
         if (__super(PSWKEY0, &savekey)) return;
 
-        nsfreqx_result_out((NSFRQE *)g_anchor->rqe, &g_priv);
+        nsfreqx_result_out((NSFRQE *)slot->rqe, &g_priv);
 
-        cl    = nsfsx_client_state();
-        lascb = (unsigned)g_anchor->req_ascb;
-        lasid = g_anchor->req_asid;
+        cl    = nsfsx_client_state(slot);
+        lascb = (unsigned)slot->req_ascb;
+        lasid = slot->req_asid;
 
-        if (cl == NSFSX_CL_DEAD) {
-            nsfsx_reap();
-            g_busy = 0;
-        } else if (cl == NSFSX_CL_UNKNOWN) {
+        if (cl == NSFREQX_CL_DEAD) {
+            nsfsx_reap(slot, NSFV_REQ_PENDING);
+        } else if (cl == NSFREQX_CL_UNKNOWN) {
             /* Neither post nor reap.  HELD keeps the slot busy to the SVC
             ** routine while taking it off this drain's work list. */
-            g_anchor->req_state = NSFV_REQ_HELD;
-            g_busy = 0;
+            slot->req_state = NSFV_REQ_HELD;
         } else {
             g_anchor->served++;
-            g_anchor->req_state = NSFV_REQ_DONE;
-            __xmpost(g_anchor->req_ascb, &g_anchor->reply_ecb, 0);
-            g_busy = 0;
+            slot->req_state = NSFV_REQ_DONE;
+            __xmpost(slot->req_ascb, &slot->reply_ecb, 0);
         }
+        g_busy      = 0;
+        g_busy_slot = NULL;
         __prob(savekey, NULL);
 
-        if (cl == NSFSX_CL_DEAD)
+        if (cl == NSFREQX_CL_DEAD)
             wtof("NSF050I CLIENT DEAD (ASCB=%08X ASID=%04X) -- REQUEST REAPED",
                  lascb, lasid);
-        else if (cl == NSFSX_CL_UNKNOWN)
+        else if (cl == NSFREQX_CL_UNKNOWN)
             wtof("NSF051W CLIENT LIVENESS UNKNOWN (ASCB=%08X ASID=%04X)"
                  " -- REQUEST HELD", lascb, lasid);
     }
 
-    /* ---- 2. Take a newly arrived request ---------------------------------- */
-    if (!g_busy && g_anchor->req_state == NSFV_REQ_PENDING) {
-        int ok      = 0;
-        int corrupt = 0;
+    /* ---- 2. Take the next published request --------------------------------
+     * ONE at a time (ADR-0042 10): the pool makes the CLAIM concurrent, not
+     * the service.  A second PENDING slot simply waits for the next pass, with
+     * its client parked on its own reply ECB. */
+    if (!g_busy) {
+        NSFV_SLOT *slot = nsfsx_next_pending();
+        int        act;
+        int        ok      = 0;
+        int        corrupt = 0;
 
+        if (slot == NULL) return;
         if (__super(PSWKEY0, &savekey)) return;
 
-        cl    = nsfsx_client_state();
-        lascb = (unsigned)g_anchor->req_ascb;
-        lasid = g_anchor->req_asid;
+        cl    = nsfsx_client_state(slot);
+        lascb = (unsigned)slot->req_ascb;
+        lasid = slot->req_asid;
 
-        if (cl == NSFSX_CL_DEAD) {
-            nsfsx_reap();
-        } else if (cl == NSFSX_CL_UNKNOWN) {
-            g_anchor->req_state = NSFV_REQ_HELD;
-        } else if (!nsfreqx_guard_ok(g_anchor->rqe_guard)) {
-            /* The guard word sits between the RQE slot and server_ecb_ptr, so
-            ** a clobbered guard means the 64-byte RQE move overran -- and the
-            ** next thing past it is the pointer we POST through. Reap; never
-            ** dispatch a slot we cannot trust, and above all never POST. */
-            corrupt = 1;
-            nsfsx_reap();
-        } else if (g_anchor->server_ecb_ptr != (void *)&g_wake_ecb) {
-            /* The pointer itself. The guard catches an overrun that stops
-            ** short of it; this catches corruption OF it, whatever the cause --
-            ** and we are the one party that knows the correct value. A
-            ** corrupted pointer is still non-zero, so the SVC routine would
-            ** happily key-0 POST to a wrong address in our private storage. */
-            corrupt = 2;
-            nsfsx_reap();
-        } else if (g_anchor->xfunc == NSFV_REQ_RQE) {
-            /* Hop 2: the CSA slot into the STC-private copy.  ubuf is rewritten
-            ** to the staging buffer and ulen to the count ACTUALLY staged --
-            ** anchor->xlen, the very value the SVC routine's clamp used for the
-            ** move, so the op reports what really crossed (ADR-0041 2). */
-            nsfreqx_dispatch_in(&g_priv, (const NSFRQE *)g_anchor->rqe,
-                                g_anchor->stage, g_anchor->xlen);
-            ok = 1;
-        } else {
-            /* A probe verb reached the production STC: reject cleanly rather
-            ** than fall through into a dispatch (the probe STC serves those). */
-            g_anchor->req_state = NSFV_REQ_HELD;
+        /* THE DECISION IS THE HOST-PINNED TRUTH TABLE, not a chain of ifs
+        ** re-derived per slot (TSTREQX sweeps all 60 rows and asserts exactly
+        ** one of them dispatches).  guard_ok covers an overrun of the 64-byte
+        ** RQE move -- the guard sits between the slot's RQE and its staging --
+        ** and the pointer check covers corruption OF the word we POST through,
+        ** which we are the one party that knows the correct value for. */
+        act = nsfreqx_slot_action(slot->req_state, cl,
+                                  nsfreqx_guard_ok(slot->rqe_guard),
+                                  g_anchor->server_ecb_ptr ==
+                                      (void *)&g_wake_ecb);
+
+        switch (act) {
+        case NSFREQX_ACT_REAP:
+            nsfsx_reap(slot, NSFV_REQ_PENDING);
+            break;
+        case NSFREQX_ACT_HOLD:
+            slot->req_state = NSFV_REQ_HELD;
+            break;
+        case NSFREQX_ACT_REAP_BAD:
+            /* Never dispatch a slot we cannot trust, and above all never
+            ** POST: a corrupted wake-ECB pointer is still non-zero, so the SVC
+            ** routine would happily key-0 POST to a wrong address inside our
+            ** private storage. */
+            corrupt = nsfreqx_guard_ok(slot->rqe_guard) ? 2 : 1;
+            nsfsx_reap(slot, NSFV_REQ_PENDING);
+            break;
+        case NSFREQX_ACT_DISPATCH:
+            if (slot->xfunc == NSFV_REQ_RQE) {
+                /* Hop 2: the CSA slot into the STC-private copy.  ubuf is
+                ** rewritten to THIS SLOT's staging buffer and ulen to the count
+                ** actually staged -- the very value the SVC routine's clamp
+                ** used for the move, so the op reports what really crossed
+                ** (ADR-0041 2). */
+                nsfreqx_dispatch_in(&g_priv, (const NSFRQE *)slot->rqe,
+                                    slot->stage, slot->xlen);
+                ok = 1;
+            } else {
+                /* A probe verb reached the production STC: reject cleanly
+                ** rather than fall through into a dispatch. */
+                slot->req_state = NSFV_REQ_HELD;
+            }
+            break;
+        default:
+            break;
         }
         __prob(savekey, NULL);
 
         if (corrupt == 1)
-            wtof("NSF052E ANCHOR RQE GUARD CLOBBERED -- REQUEST REAPED,"
+            wtof("NSF052E SLOT RQE GUARD CLOBBERED -- REQUEST REAPED,"
                  " NOT POSTED");
         else if (corrupt == 2)
             wtof("NSF053E ANCHOR WAKE-ECB POINTER CORRUPT (%08X, EXPECTED"
                  " %08X) -- REQUEST REAPED, NOT POSTED",
                  (unsigned)g_anchor->server_ecb_ptr, (unsigned)&g_wake_ecb);
-        else if (cl == NSFSX_CL_DEAD)
+        else if (cl == NSFREQX_CL_DEAD)
             wtof("NSF050I CLIENT DEAD (ASCB=%08X ASID=%04X) -- REQUEST REAPED",
                  lascb, lasid);
-        else if (cl == NSFSX_CL_UNKNOWN)
+        else if (cl == NSFREQX_CL_UNKNOWN)
             wtof("NSF051W CLIENT LIVENESS UNKNOWN (ASCB=%08X ASID=%04X)"
                  " -- REQUEST HELD", lascb, lasid);
 
         if (ok) {
             /* Dispatch OUTSIDE the key window: the executive runs in its own
             ** key 8 on ordinary storage, exactly as in Phase 1.  It may
-            ** complete the request inline (soc_complete POSTs g_priv.ecb) or
-            ** park it -- either way step 1 above picks it up, this pass or a
-            ** later one. */
-            g_busy = 1;
+            ** complete inline (soc_complete POSTs g_priv.ecb) or park it --
+            ** either way step 1 picks it up, this pass or a later one. */
+            g_busy      = 1;
+            g_busy_slot = slot;
             nsfreq_dispatch(&g_priv);
         }
     }
