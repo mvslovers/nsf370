@@ -231,6 +231,313 @@ int main(void)
                  "a NULL guard answers 'not ok' and does not fault");
     }
 
+    /* ======================================================================
+     * M5-2b3 (ADR-0042): the slot pool's pure arithmetic.
+     * ====================================================================== */
+
+    /* ---- the client-death classifier, every row ---------------------------
+     * A fake ASVT: three ASIDs, so the asid-1 index has a NEIGHBOUR on both
+     * sides to be wrong about. The addresses are distinct and non-zero. */
+    {
+        UINT enty[3];
+        const UINT ascb1 = 0x00F10000u;     /* the AS occupying ASID 1        */
+        const UINT ascb2 = 0x00F20000u;     /* ASID 2                          */
+        const UINT ascb3 = 0x00F30000u;     /* ASID 3                          */
+
+        enty[0] = ascb1;
+        enty[1] = ascb2;
+        enty[2] = ascb3;
+
+        /* LIVE: the recorded ASCB is the one the ASVT names for that ASID. */
+        CHECK_EQ((long)nsfreqx_classify(ascb1, 1u, 3u, enty),
+                 (long)NSFREQX_CL_LIVE, "classify: ASID 1 matching ASCB is LIVE");
+        CHECK_EQ((long)nsfreqx_classify(ascb3, 3u, 3u, enty),
+                 (long)NSFREQX_CL_LIVE, "classify: the last ASID is LIVE too");
+
+        /* THE asid-1 INDEX. Off by one in either direction turns each of these
+         * into a mismatch against a NEIGHBOUR's ASCB and answers DEAD, so a
+         * passing pair pins the index rather than merely exercising it. */
+        CHECK_EQ((long)nsfreqx_classify(ascb2, 2u, 3u, enty),
+                 (long)NSFREQX_CL_LIVE, "classify: asid-1 indexes entry[1] for ASID 2");
+        CHECK_EQ((long)nsfreqx_classify(ascb1, 2u, 3u, enty),
+                 (long)NSFREQX_CL_DEAD,
+                 "classify: ASID 2 holding ASID 1's ASCB is DEAD (reuse)");
+
+        /* DEAD by the availability bit: the ASID is free, the AS ended. */
+        enty[1] = NSFREQX_ASVT_AVAIL;
+        CHECK_EQ((long)nsfreqx_classify(ascb2, 2u, 3u, enty),
+                 (long)NSFREQX_CL_DEAD, "classify: ASVTAVAI set is DEAD");
+        /* The AVAIL bit wins even when the rest of the word still matches --
+         * a freed entry can keep its old address bits. */
+        enty[1] = NSFREQX_ASVT_AVAIL | ascb2;
+        CHECK_EQ((long)nsfreqx_classify(ascb2, 2u, 3u, enty),
+                 (long)NSFREQX_CL_DEAD,
+                 "classify: AVAIL wins over a still-matching address");
+        enty[1] = ascb2;
+
+        /* DEAD by ASID reuse -- the row an ASID-only check cannot see. */
+        CHECK_EQ((long)nsfreqx_classify(0x00FF0000u, 2u, 3u, enty),
+                 (long)NSFREQX_CL_DEAD, "classify: a different ASCB at that ASID is DEAD");
+
+        /* UNKNOWN, all four ways in. */
+        CHECK_EQ((long)nsfreqx_classify(0u, 1u, 3u, enty),
+                 (long)NSFREQX_CL_UNKNOWN, "classify: no recorded ASCB is UNKNOWN");
+        CHECK_EQ((long)nsfreqx_classify(ascb1, 1u, 3u, NULL),
+                 (long)NSFREQX_CL_UNKNOWN, "classify: no ASVT is UNKNOWN");
+        CHECK_EQ((long)nsfreqx_classify(ascb1, 1u, 0u, enty),
+                 (long)NSFREQX_CL_UNKNOWN, "classify: a zero ASVTMAXU is UNKNOWN");
+        CHECK_EQ((long)nsfreqx_classify(ascb1, 0u, 3u, enty),
+                 (long)NSFREQX_CL_UNKNOWN, "classify: a zero ASID is UNKNOWN");
+        CHECK_EQ((long)nsfreqx_classify(ascb1, 4u, 3u, enty),
+                 (long)NSFREQX_CL_UNKNOWN, "classify: an ASID past ASVTMAXU is UNKNOWN");
+        /* The boundary itself is IN range -- an off-by-one here would make the
+         * highest ASID permanently unclassifiable. */
+        CHECK_EQ((long)nsfreqx_classify(ascb3, 3u, 3u, enty),
+                 (long)NSFREQX_CL_LIVE, "classify: ASID == ASVTMAXU is in range");
+    }
+
+    /* ---- the drain's per-slot decision ------------------------------------ */
+    {
+        /* Only PENDING is a work item. */
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_FREE,
+                     NSFREQX_CL_LIVE, 1, 1), (long)NSFREQX_ACT_NONE,
+                 "slot_action: FREE is not a work item");
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_CLAIMED,
+                     NSFREQX_CL_LIVE, 1, 1), (long)NSFREQX_ACT_NONE,
+                 "slot_action: CLAIMED is mid-claim, not a work item");
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_DONE,
+                     NSFREQX_CL_LIVE, 1, 1), (long)NSFREQX_ACT_NONE,
+                 "slot_action: DONE belongs to its owner");
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_HELD,
+                     NSFREQX_CL_LIVE, 1, 1), (long)NSFREQX_ACT_NONE,
+                 "slot_action: HELD is off the work list");
+
+        /* The happy path. */
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_PENDING,
+                     NSFREQX_CL_LIVE, 1, 1), (long)NSFREQX_ACT_DISPATCH,
+                 "slot_action: a live client with trusted storage dispatches");
+
+        /* Liveness first. */
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_PENDING,
+                     NSFREQX_CL_DEAD, 1, 1), (long)NSFREQX_ACT_REAP,
+                 "slot_action: a dead client is reaped");
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_PENDING,
+                     NSFREQX_CL_UNKNOWN, 1, 1), (long)NSFREQX_ACT_HOLD,
+                 "slot_action: an unknown client is held");
+
+        /* Storage trust, once the client is known live. */
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_PENDING,
+                     NSFREQX_CL_LIVE, 0, 1), (long)NSFREQX_ACT_REAP_BAD,
+                 "slot_action: a clobbered guard reaps, never dispatches");
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_PENDING,
+                     NSFREQX_CL_LIVE, 1, 0), (long)NSFREQX_ACT_REAP_BAD,
+                 "slot_action: a corrupt wake-ECB pointer reaps");
+
+        /* ORDER IS THE CONTRACT: a dead client is reaped whether or not its
+         * storage survived. If trust were tested first these would answer
+         * REAP_BAD, which is a different message and a different diagnosis. */
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_PENDING,
+                     NSFREQX_CL_DEAD, 0, 0), (long)NSFREQX_ACT_REAP,
+                 "slot_action: liveness is decided BEFORE storage trust");
+        CHECK_EQ((long)nsfreqx_slot_action(NSFREQX_ST_PENDING,
+                     NSFREQX_CL_UNKNOWN, 0, 0), (long)NSFREQX_ACT_HOLD,
+                 "slot_action: an unknown client is held, not reaped, even so");
+
+        /* No path answers DISPATCH for anything but a live, trusted PENDING --
+         * the property that matters is that nothing ELSE reaches the executive. */
+        {
+            UINT st[5];
+            int  v, g, pt, i;
+            int  dispatches = 0;
+            st[0] = NSFREQX_ST_FREE;    st[1] = NSFREQX_ST_PENDING;
+            st[2] = NSFREQX_ST_DONE;    st[3] = NSFREQX_ST_HELD;
+            st[4] = NSFREQX_ST_CLAIMED;
+            for (i = 0; i < 5; i++)
+                for (v = 0; v <= 2; v++)
+                    for (g = 0; g <= 1; g++)
+                        for (pt = 0; pt <= 1; pt++)
+                            if (nsfreqx_slot_action(st[i], v, g, pt) ==
+                                NSFREQX_ACT_DISPATCH)
+                                dispatches++;
+            CHECK_EQ((long)dispatches, 1L,
+                     "slot_action: exactly ONE of 60 input rows dispatches");
+        }
+    }
+
+    /* ---- the slot state machine ------------------------------------------- */
+    {
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_FREE, NSFREQX_ST_CLAIMED),
+                 1L, "legal: FREE -> CLAIMED (the CS claim)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_CLAIMED, NSFREQX_ST_PENDING),
+                 1L, "legal: CLAIMED -> PENDING (publish last)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_CLAIMED, NSFREQX_ST_FREE),
+                 1L, "legal: CLAIMED -> FREE (bail before publishing)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_PENDING, NSFREQX_ST_DONE),
+                 1L, "legal: PENDING -> DONE (serviced)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_PENDING, NSFREQX_ST_HELD),
+                 1L, "legal: PENDING -> HELD (liveness unknown)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_PENDING, NSFREQX_ST_FREE),
+                 1L, "legal: PENDING -> FREE (reaped)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_HELD, NSFREQX_ST_FREE),
+                 1L, "legal: HELD -> FREE (unstaged)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_DONE, NSFREQX_ST_FREE),
+                 1L, "legal: DONE -> FREE (the owner releases)");
+        /* The reaper takes ownership before clearing -- clearing storage it
+         * does not own is the race the CS exists to prevent. */
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_PENDING, NSFREQX_ST_CLAIMED),
+                 1L, "legal: PENDING -> CLAIMED (the reaper takes ownership)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_HELD, NSFREQX_ST_CLAIMED),
+                 1L, "legal: HELD -> CLAIMED (the reaper)");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_DONE, NSFREQX_ST_CLAIMED),
+                 1L, "legal: DONE -> CLAIMED (the reaper)");
+
+        /* The illegal ones are the interesting ones. */
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_FREE, NSFREQX_ST_PENDING),
+                 0L, "illegal: FREE -> PENDING publishes an unclaimed slot");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_CLAIMED, NSFREQX_ST_DONE),
+                 0L, "illegal: CLAIMED -> DONE services mid-staging");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_FREE, NSFREQX_ST_DONE),
+                 0L, "illegal: FREE -> DONE");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_DONE, NSFREQX_ST_PENDING),
+                 0L, "illegal: DONE -> PENDING re-publishes a served slot");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_HELD, NSFREQX_ST_PENDING),
+                 0L, "illegal: HELD -> PENDING puts it back on the work list");
+        CHECK_EQ((long)nsfreqx_slot_legal(NSFREQX_ST_FREE, NSFREQX_ST_FREE),
+                 0L, "illegal: FREE -> FREE is not a transition");
+        CHECK_EQ((long)nsfreqx_slot_legal(99u, NSFREQX_ST_FREE),
+                 0L, "illegal: an unknown state has no legal successor");
+    }
+
+    /* ---- the reap predicate ----------------------------------------------- */
+    {
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_DEAD, 1),
+                 1L, "reap: a DEAD client's PENDING slot");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_HELD, NSFREQX_CL_DEAD, 1),
+                 1L, "reap: a DEAD client's HELD slot");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_DONE, NSFREQX_CL_DEAD, 1),
+                 1L, "reap: a DEAD client's DONE slot");
+
+        /* Never on a verdict that is not DEAD -- the safe-side asymmetry --
+         * PROVIDED the storage is trustworthy. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_LIVE, 1),
+                 0L, "reap: never a LIVE client whose storage is intact");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING,
+                                       NSFREQX_CL_UNKNOWN, 1),
+                 0L, "reap: never an UNKNOWN client whose storage is intact");
+
+        /* THE SECOND REASON. Untrusted storage reclaims regardless of liveness,
+         * because the slot must never be POSTed through -- and a LIVE verdict
+         * alone would have refused. This is the row that made the predicate's
+         * old two-argument shape unusable at one of its three call sites. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_LIVE, 0),
+                 1L, "reap: untrusted storage reclaims even a LIVE client");
+        /* But NOT an UNKNOWN one, and this row is the point of the third
+         * state: HOLD already guarantees "never POST through this slot"
+         * without freeing anything, so reclaiming would buy nothing and risk
+         * a LIVE client's storage. Asserted here because the agreement sweep
+         * below CAUGHT me writing the opposite. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING,
+                                       NSFREQX_CL_UNKNOWN, 0),
+                 0L, "reap: untrusted storage does NOT reclaim an UNKNOWN"
+                     " client -- HOLD covers it without freeing");
+
+        /* Never a state the client has not published -- and untrusted storage
+         * does NOT override that: an unpublished slot is not a request. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_CLAIMED, NSFREQX_CL_DEAD, 1),
+                 0L, "reap: never CLAIMED (excluded HERE and nowhere else --"
+                     " a CLAIMED slot IS classifiable)");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_CLAIMED, NSFREQX_CL_LIVE, 0),
+                 0L, "reap: never CLAIMED, not even on untrusted storage");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_FREE, NSFREQX_CL_DEAD, 1),
+                 0L, "reap: never FREE -- it is not a request");
+    }
+
+    /* ---- the two helpers must not contradict each other -------------------
+     * THIS is what keeps one rule from becoming two, and getting the invariant
+     * right took a failing run: the two functions answer DIFFERENT questions.
+     *
+     *   nsfreqx_slot_action  what the drain does with a slot ON THIS PASS --
+     *                        and only a PENDING slot is a work item at all.
+     *   nsfreqx_reap_ok      whether a slot MAY be reclaimed, ever -- which is
+     *                        also true of a dead client's HELD or DONE slot,
+     *                        reached by the completion path rather than by the
+     *                        scan.
+     *
+     * So the relationship is an IMPLICATION, not an equality: every reap the
+     * action helper MANDATES must be one the predicate PERMITS. The converse
+     * is false by design, and asserting equality here failed on 14 of 60 rows
+     * -- all of them HELD/DONE slots the predicate rightly allows and the
+     * per-pass dispatcher rightly ignores. */
+    {
+        UINT st[5];
+        int  v, g, pt, i;
+        int  mismatches = 0;
+
+        st[0] = NSFREQX_ST_FREE;    st[1] = NSFREQX_ST_PENDING;
+        st[2] = NSFREQX_ST_DONE;    st[3] = NSFREQX_ST_HELD;
+        st[4] = NSFREQX_ST_CLAIMED;
+
+        for (i = 0; i < 5; i++) {
+            for (v = 0; v <= 2; v++) {
+                for (g = 0; g <= 1; g++) {
+                    for (pt = 0; pt <= 1; pt++) {
+                        int act  = nsfreqx_slot_action(st[i], v, g, pt);
+                        int acts = (act == NSFREQX_ACT_REAP ||
+                                    act == NSFREQX_ACT_REAP_BAD);
+                        int pred = nsfreqx_reap_ok(st[i], v, (g && pt));
+                        /* mandated => permitted */
+                        if (acts && !pred) mismatches++;
+                    }
+                }
+            }
+        }
+        CHECK_EQ((long)mismatches, 0L,
+                 "every reap slot_action MANDATES is one reap_ok PERMITS,"
+                 " across all 60 inputs (the drain can never order a reclaim"
+                 " the predicate forbids)");
+    }
+
+    /* ---- the rc -> errno mapping ------------------------------------------ */
+    {
+        CHECK_EQ((long)nsfreqx_rc_errno(NSFREQX_RC_OK), 0L,
+                 "rc_errno: OK is not an error");
+        /* THE reason this helper exists: a full pool is a healthy stack, and
+         * ENOBUFS tells the application to retry where ESHUTDOWN tells it to
+         * give up. */
+        CHECK_EQ((long)nsfreqx_rc_errno(NSFREQX_RC_NOBUF), (long)NSF_ENOBUFS,
+                 "rc_errno: a full pool is ENOBUFS, not ESHUTDOWN");
+        CHECK(NSF_ENOBUFS != NSF_ESHUTDOWN,
+              "rc_errno: the two answers are actually distinguishable");
+        CHECK_EQ((long)nsfreqx_rc_errno(NSFREQX_RC_INVALID), (long)NSF_ESHUTDOWN,
+                 "rc_errno: INVALID is ESHUTDOWN");
+        CHECK_EQ((long)nsfreqx_rc_errno(NSFREQX_RC_CORRUPT), (long)NSF_ESHUTDOWN,
+                 "rc_errno: CORRUPT is ESHUTDOWN");
+        CHECK_EQ((long)nsfreqx_rc_errno(NSFREQX_RC_NOREQ), (long)NSF_ESHUTDOWN,
+                 "rc_errno: NOREQ is ESHUTDOWN");
+        CHECK_EQ((long)nsfreqx_rc_errno(4242), (long)NSF_ESHUTDOWN,
+                 "rc_errno: an unknown rc still answers something safe");
+    }
+
+    /* ---- the guard word is now checked PER SLOT ---------------------------
+     * nsfreqx_guard_ok already takes the guard's address, so the pool needs no
+     * new entry point -- but "already works" is an inference, so check that two
+     * independent slot guards are judged independently. */
+    {
+        char ga[NSFREQX_GUARDLEN];
+        char gb[NSFREQX_GUARDLEN];
+
+        memcpy(ga, NSFREQX_GUARD, NSFREQX_GUARDLEN);
+        memcpy(gb, NSFREQX_GUARD, NSFREQX_GUARDLEN);
+        CHECK_EQ((long)nsfreqx_guard_ok(ga), 1L, "per-slot guard: slot A intact");
+        CHECK_EQ((long)nsfreqx_guard_ok(gb), 1L, "per-slot guard: slot B intact");
+
+        gb[0] = (char)0;                /* only slot B is clobbered            */
+        CHECK_EQ((long)nsfreqx_guard_ok(ga), 1L,
+                 "per-slot guard: slot A survives slot B being clobbered");
+        CHECK_EQ((long)nsfreqx_guard_ok(gb), 0L,
+                 "per-slot guard: slot B is judged clobbered");
+    }
+
     /* ---- NULL guards: every entry is defensive ------------------------- */
     nsfreqx_slot_in(NULL, &caller);
     nsfreqx_slot_in(&slot, NULL);

@@ -77,11 +77,27 @@
 /* --- Anchor state -------------------------------------------------------- */
 #define NSFV_ANCHOR_ACTIVE  0x80000000U
 
-/* Single request-slot lifecycle.  Each transition has ONE writer, so the two
- * address spaces never both write the same field:
- *   FREE -> PENDING : SVC routine (client side), key 0
- *   PENDING -> DONE : STC service (server side), key 0
- *   DONE -> FREE    : SVC routine (client side), key 0                       */
+/* Slot lifecycle (M5-2b3 / ADR-0042).  Was a single request area with one
+ * writer per transition; it is now a per-slot state word claimed by CS, and
+ * CLAIMED is the new state between FREE and PENDING -- the window in which a
+ * client owns the slot but has not finished staging into it:
+ *   FREE    -> CLAIMED : SVC routine, BY CS -- the only contended transition
+ *   CLAIMED -> PENDING : SVC routine, after staging: publish LAST
+ *   CLAIMED -> FREE    : SVC routine, bail before publishing (POST failed)
+ *   PENDING -> DONE    : STC service
+ *   PENDING -> HELD    : STC, client liveness UNKNOWN
+ *   PENDING -> FREE    : STC, reaping a DEAD client -- BY CS (see below)
+ *   DONE    -> FREE    : SVC routine, releasing its own slot (plain ST)
+ * The truth table is host-pinned by nsfreqx_slot_legal (TSTREQX); these
+ * values are mirrored there as NSFREQX_ST_* so the pure half builds on the
+ * host, where there is no CSA.
+ *
+ * THREE WRITERS, THREE RULES (ADR-0042 2).  Claim by CS: two clients may
+ * reach the same word.  Release by plain ST: the owner races with nobody.
+ * REAP by CS: the STC is a THIRD OBSERVER, and between reading a slot as
+ * reapable and reclaiming it the owner can complete, release, and a new
+ * client can claim -- a blind store there hands one slot to two owners.
+ * "ABA-free by construction" covers the claim, not the reaper.            */
 #define NSFV_REQ_FREE     0U
 #define NSFV_REQ_PENDING  1U
 #define NSFV_REQ_DONE     2U
@@ -93,11 +109,31 @@
  * "drain while PENDING" loop would spin on a request it refuses to service. */
 #define NSFV_REQ_HELD     3U
 
+/* CLAIMED (M5-2b3): the claim CS succeeded, staging is in progress, nothing is
+ * published yet.  Busy to another client, and NOT a work item to the STC.
+ *
+ * IT IS NEVER REAPED, AND NOT BECAUSE IT CANNOT BE CLASSIFIED.  The identity
+ * (req_ascb / req_asid) is recorded at the CLAIM -- immediately after the CS,
+ * before any staging (asm/nsfvsvc.asm, CLAIMOK) -- so a CLAIMED slot has a
+ * real ASCB and nsfreqx_classify will answer LIVE or DEAD for it.  Safety
+ * rests on nsfreqx_reap_ok excluding CLAIMED EXPLICITLY, and on nothing else.
+ *
+ * Consequence, stated rather than fixed: a client whose address space ends
+ * between the claim and the publish leaks that slot until the STC stops.  It
+ * is classifiable, so that leak is closable -- but not by widening the
+ * predicate: the two-move reap proves exclusivity with CS(observed ->
+ * CLAIMED), and when the observed state already IS CLAIMED that compare
+ * succeeds trivially and cannot tell "I took it" from "the live owner still
+ * has it".  Closing it needs a distinct fourth state (CS(CLAIMED -> REAPING)).
+ * That belongs with fault recovery, which ADR-0039/0041 still name as open. */
+#define NSFV_REQ_CLAIMED  4U
+
 /* Router return codes (-> R15 to the SVC issuer). */
 #define NSFV_RC_OK        0
 #define NSFV_RC_INVALID   4    /* bad R1 magic (not our caller)              */
 #define NSFV_RC_CORRUPT   8    /* anchor gone / server quiescing             */
-#define NSFV_RC_NOREQ     12   /* request slot busy (concurrent client)      */
+#define NSFV_RC_NOREQ     12   /* named slot busy (probe paths only, b3)     */
+#define NSFV_RC_NOBUF     16   /* POOL FULL -- every slot taken (ADR-0042 7) */
 
 /* Request functions.  ECHO (Stage-0a') increments the token; XFER (Stage-0b)
  * moves a ubuf app->stack->app through a CSA staging buffer with a byte-wise
@@ -128,6 +164,21 @@
 #define NSFV_REQ_QUERY    4U
 #define NSFV_REQ_UNSTAGE  5U
 
+/* PROBE-ONLY, added by M5-2b3 (ADR-0042).  SLOT compare-and-swaps ONE named
+ * slot's state from `sexpect` to `snew`, so a test can pre-claim slots and
+ * then observe that the scan skips exactly those, or fill the pool and observe
+ * ENOBUFS.  An unauthorised client cannot store into CSA itself, and the
+ * routine (key 0) can.
+ *
+ * IT IS A CS, NOT A BLIND STORE, and the reason is the same one that governs
+ * the reaper: a blind "set slot i to CLAIMED" would stomp a LIVE claim if the
+ * test miscounted, and that failure would present as a pool bug.  A failed
+ * compare returns NSFV_RC_NOREQ, so the test asserts the pre-claim TOOK rather
+ * than inferring it from the absence of a complaint (CLAUDE.md 8.5).
+ *
+ * SCAFFOLDING, DUE OUT IN M5-2c -- which is a SECURITY item, not hygiene. */
+#define NSFV_REQ_SLOT     7U
+
 /* CSA staging / copy chunk = BUFLARGE (the large PBUF, ADR-0009), so M5-2's
  * marshalling copies straight into/out of 2048-byte PBUFs (ufsd used 4K -- not
  * PBUF-aligned; ADR-0039).  A ubuf > 2048 is moved in 2048-byte chunks, one
@@ -136,6 +187,27 @@
 
 /* The M5-2a request slot: one frozen NSFRQE (spec 10.4, 64 bytes on target). */
 #define NSFV_RQE_SLOT     64U
+
+/* ---- M5-2b3: the pool (ADR-0042) ---------------------------------------- */
+
+/* One slot per possible socket.  NSFSOC_MAX_DEFAULT is 64 and nsfeza.c
+ * static-asserts NSFEZA_MAXSOC against it, so 64 slots means the transport can
+ * never be the thing that runs out first. */
+#define NSFV_NSLOTS       64U
+
+/* Anchor layout version, checked by the SVC routine against its own EQU.
+ *
+ * NSFVSVC is a SEPARATE load module from NSFS, __loadhi'd into CSA, and this
+ * project has a documented way for the two to diverge: `make deploy` fails
+ * mid-chain while an STC holds NSF.LINKLIB and the run afterwards silently
+ * uses the PREVIOUSLY deployed module (CLAUDE.md 5).  A stale router against a
+ * new STC is not a wrong answer -- it is a scan striding by the wrong slot
+ * length, or walking off the end of the allocation into adjacent CSA, which is
+ * the IPL-class overrun ADR-0039 3 names.
+ *
+ * BUMP THIS WITH EVERY LAYOUT MOVE, or the check is decorative.  1 was the
+ * single-slot anchor through M5-2b2; 2 is the pool. */
+#define NSFV_ANCHOR_VER   2U
 
 /* ============================================================
  * NSFV_REQ -- the client's request block (R1 -> here at the SVC).
@@ -170,8 +242,21 @@ typedef struct nsfv_req {
                             **     rqeimg the request block.  NSFV_REQ is the
                             **     transport block, not the frozen contract, so
                             **     growing it is free; NSFRQE stays 64 B.       */
-} NSFV_REQ;                 /* +34 = 52 bytes                                */
-NSF_SIZE_ASSERT(NSFV_REQ, 52);
+    /* M5-2b3 (ADR-0042).  `slot` is IN for the probe verbs that name a slot
+    ** (SLOT / QUERY / UNSTAGE) and OUT for every real request -- the index the
+    ** scan actually claimed.  Reporting it is what makes the live reuse and
+    ** skip checks observations rather than inferences: "the same slot came
+    ** back" and "the scan stepped over the pre-claimed ones" are both
+    ** statements about this number.  `sexpect` / `snew` are the SLOT verb's
+    ** compare-and-swap operands.
+    **
+    ** NSFV_REQ is the TRANSPORT block, not the frozen contract, so growing it
+    ** is free; NSFRQE stays 64 B and untouched. */
+    UINT      slot;         /* +34 in: probe slot index; out: slot claimed    */
+    UINT      sexpect;      /* +38 SLOT probe: expected state (CS comparand)  */
+    UINT      snew;         /* +3C SLOT probe: state to set                   */
+} NSFV_REQ;                 /* +40 = 64 bytes                                */
+NSF_SIZE_ASSERT(NSFV_REQ, 64);
 NSFV_OFF_ASSERT(NSFV_REQ, func,   4);
 NSFV_OFF_ASSERT(NSFV_REQ, token,  8);
 NSFV_OFF_ASSERT(NSFV_REQ, rc,    12);
@@ -184,154 +269,153 @@ NSFV_OFF_ASSERT(NSFV_REQ, qstate, 36);
 NSFV_OFF_ASSERT(NSFV_REQ, qinfl, 40);
 NSFV_OFF_ASSERT(NSFV_REQ, qreap, 44);
 NSFV_OFF_ASSERT(NSFV_REQ, rqeimg, 48);
+NSFV_OFF_ASSERT(NSFV_REQ, slot,   52);
+NSFV_OFF_ASSERT(NSFV_REQ, sexpect, 56);
+NSFV_OFF_ASSERT(NSFV_REQ, snew,   60);
 
 /* ============================================================
- * NSFV_ANCHOR -- the CSA (SP=241, key 0) rendezvous block.
+ * NSFV_SLOT -- ONE request slot.  64 of them make the pool (M5-2b3, ADR-0042).
  *
- * ONE fixed request slot (single-task sequential probe client).  Stage-0a's
- * NSFP_ANCHOR (48 B) with two differences the SVC path forces:
- *   - the reply target is an EMBEDDED CSA ECB (reply_ecb), not a pointer to a
- *     router stack-local: the SVC routine runs supervisor / key 0 throughout,
- *     so it WAITs on a key-0 CSA ECB legally (empirical unknown #1, ADR-0038;
- *     Stage-0a's key-8-stack-ECB rule does not transfer);
- *   - csasave: an 18-word scratch save area the RENT SVC routine USED to
- *     preserve its registers across the branch POST.  **RETIRED IN M5-2b2 --
- *     the field is DEAD.  The POST save area now lives in the SVRB's own
- *     extended save area (RBEXSAVE; IHARB: RBSECPTR+X'60', 48 bytes), which
- *     the FLIH allocates per SVC invocation.**  That is exactly what this
- *     caveat asked for: two clients in two address spaces no longer compute
- *     the same address and store into it -- with no lock, no pool and no
- *     GETMAIN.  A(SVRB) is taken from TCBRBP, NOT from R5: the FLIH does set
- *     R5 = A(SVRB), but R5 is the MVCK source pointer in RQEIN/XFERIN and is
- *     clobbered long before the POST is reached.  The area is 12 words, not
- *     18, so only the FOUR registers live across the POST are saved (R2, R6
- *     the CSECT base, R8, R14) -- 16 bytes.  A canary in that area is measured
- *     to survive both the POST and the WAIT, and TSTRQXF asserts it.
- *     The field STAYS in the anchor on purpose: removing it would shift every
- *     field after it and cost a full four-gate Stage-0 round for no benefit,
- *     and b3 moves the layout substantially anyway.  Meanwhile its first five
- *     words carry b2's self-check results, which TSTRQXF reads back out of CSA.
- *     A concurrent-client POOL is still (b3) -- b2 moved the storage and proved
- *     the new home; b3 is what will exercise it.
- * Stage-0c (ADR-0040) adds req_asid -- the caller's ASID, captured at SVC entry
- * from ASCBASID (ASCB+X'24') and NOT from the request, so a client cannot forge
- * it -- and reaped, the count of requests the guard reclaimed from dead clients.
- * stage[] stays the LAST field: ADR-0039's clamp argument (an over-long ulen
- * would run MVCK off the end of stage[] into adjacent CSA) depends on it.
- * Target layout, 4-byte pointers -- 120 bytes.
+ * Everything a single client needs for a single request in flight, so that two
+ * clients share nothing but the claim discipline.  Through M5-2a all of this
+ * lived once in the anchor and a second caller was turned away at the door
+ * (RCNOREQ); the fields are the same, the ownership is not.
+ *
+ * req_state IS THE CLAIM WORD, at offset 0.  CS requires a fullword-aligned
+ * operand: the slot array starts at a multiple of 8 (the header is 48 bytes)
+ * and the slot is 2144 bytes, also a multiple of 8, so every slot -- and hence
+ * every claim word -- is doubleword aligned.  That is load-bearing, not
+ * cosmetic.
+ *
+ * 2144 BYTES, DELIBERATELY NOT PADDED TO A POWER OF TWO.  Padding to 2560 or
+ * 4096 would cost 26 KB or 120 KB of CSA to enable an index multiply the scan
+ * does not perform: it walks a POINTER (LA Rslot,SLOTLEN(,Rslot)) bounded by a
+ * count.  2144 fits an LA displacement (max 4095) and every field offset below
+ * fits base-displacement addressing off a slot-base register.
+ *
+ * stage[] STAYS LAST, as ADR-0039 requires -- but the consequence has changed
+ * and is worth stating rather than inheriting: an over-long move now runs into
+ * the NEXT SLOT'S CLAIM WORD instead of into adjacent CSA.  That is a
+ * different shape of hazard, not a smaller one; corrupting a live claim word
+ * hands one slot to two owners.  The min(ulen, 2048) clamp in the SVC routine
+ * is the only thing preventing it and is UNCHANGED from M5-2b1.  (Putting
+ * stage[] first, so an overrun would land on rqe_guard, was considered and
+ * rejected in ADR-0042: the guard is checked BEFORE dispatch against a value
+ * stamped at allocation, so a write-in overrun would be caught only on the
+ * NEXT request through that slot, if ever.)
+ * ============================================================ */
+typedef struct nsfv_slot {
+    UINT      req_state;          /* +00 THE CS CLAIM WORD (NSFV_REQ_*)       */
+    UINT      req_token;          /* +04 in: client token; out: echo (+1)     */
+    ECB       reply_ecb;          /* +08 this client's WAIT target (CSA, key 0)*/
+    void     *req_ascb;           /* +0C client ASCB (__xmpost target)        */
+    UINT      req_asid;           /* +10 client ASID (ASCBASID, ASCB+X'24')   */
+    UINT      xfunc;              /* +14 transform: NSFV_REQ_ECHO/_XFER/_RQE  */
+    UINT      xlen;               /* +18 bytes in stage[] this chunk          */
+    char      rqe[NSFV_RQE_SLOT]; /* +1C the 64-byte NSFRQE image (ADR-0041)  */
+    char      rqe_guard[4];       /* +5C NSFREQX_GUARD, per slot now          */
+    char      stage[NSFV_XFER_CHUNK]; /* +60 this client's CSA staging        */
+} NSFV_SLOT;                      /* +860 = 2144 bytes                        */
+NSF_SIZE_ASSERT(NSFV_SLOT, 2144);
+NSFV_OFF_ASSERT(NSFV_SLOT, req_token,  4);
+NSFV_OFF_ASSERT(NSFV_SLOT, reply_ecb,  8);
+NSFV_OFF_ASSERT(NSFV_SLOT, req_ascb,  12);
+NSFV_OFF_ASSERT(NSFV_SLOT, req_asid,  16);
+NSFV_OFF_ASSERT(NSFV_SLOT, xfunc,     20);
+NSFV_OFF_ASSERT(NSFV_SLOT, xlen,      24);
+NSFV_OFF_ASSERT(NSFV_SLOT, rqe,       28);
+NSFV_OFF_ASSERT(NSFV_SLOT, rqe_guard, 92);
+NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
+
+/* ============================================================
+ * NSFV_ANCHOR -- the CSA (SP=241, key 0) rendezvous block: a fixed global
+ * header followed by the slot array (M5-2b3, ADR-0042).
+ *
+ * The split is what keeps the assembler manageable.  Without it every
+ * per-slot field would need 64 EQUs or an index multiply; with it there is one
+ * set of ANC* EQUs off the anchor base and one set of SL* EQUs off a slot-base
+ * register, and the scan is a pointer walk between them.
+ *
+ * csasave[18] IS GONE.  Dead since M5-2b2 (the POST save area moved to the
+ * SVRB's RBEXSAVE), kept only because removing it would have shifted every
+ * later field for no benefit.  This is the layout move it was waiting for, and
+ * with it goes b2's five-word self-check -- one-time evidence, collected, and
+ * recorded in ADR-0038 (issue #61).
+ *
+ * nslots IS WRITTEN BY THE ALLOCATOR AND READ BY THE SCAN.  The SVC routine
+ * bounds its walk by THIS field, never by its own EQU: the party that knows
+ * how much storage exists is the party that allocated it, and a stale NSFVSVC
+ * in CSA against a newer NSFS is a real, documented divergence (see
+ * NSFV_ANCHOR_VER).
+ *
+ * Target layout, 4-byte pointers: 48-byte header + 64 x 2144 = 137,264 bytes,
+ * one contiguous SP=241 GETMAIN.  Measured on MVSCE (b0): CSA total 2064 KB,
+ * largest contiguous SP=241 GETMAIN >= 1 MB -- so the pool is 6.5 % of CSA.
  *
  * ============ ASSEMBLER MIRROR (asm/nsfvsvc.asm carries these as EQUs) ======
+ *  global header
  *   ANCEYE     EQU  0    CL8  "NSFVANCR"
- *   ANCVER     EQU  8    F
+ *   ANCVER     EQU  8    F    version -- checked against ANCVERNO
  *   ANCFLAG    EQU 12    F    ANCHOR_ACTIVE = X'80000000'
- *   ANCSECB    EQU 16    F    server_ecb  (STC WAIT target)
+ *   ANCSECB    EQU 16    F    server_ecb  (STC WAIT target, fallback)
  *   ANCSASCB   EQU 20    A    server_ascb (STC ASCB, POST target)
  *   ANCINFL    EQU 24    F    inflight
- *   ANCSTATE   EQU 28    F    req_state
- *   ANCTOKEN   EQU 32    F    req_token
- *   ANCRECB    EQU 36    F    reply_ecb   (client WAIT target, CSA)
- *   ANCRASCB   EQU 40    A    req_ascb    (client ASCB, POST target)
- *   ANCSERVED  EQU 44    F    served
- *   ANCSAVE    EQU 48    18F  DEAD since M5-2b2 (see csasave below)
- *   ANCXFUNC   EQU 120   F    transform the STC applies (ECHO / XFER)
- *   ANCXLEN    EQU 124   F    bytes in the staging buffer this chunk
- *   ANCXASID   EQU 128   F    req_asid  (client ASID, ASCBASID at ASCB+X'24')
- *   ANCREAPD   EQU 132   F    reaped    (dead requests reclaimed, diagnostic)
- *   ANCSTAGE   EQU 136   2048 CSA staging buffer (the ubuf CSA bounce)
- * ============================================================================
- * The staging buffer is CSA-shared because the STC in the OTHER address space
- * must read and write it -- it cannot live in the SVRB -- and it is still
- * single-client-sequential; M5-2 concurrency needs per-client staging
- * (ADR-0039).  NOTE: this used to read "like csasave", which is no longer true:
- * csasave was retired in M5-2b2 and the save area moved INTO the SVRB precisely
- * because nothing but the routine itself ever touches it.  stage[] is the
- * remaining shared scratch, and it is shared for a reason the save area never
- * had.
- * ============================================================ */
+ *   ANCSERVD   EQU 28    F    served
+ *   ANCREAPD   EQU 32    F    reaped
+ *   ANCSEPTR   EQU 36    A    A(STC private key-8 wake ECB)
+ *   ANCNSLOT   EQU 40    F    nslots -- THE SCAN'S BOUND
+ *   ANCEXH     EQU 44    F    exhausted (ENOBUFS count, diagnostic)
+ *   ANCSLOTS   EQU 48         the slot array base
+ *  per slot, off a slot-base register
+ *   SLSTATE    EQU  0    F    req_state -- THE CS CLAIM WORD
+ *   SLTOKEN    EQU  4    F    req_token
+ *   SLRECB     EQU  8    F    reply_ecb
+ *   SLRASCB    EQU 12    A    req_ascb
+ *   SLASID     EQU 16    F    req_asid
+ *   SLXFUNC    EQU 20    F    xfunc
+ *   SLXLEN     EQU 24    F    xlen
+ *   SLRQE      EQU 28    64   rqe
+ *   SLRQEG     EQU 92    CL4  rqe_guard
+ *   SLSTAGE    EQU 96    2048 stage
+ *   SLOTLEN    EQU 2144       one slot, the scan's stride
+ *  and the routine's own constant, which is NOT an offset:
+ *   ANCVERNO   EQU 2          == NSFV_ANCHOR_VER; the routine rejects an
+ *                                anchor whose ANCVER differs
+ * ============================================================================ */
 typedef struct nsfv_anchor {
     char      eye[8];             /* +00 "NSFVANCR"                           */
-    UINT      version;            /* +08 anchor version                      */
-    UINT      flags;              /* +0C NSFV_ANCHOR_ACTIVE                  */
-    ECB       server_ecb;         /* +10 STC WAIT target (CSA, key 0)        */
-    void     *server_ascb;        /* +14 STC ASCB (__ascb(0) at startup)    */
+    UINT      version;            /* +08 NSFV_ANCHOR_VER -- routine checks it  */
+    UINT      flags;              /* +0C NSFV_ANCHOR_ACTIVE                   */
+    ECB       server_ecb;         /* +10 STC WAIT target (CSA, key 0) -- the
+                                  **     fallback the Stage-0 probe STC uses  */
+    void     *server_ascb;        /* +14 STC ASCB (__ascb(0) at startup)      */
     UINT      inflight;           /* +18 clients executing inside the routine */
-    UINT      req_state;          /* +1C NSFV_REQ_FREE / _PENDING / _DONE    */
-    UINT      req_token;          /* +20 in: client token; out: echo (+1)    */
-    ECB       reply_ecb;          /* +24 client WAIT target (CSA, key 0)     */
-    void     *req_ascb;           /* +28 client ASCB (__xmpost target)      */
-    UINT      served;             /* +2C requests serviced (diagnostic)      */
-    UINT      csasave[18];        /* +30 DEAD since M5-2b2 (was the POST save  */
-                                  /*     area; now the SVRB's RBEXSAVE).      */
-                                  /*     Carries b2's self-check; the field   */
-                                  /*     itself comes out in b3.              */
-    UINT      xfunc;              /* +78 transform: NSFV_REQ_ECHO / _XFER     */
-    UINT      xlen;               /* +7C bytes in stage[] this chunk          */
-    UINT      req_asid;           /* +80 client ASID (ASCBASID, ASCB+X'24')   */
-    UINT      reaped;             /* +84 dead requests reclaimed (diagnostic) */
-    char      stage[NSFV_XFER_CHUNK]; /* +88 CSA staging (the ubuf bounce)   */
-    /* M5-2a request slot (ADR-0041 3): a 64-byte NSFRQE image, APPENDED after
-    ** stage[] so `stage` stays at +136 and every ANC* EQU in nsfvsvc.asm is
-    ** untouched -- the Stage-0c lesson (an asm change under a MOVED layout is
-    ** validated by re-running every stage's live gate) applies here with almost
-    ** no surface.  Declared as bytes, not as an NSFRQE: this header describes a
-    ** TARGET layout, and on the host NSFRQE inflates to 80 bytes on 8-byte
-    ** pointers.  The 64 is guaranteed where it matters by
-    ** NSF_SIZE_ASSERT(NSFRQE, 64) in nsfreq.h, which fires at cc370
-    ** cross-compile.  Single slot by construction -- the 64-slot (= MAXSOC)
-    ** pool is M5-2b. */
-    char      rqe[NSFV_RQE_SLOT];     /* +888 the M5-2a NSFRQE request slot   */
-    /* Guard word between the RQE slot and the published wake-ECB address.
-    ** Without it the two are BYTE-ADJACENT, and a one-byte overrun on the
-    ** 64-byte RQE move would write the high byte of server_ecb_ptr -- which
-    ** does not fail cleanly: the routine's LTR/BNZ still sees a non-zero
-    ** pointer, takes the key-8 branch, and issues a key-0 cross-AS POST to a
-    ** CORRUPTED address inside the STC's private storage, with no abend
-    ** guaranteed.  Host-clean, link-clean, live-wrong, aimed at the most
-    ** safety-critical word in the anchor.  Stage-0b set the precedent (a guard
-    ** byte after ulen, asserted untouched by TSTUBUF); this is the same idea
-    ** on the field that can least afford to be wrong.
-    **
-    ** NON-ZERO on purpose: a memset-zeroed anchor must be distinguishable from
-    ** a guard clobbered to zero.  Declared as CHARACTERS, not a UINT, so the
-    ** value is written and compared as a string literal and never as a
-    ** hardcoded byte value (spec 15.3 charset transparency) -- same four bytes,
-    ** readable in a dump either way. */
-    char      rqe_guard[4];           /* +8C8 NSFREQX_GUARD, checked before   */
-                                      /*      every dispatch                  */
-    /* The STC's wake ECB address, in the STC's OWN key-8 private storage
-    ** (ADR-0041 addendum).  The executive WAITs through ecb_waitlist from
-    ** PROBLEM state key 8, and a key-0 CSA ECB in that ECBLIST is a documented
-    ** abend (S047 / X'201', ufsd/docs/cross-as-reference.md), so the SVC
-    ** routine posts THIS address instead of &server_ecb.  Cross-AS POST takes
-    ** an ASCB and interprets the ECB address in that address space, so private
-    ** storage is fine -- ufsd runs the mirror image (STC -> client key-8 stack
-    ** ECB) as its final working design.
-    **
-    ** ZERO means "not published": the routine then falls back to server_ecb,
-    ** which is what the Stage-0 probe STC wants (it supervisor-WAITs on the
-    ** key-0 CSA ECB), so the four Stage-0 gates stay a regression rather than
-    ** becoming a rewrite.  Appended, never inserted (ADR-0041 3). */
-    void     *server_ecb_ptr;         /* +8CC A(STC private key-8 wake ECB)   */
-} NSFV_ANCHOR;                    /* +8D0 = 2256 bytes                        */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 2256);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, version,     8);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,      12);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb, 16);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ascb, 20);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, inflight,   24);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, req_state,  28);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, req_token,  32);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, reply_ecb,  36);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, req_ascb,   40);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, served,     44);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, csasave,    48);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, xfunc,     120);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, xlen,      124);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, req_asid,  128);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, reaped,    132);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, stage,     136);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, rqe,      2184);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, rqe_guard, 2248);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb_ptr, 2252);
+    UINT      served;             /* +1C requests serviced (diagnostic)       */
+    UINT      reaped;             /* +20 dead requests reclaimed (diagnostic) */
+    void     *server_ecb_ptr;     /* +24 A(STC private key-8 wake ECB); ZERO
+                                  **     means "not published" and the routine
+                                  **     falls back to server_ecb, which keeps
+                                  **     the four Stage-0 gates a regression
+                                  **     rather than a rewrite (ADR-0041)     */
+    UINT      nslots;             /* +28 slots actually allocated -- the bound
+                                  **     the SVC routine's scan uses          */
+    UINT      exhausted;          /* +2C times the pool was full (ENOBUFS).  A
+                                  **     pool that is regularly full is a
+                                  **     sizing fact and should not have to be
+                                  **     inferred from client-side errnos.    */
+    NSFV_SLOT slots[NSFV_NSLOTS]; /* +30 the pool                             */
+} NSFV_ANCHOR;                    /* 48 + 64*2144 = 137264 bytes              */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 137264);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, version,        8);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,         12);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb,    16);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ascb,   20);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, inflight,      24);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, served,        28);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, reaped,        32);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb_ptr, 36);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, nslots,        40);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, exhausted,     44);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, slots,         48);
 
 #endif /* NSFVSVC_H */
