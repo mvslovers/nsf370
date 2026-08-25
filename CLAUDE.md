@@ -1021,8 +1021,11 @@ points: `nsfsx_drain` never resets its wake ECB where `nsfreq_drain` does, and t
 itself, both mine:** phase 2 **starved itself** by backing off 10 ms per refusal (served 0/150 —
 which is a real property: *the scan is not a queue and makes no fairness promise*), and A asserted
 the whole pool was clean **while B was still using it** (that check belongs to whoever leaves
-last). **b4 does NOT prove:** concurrent service, hardware arbitration of a simultaneous `CS`,
-2-AS stress (**e**), fault recovery / the CLAIMED-slot leak, or #64.
+last). **b4 does NOT prove:** concurrent service; hardware arbitration of a simultaneous `CS`;
+**reaping a second client's slot WHILE a request is in service** — the very hole the probe fix
+closes went LIVE-UNEXERCISED (no `NSF050I`/`NSF051W` from NSFS all round, because nothing died
+mid-service; the decision is host-pinned and wired, and b3's live reap evidence was collected with
+nothing else in service); 2-AS stress (**e**); fault recovery / the CLAIMED-slot leak; or #64.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |

@@ -510,6 +510,14 @@ different router (00A8B248, was 00A820C8)**, with the largest free CSA block dow
 
 - **Concurrent service.** One dispatch at a time (Decision 10) is unchanged.
 - **Hardware arbitration of a simultaneous `CS`.** See §1.
+- **Reaping a second client's slot WHILE a request is in service.** This is the hole §5 exists to
+  close, and the round did not exercise it: no `NSF050I` / `NSF051W` was issued by NSFS at any
+  point, because no client died or became unclassifiable while another was being served. The
+  decision is host-pinned (`nsfreqx_actionable`, TSTREQX) and the selector is wired into both the
+  drain and the probe — but the *live* path is unexercised, and saying otherwise would be the
+  same "absence is indistinguishable from success" the checklist is about. b3's live reap
+  evidence (two `NSF050I`, one `NSF051W`) was collected with **nothing else in service**, which
+  is the case that already worked.
 - **Two-address-space stress.** Still **(e)**.
 - **Fault recovery, address validation, the CLAIMED-slot leak.** Unchanged and still open.
-- **The transport's wake latency** (§6).
+- **The transport's wake latency** (§6, issue #64).
