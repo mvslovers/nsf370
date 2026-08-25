@@ -1005,13 +1005,23 @@ anti-spin rule broken). **VALIDATED LIVE on MVSCE:** Stage-0 `TSTSVC`/`TSTMVCK`/
 batch+TSO**; startup `NSF055I CSA POOL 137272 BYTES (64 SLOTS X 2144)`. **The two-client gate:
 A CC 0000 13/13, B CC 0000 8/8** — phase 1 **150/150 requests on a slot other than 0** with
 `collisions` delta exactly 150; phase 2 **served 1375 / refused 1625 / wrong 0**, `exhausted`
-152→7927; pool **64/64 FREE** at exit; SOLO negative control `collisions 9888→9888`, and the probe
-STC's own stats independently `COLL=0` over 126 sequential requests. **The retain branch RAN:**
+152→7927; pool **64/64 FREE** at exit. **The negative control and the gate ran on the SAME STC
+instance, minutes apart, off the same counter baseline** — SOLO `collisions 9888→9888`, then the
+gate `9888→10038` — which is stronger than two runs on two instances; and the probe STC's own
+stats independently read `COLL=0` over 126 sequential requests. **The retain branch RAN:**
 `NSF043I SVC 239 RESTORED` then **`NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE
 RETAINED`** 10 s later; the anchor read back afterwards still carried `NSFVANCR` with `ACTIVE`
-clear and `inflight = 1`, and the next `S NSFS` came up on a **different anchor and a different
-router** with the largest free CSA block down **1073152→933888** (139264 = pool + module,
-measured). **A finding filed, not fixed (#64): the executive can sleep through a published
+clear and `inflight = 1`, and the next `S NSFS` came up on a **different anchor AND a different
+router EP** (00A8B248, was 00A820C8) — the exact evidence the module was retained; the largest
+free CSA block also fell 1073152→933888, which is **consistent with** pool + module but no more
+than that (`nsfsx_csa_largest` refines only to 4 KB, so both figures carry ±4 KB). **The gate's
+second run needed an external wake floor** — it crawled at ~3 requests/min until a continuous
+host `ping -i 0.2` was started (the #64 latency defect, not a pool property); the first run and
+every other gate needed nothing. **Zero dumps across the whole round** (the one `S806`, on
+`TSTRQXCL`, was self-inflicted: `make test-mvs --only` had replaced TESTLIB with the Stage-0 four,
+so `TSTRQXC` was not there). **No module source changed after `make deploy`** — the three later
+commits touch only `test/mvs/tstrqxc.c` and docs, so every live figure is about the deployed
+binary (§5's most expensive failure class, checked rather than assumed). **A finding filed, not fixed (#64): the executive can sleep through a published
 request** — one sat 11 minutes, and a `F NSFS,STATS` queued in between was answered in the *same
 second*, which is what identifies the sleeper as the STC. It is **conditional** (a freshly started
 STC served 8 sequential requests in 0.39 s with nothing else running), **pre-existing** (the new
@@ -1021,11 +1031,17 @@ points: `nsfsx_drain` never resets its wake ECB where `nsfreq_drain` does, and t
 itself, both mine:** phase 2 **starved itself** by backing off 10 ms per refusal (served 0/150 —
 which is a real property: *the scan is not a queue and makes no fairness promise*), and A asserted
 the whole pool was clean **while B was still using it** (that check belongs to whoever leaves
-last). **b4 does NOT prove:** concurrent service; hardware arbitration of a simultaneous `CS`;
-**reaping a second client's slot WHILE a request is in service** — the very hole the probe fix
-closes went LIVE-UNEXERCISED (no `NSF050I`/`NSF051W` from NSFS all round, because nothing died
-mid-service; the decision is host-pinned and wired, and b3's live reap evidence was collected with
-nothing else in service); 2-AS stress (**e**); fault recovery / the CLAIMED-slot leak; or #64.
+last). **One acceptance item was SUPERSEDED, not met:** "B's request visible to the WAIT gate while A is
+served" is exactly the spin under serialised service, so what replaced it is the non-dispatch
+outcomes — read the list against a green round without this line and it looks met. **b4 does NOT
+prove:** concurrent service; hardware arbitration of a simultaneous `CS`; **reaping a second
+client's slot WHILE a request is in service** — the very hole the probe fix closes went
+LIVE-UNEXERCISED (no `NSF050I`/`NSF051W` from NSFS all round, because nothing died mid-service;
+the decision is host-pinned and wired, and b3's live reap evidence was collected with nothing else
+in service); **that the nudge loop reaches more than ONE parked client** (the induction leaves
+exactly one, so the 64-slot loop found one — b3's change over the probe's single-slot wake is no
+better exercised than before); 2-AS stress (**e**); fault recovery / the CLAIMED-slot leak; or
+#64.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |

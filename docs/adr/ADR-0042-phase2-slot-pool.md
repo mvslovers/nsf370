@@ -500,11 +500,20 @@ sequential requests of the Stage-0 four — a second negative control, from diff
 
 The retain branch: `NSF043I SVC 239 RESTORED` at 15:43:52, **`NSF054W 1 CLIENT(S) STILL IN
 FLIGHT -- CSA AND SVC ROUTINE RETAINED (EXHAUSTED=2)`** at 15:44:02 — the 10 s drain ceiling
-elapsed with the nudge loop running through every claimed slot. The anchor read back afterwards
-still carried **`NSFVANCR`**, `ACTIVE` clear and `inflight = 1`. And the restart is its own
-witness: the next `S NSFS` came up on a **different anchor (00AAD7C8, was 00A8B7C8) and a
-different router (00A8B248, was 00A820C8)**, with the largest free CSA block down from 1073152 to
-933888 — a drop of 139264 bytes, which is the retained pool plus the retained module, measured.
+elapsed. The anchor read back afterwards still carried **`NSFVANCR`**, `ACTIVE` clear and
+`inflight = 1`. And the restart is its own witness: the next `S NSFS` came up on a **different
+anchor (00AAD7C8, was 00A8B7C8) and a different router EP (00A8B248, was 00A820C8)** — the second
+of those is the exact evidence that the module was retained, since a freed one would have been
+reusable. The largest free CSA block also fell 1073152 → 933888, a drop **consistent with** the
+retained pool plus module; it is not more than that, because `nsfsx_csa_largest` refines only to
+4 KB, so both figures carry ±4 KB and the arithmetic cannot resolve 138672 from 139264.
+
+**The second run of the gate needed an external wake floor.** It crawled at roughly three
+requests per minute until a continuous `ping -i 0.2` was started at the host, and completed
+normally with it running (see §6 — the same latency defect). That does not touch what the gate
+measures, which is slot *occupancy* and not timing, but anyone reproducing this without the ping
+will see the crawl and reasonably conclude the pool is broken. The first run, and every other
+gate in the round, needed nothing.
 
 ### 8. What M5-2b4 still does not prove
 
@@ -518,6 +527,20 @@ different router (00A8B248, was 00A820C8)**, with the largest free CSA block dow
   same "absence is indistinguishable from success" the checklist is about. b3's live reap
   evidence (two `NSF050I`, one `NSF051W`) was collected with **nothing else in service**, which
   is the case that already worked.
+- **That the nudge loop reaches MORE THAN ONE parked client.** b3 replaced the probe STC's
+  single-slot wake with a loop over every claimed slot precisely because 63 clients can be parked
+  at once. The induction leaves exactly **one** claimed slot, so the loop iterated 64 and found
+  one — no better exercised than before. Same shape as the row above.
 - **Two-address-space stress.** Still **(e)**.
 - **Fault recovery, address validation, the CLAIMED-slot leak.** Unchanged and still open.
 - **The transport's wake latency** (§6, issue #64).
+
+### 9. One acceptance item was superseded, not met
+
+The step's acceptance list asked that "B's request must become visible to the WAIT gate **while**
+A is still being served". Under serialised service that is exactly the spin §5 describes, so the
+decision taken was the narrower one: **the outcomes that need no private `NSFRQE` become visible
+and consumable while busy; a dispatchable one deliberately does not.** The item as written is
+therefore *superseded*, and what replaced it is the reap/hold/reap-bad path — which is
+host-pinned and wired but, as §8 records, went live-unexercised. Reading the acceptance list
+against a green round without this paragraph would mark the item met.
