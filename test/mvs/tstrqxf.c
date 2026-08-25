@@ -349,6 +349,21 @@ xf_hop(const char *name, int (*body)(void), void *in, int *failed)
     return g_hop_out;
 }
 
+/* (C) read the five self-check words the routine leaves in the dead ANCSAVE. */
+static UINT g_sv[5];
+
+static int
+t_read_save(void)
+{
+    const volatile UINT *p = (const volatile UINT *)&g_anchor->csasave[0];
+    int                  i;
+
+    for (i = 0; i < 5; i++) {
+        g_sv[i] = p[i];
+    }
+    return 0;
+}
+
 /* (B) pre-check 1: the target must be READABLE from the client's own key --
  * otherwise the routine's key-8 read-in would fault and we would be measuring
  * (A) all over again. */
@@ -683,6 +698,56 @@ main(void)
            (unsigned)st4, (unsigned)in4, (unsigned)rp4);
     CHECK_EQ((long)st4, (long)NSFV_REQ_FREE,
              "the slot is FREE again (UNSTAGE reaches a PUBLISHED slot)");
+
+    /* ==================================================================== *
+     * (C) M5-2b2: the POST save area is PER-INVOCATION.  A POSITIVE check.
+     *
+     * Every gate in the set already runs through DOPOST, so a WRONG area that
+     * MVS merely happens not to use would pass all of them -- and the first
+     * attempt at b2 proved that is not theoretical: it put the save area in
+     * the CLIENT's own storage (A(SVRB) taken from R5, which RQEIN clobbers)
+     * and every gate stayed green while the routine scribbled over the test's
+     * variables.  So the routine records what it observed and (C) reads it
+     * back out of CSA -- read-only, from key 8, exactly as (B) already proved
+     * works on this block.
+     *
+     * (B)'s request is the invocation reported on: it reached DOPOST, posted,
+     * waited and was serviced.  QUERY and UNSTAGE branch out BEFORE the
+     * slot-take, so neither goes through DOPOST nor disturbs the evidence.
+     * ==================================================================== */
+    printf("\n--- (C) M5-2b2: the POST save area is per-invocation ---\n");
+
+    failed = 0;
+    (void)xf_hop("SAVE", t_read_save, NULL, &failed);
+    CHECK(failed == 0, "the ANCSAVE self-check words are readable from key 8");
+    printf("  area=%08X stamp=%u postok=%u waitok=%u regok=%u\n",
+           (unsigned)g_sv[0], (unsigned)g_sv[1], (unsigned)g_sv[2],
+           (unsigned)g_sv[3], (unsigned)g_sv[4]);
+    wtof("TSTRQXF: (C) area=%08X %u/%u/%u/%u", (unsigned)g_sv[0],
+         (unsigned)g_sv[1], (unsigned)g_sv[2], (unsigned)g_sv[3],
+         (unsigned)g_sv[4]);
+
+    CHECK(g_sv[0] != 0u, "the routine recorded the save area it claimed");
+    CHECK(g_sv[0] < (UINT)(void *)g_anchor
+          || g_sv[0] >= (UINT)(void *)g_anchor + sizeof(NSFV_ANCHOR),
+          "the save area is OUTSIDE the anchor (no longer shared CSA)");
+    /* And outside the CLIENT too -- the first attempt's failure mode was a
+     * save area inside our own storage, which is neither shared CSA nor
+     * per-invocation, and which no "outside the anchor" test would catch. */
+    CHECK(g_sv[0] < (UINT)(void *)&g_image
+          || g_sv[0] >= (UINT)(void *)&g_image + 4096u,
+          "the save area is NOT in the client's own storage either");
+
+    CHECK_EQ((long)g_sv[1], 1L,
+             "the sentinel stamp took at all (before the POST)");
+    CHECK_EQ((long)g_sv[2], 1L,
+             "POST half: the sentinel survived the branch POST");
+    CHECK_EQ((long)g_sv[3], 1L,
+             "WAIT half: the sentinel survived the WAIT -- a task switch, the"
+             " STC's cross-AS POST and an SVC 1");
+    CHECK_EQ((long)g_sv[4], 1L,
+             "REGISTER half: the restored R2 and R6 both still work, so the"
+             " 16 bytes actually stored into came back -- not just the tail");
 
     /* ---- the transport still works end to end -------------------------- */
     rc = xf_query(&st2, &in2, &rp2);

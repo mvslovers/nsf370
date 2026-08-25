@@ -336,3 +336,102 @@ is wrong).
      not the anchor. The probe does not exercise concurrency; M5-2 must switch the scratch
      to the SVRB before the routine is entered concurrently. Recorded so it is not hidden
      behind a bare "`RENT` ✓".
+- **2026-08-25 — M5-2b2: the POST save area is per-invocation; `csasave` retired.**
+  This closes the RENT/shared-scratch caveat this ADR has carried since Stage-0a′:
+  *"Single-client-sequential, so the shared scratch is safe here; a concurrent-client
+  M5-2 needs per-invocation scratch (the SVRB / GETMAIN)."* It is now the SVRB, with no
+  lock, no pool and no `GETMAIN`. The **pool** is still (b3); b2 moved the storage and
+  proved the home, b3 is what will exercise it.
+
+  ### Where the area is — read, not guessed
+
+  `SYS1.AMODGEN(IHARB)` and `(IKJTCB)` read live, and the offsets **computed by IFOX00
+  from the macros themselves** (jobs `RBOFF`, `RBOFF2`) rather than hand-counted — these
+  DSECTs are conditional-assembly, and a wrong offset in a RENT routine with no writable
+  statics has no cheap failure mode:
+
+  | field | value |
+  |---|---|
+  | `RBEXSAVE` — *"EXTENDED SAVE AREA FOR SVC ROUTINES (SVRB-BOTH)"* | `RBSECPTR+X'60'`, `L'` = `X'30'` |
+  | `RBBASIC - RBPRFX` | `X'40'` (the prefix precedes the pointer) |
+  | `RBSIZE - RBBASIC` | 8 |
+  | `TCBRBP - TCB` | 0 |
+
+  **Twelve words, not eighteen.** The old shared block was an 18-word standard save area
+  and `STM R14,R12,12(R13)` wants 72 bytes — 24 more than exist. Not made to fit: this is
+  a documented area with a documented size, and running past its end is precisely the
+  *"an area that merely looks unused"* class. Only **four** registers are live across the
+  POST — `R2` (anchor), **`R6` (the CSECT base, `USING NSFVSVC,R6`)**, `R8`, `R14` — so
+  four stores of **16 bytes** replace an `STM` of eleven. Deliberately minimal: the less
+  of the area is touched, the smaller the question of who owns the rest.
+
+  ### The bug that cost the first attempt — and it is b1's lesson, one register over
+
+  **`A(SVRB)` must come from `TCBRBP`, not from `R5`.** The FLIH does set `R5 = A(SVRB)`
+  for SVC types 2/3/4 — this routine's entry block and the ancestor both say so — but
+  **`R5` is the `MVCK` source pointer in `RQEIN` and `XFERIN`**, so by the time `DOPOST`
+  is reached it holds `A(caller ubuf)` or `A(caller NSFRQE)`. This is exactly the
+  `PSATOLD`-over-`R4` finding from M5-2b1, one register over, and the same rule catches
+  both: **at `DOPOST`/`RQEOUT`, a register the FLIH set at entry is only trustworthy if
+  no staging block has since used it as scratch.**
+
+  Measured: `R5 = X'000991EC'` (the caller's image) against `TCBRBP = X'009DE5F0'` (LSQA),
+  and `RBSIZE` read off `TCBRBP` is **28 doublewords = 224 bytes** — a sensible RB — while
+  off `R5` it read `X'FFFFD9D8'`, garbage.
+
+  The first attempt therefore put the save area **inside the client's own storage**
+  (`A(caller image)+96`) and stored the caller ASCB over the test program's variables,
+  including its anchor pointer — which is why the diagnostic read back `C1E2C3C2`, EBCDIC
+  `"ASCB"`. Every gate in the set stayed green throughout.
+
+  ### The prediction, recorded before the run, was REFUTED
+
+  Predicted (and independently hypothesised at review): that `RBEXSAVE` would be usable
+  while the routine runs but **not across a suspension** — "available to SVC routines" not
+  meaning "preserved across a wait", with `RBGRSAVE` sitting immediately before it
+  (32 + 64 = 96) being what that neighbourhood looks like.
+
+  **It did not happen.** A canary stamped in the area reads back intact at all three
+  points: **before the POST, after the branch POST, and after the WAIT** — the last
+  spanning a real task switch, the STC's cross-AS POST and an `SVC 1`. Neither axis killed
+  it; the single cause was the clobbered `R5`. Recorded because a refuted prediction is
+  worth as much as a confirmed one, and because the neighbourhood argument is plausible
+  enough that someone will raise it again.
+
+  ### The positive check is permanent, not a one-off
+
+  Every existing gate runs through `DOPOST`, so a wrong area MVS happens not to use would
+  pass all of them — which is not theoretical, as above. The routine therefore records its
+  own self-check into the (now dead) `ANCSAVE` words and **`TSTRQXF` asserts them**: the
+  area address is **outside the anchor** *and* **outside the client's own storage** (the
+  first attempt's failure mode was neither shared CSA nor per-invocation, and no
+  "outside the anchor" test would have caught it), the stamp took, the sentinel survived
+  the POST, the sentinel survived the WAIT, and the **register half** — reaching past the
+  post-WAIT eyecatcher check proves the restored `R2` still addresses the anchor *and* the
+  restored `R6` still resolves the literal pool, so the 16 bytes actually stored into came
+  back rather than only the untouched tail.
+
+  ### `ANCSAVE` stays, dead
+
+  Removing it would shift every field after it and cost a full four-gate Stage-0 round for
+  no benefit; b3 moves the layout substantially anyway, so it comes out there for free.
+  The anchor layout does not move in this step and no `NSFV_OFF_ASSERT` changes.
+
+  ### The ancestor's contribution, stated rather than left as silence
+
+  `igc0024e.asm` saves no registers anywhere and never dereferences `R5`, though it lists
+  `R5 = @ SVRB` in its register table. It therefore **corroborates the entry convention and
+  says nothing about the save area** — it neither supports nor undermines `RBEXSAVE`.
+
+  ### Gates
+
+  `TSTRQXF` **68 PASS, CC 0 batch + TSO** (now including the three-point check);
+  `TSTRQXM` **batch CC 0, 32/32** with the host peer verifying **9353 bytes byte-exact**;
+  `TSTSVC` / `TSTMVCK` / `TSTUBUF` / `TSTDEATH` **444 PASS, 0 FAIL, CC 0 batch + TSO`.
+  NSFS and NSFV start and stop clean, `SVC 239` restored, **no dump**. Host suite
+  **2846 PASS / 0 FAIL**. `as370 -a=` listing checked for the changed block.
+
+  **A column-71 overrun was caught by the scan during this step** and is worth recording as
+  a live sighting of the CLAUDE.md §3 rule: a 73-character instruction line made `as370`
+  swallow the following instruction as a continuation, emitting
+  `ST R14,0(,R9)R2,4(,R9)` — one store silently gone, clean link, no diagnostic.

@@ -77,7 +77,7 @@ ANCTOKEN EQU   32                 F    req_token
 ANCRECB  EQU   36                 F    reply_ecb   (our WAIT target)
 ANCRASCB EQU   40                 A    req_ascb    (caller ASCB)
 ANCSERVD EQU   44                 F    served
-ANCSAVE  EQU   48                 18F  POST register save area
+ANCSAVE  EQU   48                 18F  DEAD (b2) -- see DOPOST
 ANCXFUNC EQU   120                F    transform (ECHO/XFER)
 ANCXLEN  EQU   124                F    bytes staged this chunk
 ANCXASID EQU   128                F    req_asid (client ASID)
@@ -137,6 +137,44 @@ MVCMAX   EQU   256                bytes per MVC piece (write-out)
 *  exactly the byte SPKA wants -- SPKA takes bits 24-27 of its operand address
 *  -- so it is used with no shifting, the same way @@super.c does.
 PSATOLD  EQU   540                PSA+X'21C' = A(current TCB)
+*  M5-2b2: the POST save area is PER-INVOCATION, in the SVRB.
+*
+*  READ, NOT GUESSED.  SYS1.AMODGEN(IHARB)/(IKJTCB) read live and the offsets
+*  computed by IFOX00 from the macros (jobs RBOFF/RBOFF2) -- these DSECTs are
+*  conditional-assembly and hand-counting them is the one mistake a RENT
+*  routine with no writable statics cannot afford:
+*    RBEXSAVE DS 0CL48  "EXTENDED SAVE AREA FOR SVC ROUTINES (SVRB-BOTH)"
+*    RBEXSAVE-RBBASIC = X'60'   L'RBEXSAVE = X'30'   RBSIZE-RBBASIC = 8
+*    RBBASIC-RBPRFX   = X'40'   TCBRBP-TCB = 0
+*
+*  A(SVRB) COMES FROM TCBRBP, NOT FROM R5.  The FLIH does set R5 = A(SVRB) --
+*  but R5 is the MVCK SOURCE POINTER in RQEIN and XFERIN, so by the time
+*  DOPOST is reached it holds A(caller ubuf) or A(caller NSFRQE), NOT the
+*  SVRB.  This is b1's PSATOLD-over-R4 finding exactly, one register over, and
+*  it is what broke the first attempt at this step: LA R13,RBEXSAVE(,R5) put
+*  the save area inside the CLIENT's storage, where the store of the caller
+*  ASCB landed on the test's own variables.  Measured: R5 = X'000991EC' (the
+*  caller's image) while TCBRBP = X'009DE5F0' (LSQA), and RBSIZE read off
+*  TCBRBP is 28 doublewords = 224 bytes, a sensible RB; off R5 it was garbage.
+*
+*  TWELVE WORDS, NOT EIGHTEEN.  L'RBEXSAVE is 48 bytes; the old shared block
+*  was an 18-word standard save area (STM R14,R12,12(R13) = 72 bytes from
+*  offset 12) and does not fit.  Only FOUR registers are live across the POST
+*  -- R2 (anchor), R6 (OUR CSECT BASE, USING NSFVSVC,R6), R8 (A(req)) and R14
+*  (return) -- so four stores of 16 bytes are used instead of an STM of 11.
+*  Deliberately minimal: the less of this area we touch, the smaller the
+*  question of who owns the rest becomes.  R5/R10/R11/R12 are reloaded after
+*  the POST, R13 is never restored, and R9 carries the area pointer because R9
+*  is the one register the branch POST preserves.
+*
+*  MEASURED, NOT ASSUMED: a canary stamped in this area survives BOTH the
+*  branch POST and the WAIT -- the three-point self-check below records it and
+*  TSTRQXF asserts it.  The predicted failure (that RBEXSAVE would be usable
+*  while the routine runs but not across a suspension) did NOT occur.
+RBEXSAVE EQU   96                 SVRB+X'60' (IHARB, RBSECPTR-relative)
+RBEXSVLN EQU   48                 L'RBEXSAVE -- 12 words, NOT 18
+RBEXSVSN EQU   16                 our sentinel, past the 16 bytes used
+TCBRBP   EQU   0                  TCB+0 = A(current RB) = A(SVRB)
 TCBPKF   EQU   28                 TCB+X'1C'  = task storage key
 *----------------------------------------------------------------------
          USING NSFVSVC,R6         base = our entry (R6, FLIH-set)
@@ -359,9 +397,37 @@ RQINPUB  DS    0H
 *  from the save area afterward, and the later WAIT (SVC 1) preserves R2-R14.
 *----------------------------------------------------------------------
 DOPOST   DS    0H                 POST/WAIT entry (ECHO + XFER share)
-         LA    R13,ANCSAVE(,R2)   R13 -> 18-word POST save area
-         STM   R14,R12,12(R13)    preserve regs across the POST
-         LR    R9,R13             R9: the only reg POST preserves
+*  PER-INVOCATION save area (M5-2b2).  Was ANCSAVE -- ONE 18-word block in the
+*  CSA anchor that every invocation in every address space computed the same
+*  address for and stored into.  Now the SVRB's own extended save area, which
+*  the FLIH allocates per SVC invocation, so two clients in two address spaces
+*  get two areas with no lock and no pool.  See the RBEXSAVE block above.
+*
+*  ANCSAVE is DEAD as a save area and STAYS in the anchor: removing it would
+*  shift every field after it and cost a full four-gate Stage-0 round for
+*  nothing, and b3 moves the layout anyway, so it comes out there for free.
+*  Its first five words now carry b2's SELF-CHECK, which TSTRQXF reads back
+*  out of CSA -- positive proof the new home is real and not merely unused:
+*    +0  the area address claimed (must be OUTSIDE the anchor)
+*    +4  sentinel intact BEFORE the POST (the stamp took at all)
+*    +8  sentinel intact AFTER the POST
+*    +12 sentinel intact AFTER the WAIT
+*    +16 the restored R2/R6 still work (the REGISTER half, not just the tail)
+         SLR   R9,R9
+         L     R9,PSATOLD(,R9)    A(current TCB)
+         L     R9,TCBRBP(,R9)     A(current RB) = our SVRB
+         LA    R9,RBEXSAVE(,R9)   R9 -> SVRB extended save area
+         ST    R9,ANCSAVE(,R2)    self-check: the area we claimed
+         MVC   RBEXSVSN(4,R9),=CL4'B2SV'   stamp the sentinel
+         SLR   R3,R3
+         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
+         BNE   PSTSV0
+         LA    R3,1
+PSTSV0   ST    R3,ANCSAVE+4(,R2)  the stamp took
+         ST    R14,0(,R9)         the four live across the POST
+         ST    R2,4(,R9)
+         ST    R6,8(,R9)
+         ST    R8,12(,R9)
          L     R10,=X'40000000'   POST completion code (0)
 *  POST target: the STC's published key-8 private ECB if it has one, else
 *  the key-0 CSA server_ecb.  The executive WAITs from problem state, where a
@@ -379,12 +445,22 @@ PSTECBX  DS    0H
          L     R15,16(,R15)       R15 = CVT (absolute location 16)
          L     R15,CVT0PT01-CVTMAP(,R15)   POST branch entry
          BALR  R14,R15
-         LR    R13,R9             restore save-area pointer
-         LM    R14,R12,12(R13)    restore our registers
+         L     R14,0(,R9)         restore the four
+         L     R2,4(,R9)
+         L     R6,8(,R9)
+         L     R8,12(,R9)
+*  Self-check, POST half, before anything else can touch the area.
+         SLR   R3,R3
+         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
+         BNE   PSTSV1
+         LA    R3,1
+PSTSV1   ST    R3,ANCSAVE+8(,R2)  sentinel survived the POST
          B     PSTOK
 PSTERR   DS    0H                 POST failed: STC ASCB gone
-         LR    R13,R9
-         LM    R14,R12,12(R13)
+         L     R14,0(,R9)
+         L     R2,4(,R9)
+         L     R6,8(,R9)
+         L     R8,12(,R9)
          B     PSTFAIL
 PSTOK    DS    0H
 *  ORPHAN leaves here: the STC is awake, the request is in flight, and this
@@ -400,8 +476,22 @@ PSTOK    DS    0H
 *----------------------------------------------------------------------
          LA    R3,ANCRECB(,R2)    A(reply_ecb)
          WAIT  1,ECB=(R3)
+*  Self-check, WAIT half -- the far side of the round trip: a real task
+*  switch, the STC's cross-AS POST and an SVC 1.  R9 is POST-preserved and the
+*  WAIT (SVC 1) preserves R2-R14, so R9 still addresses the area.
+         SLR   R3,R3
+         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
+         BNE   PSTSV2
+         LA    R3,1
+PSTSV2   ST    R3,ANCSAVE+12(,R2) sentinel survived the WAIT
          CLC   ANCEYE(8,R2),=CL8'NSFVANCR'   anchor there?
          BNE   WGONE              freed while parked -> bail
+*  The REGISTER half.  Reaching here means the restored R2 still addresses the
+*  anchor AND the restored R6 still resolves our literal pool -- the CLC above
+*  needs both -- so the 16 bytes actually stored into came back, not merely the
+*  sentinel sitting in the untouched tail.
+         LA    R3,1
+         ST    R3,ANCSAVE+16(,R2)
          L     R3,ANCSTATE(,R2)
          C     R3,=A(STDONE)      serviced?
          BNE   WQUIES             no -> quiesce wake, bail

@@ -749,6 +749,42 @@ the probe STC's `nsfv_drain` (10 s ceiling, retain-CSA on timeout). **b1 does no
 the exposure:** the fault class pre-existed; b1 turns a silent key-0 clobber into a caught
 fault and leaves the dangling-state shapes unchanged. Anchor layout unmoved, **NSFRQE still
 frozen at 64 B**, C/EZASOKET/EZASMI surfaces unchanged — apps relink only.
+**M5-2b2 (the POST save area moves to the SVRB) — DONE, live-green; pending countersign.**
+Closes ADR-0038's RENT/shared-scratch caveat: `csasave` was ONE 18-word block in the CSA
+anchor that every invocation in every address space computed the same address for and stored
+into. It is now the **SVRB's own `RBEXSAVE`**, which the FLIH allocates per SVC invocation —
+no lock, no pool, no `GETMAIN` (the pool is still b3). **Offsets READ, not guessed:**
+`SYS1.AMODGEN(IHARB)`/`(IKJTCB)` read live and computed by **IFOX00 from the macros** (jobs
+RBOFF/RBOFF2) — `RBEXSAVE` at `RBSECPTR+X'60'`, `L'`=`X'30'`; `RBBASIC-RBPRFX`=`X'40'`;
+`RBSIZE-RBBASIC`=8; `TCBRBP-TCB`=0. **Twelve words, not eighteen** — the old
+`STM R14,R12,12(R13)` wants 72 bytes and does not fit; only **four** registers are live
+across the POST (R2, **R6 the CSECT base**, R8, R14), so four stores of 16 bytes replace an
+STM of eleven, deliberately minimal so the question of who owns the rest of the area stays
+small. **The bug that cost the first attempt is b1's lesson one register over:** `A(SVRB)`
+must come from **`TCBRBP`, not `R5`** — the FLIH does set R5, but **R5 is the `MVCK` source
+pointer in `RQEIN`/`XFERIN`**, so at DOPOST it holds A(caller image). Measured
+`R5=000991EC` vs `TCBRBP=009DE5F0`, `RBSIZE` off TCBRBP = 28 doublewords = 224 B (sensible)
+vs garbage off R5. The first attempt therefore put the save area **inside the client's own
+storage** and stored the caller ASCB over the test's variables — the diagnostic read back
+`C1E2C3C2`, EBCDIC **"ASCB"** — **while every gate in the set stayed green**. **The
+prediction was REFUTED:** a canary in `RBEXSAVE` survives the POST **and** the WAIT (task
+switch + cross-AS POST + SVC 1); the "available while running but not across a suspension"
+hypothesis did not hold, and the single cause was the clobbered R5. **The positive check is
+permanent** — TSTRQXF now asserts the area is outside the anchor **and outside the client's
+own storage** (the first attempt's failure mode was neither, and no "outside the anchor"
+test would have caught it), the stamp took, the sentinel survived POST and WAIT, and the
+**register half** (reaching past the post-WAIT eyecatcher proves restored R2 *and* R6).
+`ANCSAVE` stays **dead in place** (removing it shifts every later field; b3 moves the layout
+anyway) — **anchor layout unmoved, no `NSFV_OFF_ASSERT` changed**. The ancestor
+`igc0024e.asm` saves no registers anywhere and never dereferences R5: it corroborates the
+entry convention and says **nothing** about the save area — neither supporting nor
+undermining `RBEXSAVE`. A **column-71 overrun was caught by the scan** mid-step, a live
+sighting of the §3 rule: a 73-char instruction line made as370 swallow the next instruction,
+emitting `ST R14,0(,R9)R2,4(,R9)` — one store gone, clean link, no diagnostic. Gates:
+TSTRQXF **68 PASS CC 0 batch+TSO**, TSTRQXM **batch CC 0 32/32** (host peer 9353 bytes
+byte-exact), TSTSVC/TSTMVCK/TSTUBUF/TSTDEATH **444 PASS CC 0 batch+TSO**, NSFS+NSFV
+start/stop clean, `SVC 239` restored, **no dump**; host **2846 PASS / 0 FAIL**. **No
+milestone flip.**
 **b1 follow-up — the gate now DISCRIMINATES, and the window's scope is narrower than
 "closed".** No production source touched (`asm/nsfvsvc.asm` byte-identical, anchor layout
 unmoved, NSFRQE still 64 B). (1) **The discriminating case exists after all.** b1 said the
