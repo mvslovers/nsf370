@@ -305,6 +305,25 @@ t_read_probe(void)
     return (int)v & 0;                  /* keep the read, discard the value   */
 }
 
+/* Issue one ordinary RQE request and report WHICH SLOT the routine claimed.
+ * The image is a dispatchable NSFRQE with an unknown fn, so the STC completes
+ * it with an error rather than doing any real work -- what is under test here
+ * is the CLAIM, which happens before the routine ever looks at the verb. */
+static int
+xf_rqe_slot(UINT *slot_used)
+{
+    NSFV_REQ req;
+
+    xf_req_init(&req, NSFV_REQ_RQE);
+    req.ubuf   = NULL;
+    req.ulen   = 0u;
+    req.rqeimg = (void *)&g_image;
+    req.slot   = 0xFFFFu;               /* so an unwritten field is obvious   */
+    nsfv_svc_issue(&req);
+    if (slot_used) *slot_used = req.slot;
+    return req.rc;
+}
+
 /* (A) The whole point: hand the routine a pointer this client cannot touch. */
 static int
 t_bad_ubuf(void)
@@ -848,6 +867,141 @@ main(void)
         brc = xf_query_slot(0xFFFFu, &dummy, NULL, NULL);
         CHECK_EQ((long)brc, (long)NSFV_RC_INVALID,
                  "a wild index is rejected without computing an address");
+    }
+
+    /* ==================================================================== *
+     * (D) M5-2b3: the three pool checks (ADR-0042 7).
+     *
+     * REUSE, SKIP, EXHAUSTION.  All three are statements about the claim scan,
+     * which runs before the routine looks at the verb, so an ordinary RQE
+     * request exercises it regardless of what the STC then does with it.
+     *
+     * What these do NOT prove, and the report says so: that two clients in two
+     * address spaces racing on the SAME slot word resolve correctly.  The CS
+     * makes that true by construction, and construction is not a live gate.
+     * That is b4.
+     * ==================================================================== */
+    printf("\n--- (D) M5-2b3: reuse, skip, exhaustion ---\n");
+
+    /* ---- REUSE: a released slot really goes back to the pool ------------- */
+    {
+        UINT used[4];
+        UINT k;
+        int  rrc;
+        int  same = 1;
+
+        for (k = 0; k < 4; k++) {
+            used[k] = 0xFFFFu;
+            rrc = xf_rqe_slot(&used[k]);
+            CHECK(rrc == NSFV_RC_OK, "reuse: the request was served");
+        }
+        printf("  slots used by 4 sequential requests: %u %u %u %u\n",
+               (unsigned)used[0], (unsigned)used[1],
+               (unsigned)used[2], (unsigned)used[3]);
+        wtof("TSTRQXF: (D) reuse slots %u/%u/%u/%u",
+             (unsigned)used[0], (unsigned)used[1],
+             (unsigned)used[2], (unsigned)used[3]);
+
+        for (k = 0; k < 4; k++) {
+            if (used[k] != used[0]) same = 0;
+        }
+        /* The scan takes the LOWEST free slot, so a slot that is genuinely
+         * released comes straight back. If release were broken, each request
+         * would walk one further and these would read 0,1,2,3 -- which is
+         * exactly the failure this distinguishes. */
+        CHECK(same,
+              "REUSE: all four sequential requests got the SAME slot back"
+              " (0,1,2,3 would mean release is broken)");
+        CHECK_EQ((long)used[0], 0L, "reuse: and it is the lowest slot");
+    }
+
+    /* ---- SKIP: pre-claimed slots are stepped over, not overwritten ------- */
+    {
+        UINT used = 0xFFFFu;
+        UINT k;
+        int  claimed = 0;
+
+        /* Pre-claim 0..4. Each CS is ASSERTED, so a miscount shows up here
+         * rather than as a mysterious pool bug three checks later. */
+        for (k = 0; k < 5; k++) {
+            if (xf_slot_cas(k, NSFV_REQ_FREE, NSFV_REQ_CLAIMED, NULL)
+                == NSFV_RC_OK) claimed++;
+        }
+        CHECK_EQ((long)claimed, 5L, "skip: five slots were really pre-claimed");
+
+        (void)xf_rqe_slot(&used);
+        printf("  with slots 0-4 pre-claimed, the request landed on slot %u\n",
+               (unsigned)used);
+        wtof("TSTRQXF: (D) skip -> slot %u (want 5)", (unsigned)used);
+        /* THIS is what proves the scan is a scan and not a constant. */
+        CHECK_EQ((long)used, 5L,
+                 "SKIP: the scan stepped over exactly the pre-claimed slots"
+                 " and landed on the next free one");
+
+        for (k = 0; k < 5; k++) {
+            (void)xf_slot_cas(k, NSFV_REQ_CLAIMED, NSFV_REQ_FREE, NULL);
+        }
+        CHECK_EQ((long)g_anchor->slots[0].req_state, (long)NSFV_REQ_FREE,
+                 "skip: the pre-claimed slots were released again");
+    }
+
+    /* ---- EXHAUSTION: a full pool answers ENOBUFS and changes nothing ----- */
+    {
+        UINT before_infl = 0, after_infl = 0;
+        UINT used = 0xFFFFu;
+        UINT k;
+        UINT claimed = 0;
+        int  erc;
+
+        (void)xf_query_slot(0u, NULL, &before_infl, NULL);
+
+        for (k = 0; k < NSFV_NSLOTS; k++) {
+            if (xf_slot_cas(k, NSFV_REQ_FREE, NSFV_REQ_CLAIMED, NULL)
+                == NSFV_RC_OK) claimed++;
+        }
+        CHECK_EQ((long)claimed, (long)NSFV_NSLOTS,
+                 "exhaustion: every one of the 64 slots was pre-claimed");
+
+        erc = xf_rqe_slot(&used);
+        printf("  with the pool full: rc=%d (want %d = NOBUF)\n",
+               erc, (int)NSFV_RC_NOBUF);
+        wtof("TSTRQXF: (D) exhaustion rc=%d", erc);
+        CHECK_EQ((long)erc, (long)NSFV_RC_NOBUF,
+                 "EXHAUSTION: a full pool answers NOBUF (-> ENOBUFS), not a"
+                 " hang and not a wrong slot");
+
+        (void)xf_query_slot(0u, NULL, &after_infl, NULL);
+        printf("  inflight before=%u after=%u\n",
+               (unsigned)before_infl, (unsigned)after_infl);
+        /* The rejection happens BEFORE the in-flight increment, so a caller
+         * that got no slot must leave the count exactly as it found it. */
+        CHECK_EQ((long)after_infl, (long)before_infl,
+                 "exhaustion: the rejected request leaked no in-flight count");
+
+        /* And it must have left every slot as it found it -- still CLAIMED by
+         * us, not quietly stolen. */
+        {
+            UINT still = 0;
+            for (k = 0; k < NSFV_NSLOTS; k++) {
+                if (g_anchor->slots[k].req_state == NSFV_REQ_CLAIMED) still++;
+            }
+            CHECK_EQ((long)still, (long)NSFV_NSLOTS,
+                     "exhaustion: every slot is still exactly as it was found");
+        }
+
+        for (k = 0; k < NSFV_NSLOTS; k++) {
+            (void)xf_slot_cas(k, NSFV_REQ_CLAIMED, NSFV_REQ_FREE, NULL);
+        }
+        /* Leave the pool as we found it, or every later gate in the round
+         * inherits a full pool and fails for the wrong reason. */
+        {
+            UINT free_now = 0;
+            for (k = 0; k < NSFV_NSLOTS; k++) {
+                if (g_anchor->slots[k].req_state == NSFV_REQ_FREE) free_now++;
+            }
+            CHECK_EQ((long)free_now, (long)NSFV_NSLOTS,
+                     "exhaustion: the whole pool was released again");
+        }
     }
 
     /* ---- the transport still works end to end -------------------------- */
