@@ -29,6 +29,9 @@
  *   nsfreqx_stage_len   NSFRXSLN    nsfreqx_slot_in    NSFRXSIN
  *   nsfreqx_dispatch_in NSFRXDIN    nsfreqx_result_out NSFRXROU
  *   nsfreqx_result_in   NSFRXRIN    nsfreqx_guard_ok   NSFRXGRD
+ *   nsfreqx_classify    NSFRXCLS    nsfreqx_slot_action NSFRXACT
+ *   nsfreqx_slot_legal  NSFRXLEG    nsfreqx_reap_ok    NSFRXRPO
+ *   nsfreqx_rc_errno    NSFRXRCE
  * ========================================================================== */
 
 #ifndef NSFREQX_H
@@ -146,5 +149,144 @@ void nsfreqx_result_in(NSFRQE *caller, const NSFRQE *slot) asm("NSFRXRIN");
  * answers 0 (not verifiable == not ok) and never faults.
  * -------------------------------------------------------------------------- */
 int nsfreqx_guard_ok(const char *guard) asm("NSFRXGRD");
+
+/* ==========================================================================
+ * M5-2b3 (ADR-0042): the slot pool's pure arithmetic.
+ *
+ * Everything below is the truth table of a decision the transport makes about
+ * a CSA slot, extracted so it is pinned by TSTREQX instead of by a live run
+ * that would have to hit every row.  This discharges an obligation M5-2
+ * inherited from Stage-0c, which asked for exactly this extraction (the way
+ * ufsd pulled its ASVT arithmetic into ufsd#asv.c), and it is what turns the
+ * per-slot rewrite of nsfsx.c from a hand-copied truth table into a call.
+ * ========================================================================== */
+
+/* Slot lifecycle (ADR-0042 5).  FREE/PENDING/DONE/HELD keep the values
+ * nsfvsvc.h froze in Stage-0a'/0c; CLAIMED is new and sits between FREE and
+ * PENDING -- the state a slot is in once its claim CS succeeded but before the
+ * client has finished staging into it.  Defined HERE as well as in nsfvsvc.h
+ * because the pure half must build on the host, where there is no CSA. */
+#define NSFREQX_ST_FREE     0U
+#define NSFREQX_ST_PENDING  1U
+#define NSFREQX_ST_DONE     2U
+#define NSFREQX_ST_HELD     3U
+#define NSFREQX_ST_CLAIMED  4U
+
+/* Router return codes, mirrored here for the same reason as the states: the
+ * pure half builds on the host, where nsfvsvc.h's MVS-only contract is not
+ * available.  NOBUF is new in b3 -- the pool is full (ADR-0042 7). */
+#define NSFREQX_RC_OK       0
+#define NSFREQX_RC_INVALID  4
+#define NSFREQX_RC_CORRUPT  8
+#define NSFREQX_RC_NOREQ    12
+#define NSFREQX_RC_NOBUF    16
+
+/* Client-liveness verdicts (ADR-0040, used as proven -- not redesigned). */
+#define NSFREQX_CL_LIVE     0
+#define NSFREQX_CL_DEAD     1
+#define NSFREQX_CL_UNKNOWN  2
+
+/* ASVTAVAI: the ASVT entry is free, i.e. no address space occupies that ASID. */
+#define NSFREQX_ASVT_AVAIL  0x80000000U
+
+/* What the STC's drain should do with one slot (nsfreqx_slot_action). */
+#define NSFREQX_ACT_NONE      0   /* not our work item this pass              */
+#define NSFREQX_ACT_DISPATCH  1   /* hand it to the executive                 */
+#define NSFREQX_ACT_HOLD      2   /* -> HELD: neither post nor reap           */
+#define NSFREQX_ACT_REAP      3   /* client proved DEAD                       */
+#define NSFREQX_ACT_REAP_BAD  4   /* storage we cannot trust; never POST      */
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_classify -- the ADR-0040 client-death guard as arithmetic.
+ *
+ * Given the identity recorded in a slot and the ASVT the STC found, decide
+ * whether that client is LIVE, DEAD or UNKNOWN.  All four verdict rows, the
+ * range check and -- the row a live run is least likely to exercise -- the
+ * `asid - 1` index are here, so they are pinned by a test rather than by
+ * having happened to work.
+ *
+ * `asvt_enty` is the ASVT's entry array (NULL when the STC could not reach
+ * one).  `asvt_maxu` is ASVTMAXU.  A NULL array, a zero maximum, a zero ASCB
+ * or an out-of-range ASID all answer UNKNOWN.
+ *
+ * THE SAFE-SIDE ASYMMETRY, restated because it is the reason UNKNOWN exists:
+ * a dead client called live leaks a slot; a LIVE client called dead has its
+ * storage freed underneath it.  UNKNOWN is therefore neither posted into nor
+ * reaped -- it is held.
+ *
+ * COMPARE THE ASCB ADDRESS ONLY.  A reused SQA block holds a stranger's
+ * fields, so anything read THROUGH the recorded ASCB is untrustworthy; the
+ * address itself is the only safe comparand.
+ * -------------------------------------------------------------------------- */
+int nsfreqx_classify(UINT req_ascb, UINT req_asid, UINT asvt_maxu,
+                     const UINT *asvt_enty) asm("NSFRXCLS");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_slot_action -- the STC drain's per-slot decision, in one place.
+ *
+ * Inputs are the slot's observed state, the liveness verdict for its recorded
+ * client, and two storage-trust booleans: `guard_ok` (the slot's RQE guard
+ * word is intact) and `ptr_ok` (the anchor's published wake-ECB address is
+ * still the STC's own).  Both untrusted cases answer REAP_BAD, and the
+ * distinction that matters is that REAP_BAD, like REAP, must never POST.
+ *
+ * ORDER IS THE CONTRACT, not an implementation detail: liveness is decided
+ * BEFORE storage trust, because a dead client's slot must be reclaimed whether
+ * or not its guard survived, and posting into a dead address space is the
+ * worse of the two failures.
+ * -------------------------------------------------------------------------- */
+int nsfreqx_slot_action(UINT state, int verdict,
+                        int guard_ok, int ptr_ok) asm("NSFRXACT");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_slot_legal -- is `from` -> `to` a transition this design allows?
+ *
+ * The pool has three writers and they do not overlap:
+ *   FREE    -> CLAIMED   SVC routine, by CS (the only contended transition)
+ *   CLAIMED -> PENDING   SVC routine, after staging: publish LAST
+ *   CLAIMED -> FREE      SVC routine, bail before publishing (POST failed)
+ *   PENDING -> DONE      STC, serviced
+ *   PENDING -> HELD      STC, client liveness UNKNOWN
+ *   PENDING -> FREE      STC, reaping a DEAD client
+ *   HELD    -> FREE      UNSTAGE, or a later reap
+ *   DONE    -> FREE      SVC routine, releasing its own slot
+ *
+ * Everything else is illegal, and the illegal ones are the interesting ones:
+ * FREE -> PENDING would publish a slot nobody claimed, and CLAIMED -> DONE
+ * would have the STC service a slot whose staging is still in progress.
+ * -------------------------------------------------------------------------- */
+int nsfreqx_slot_legal(UINT from, UINT to) asm("NSFRXLEG");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_reap_ok -- may the STC reclaim this slot?
+ *
+ * Only a DEAD verdict reclaims, and only from a state the client has already
+ * PUBLISHED (PENDING / HELD / DONE).
+ *
+ * A CLAIMED slot is never reaped, and the reason is not caution -- it is that
+ * there is nothing to classify.  The identity (req_ascb / req_asid) is written
+ * during staging, so a slot that is CLAIMED but not yet PENDING carries no
+ * identity at all; nsfreqx_classify answers UNKNOWN for a zero ASCB, and
+ * UNKNOWN is never reaped.  The two rules agree by construction rather than by
+ * both being remembered.
+ *
+ * CONSEQUENCE, stated rather than fixed: a client whose address space ends
+ * between the claim and the publish leaks that slot until the STC stops.  That
+ * is the fault-recovery item ADR-0039 and ADR-0041 both still name as open.
+ * -------------------------------------------------------------------------- */
+int nsfreqx_reap_ok(UINT observed_state, int verdict) asm("NSFRXRPO");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_rc_errno -- the router return code a client got, as an errno.
+ *
+ * Before the pool every non-OK rc meant "no STC / stack shutting down", and
+ * the client mapped all of them to NSF_ESHUTDOWN.  Exhaustion breaks that:
+ * a full pool is a healthy, running stack that has no slot right now, and
+ * NSF_ENOBUFS is the project's standing answer for exactly that -- the M0
+ * invariant that pool exhaustion is normal, handled gracefully by every
+ * caller, and never an ABEND (CLAUDE.md 3).  Reporting it as ESHUTDOWN would
+ * tell an application to give up when it should retry.
+ * -------------------------------------------------------------------------- */
+int nsfreqx_rc_errno(int rc) asm("NSFRXRCE");
 
 #endif /* NSFREQX_H */

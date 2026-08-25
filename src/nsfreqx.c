@@ -104,3 +104,128 @@ int nsfreqx_guard_ok(const char *guard)
     }
     return (memcmp(guard, NSFREQX_GUARD, NSFREQX_GUARDLEN) == 0) ? 1 : 0;
 }
+
+/* ==========================================================================
+ * M5-2b3 (ADR-0042): the slot pool's pure arithmetic.
+ *
+ * Extracted so TSTREQX pins every row, rather than a live run having to hit
+ * each one.  See include/nsfreqx.h for the contracts and the reasoning.
+ * ========================================================================== */
+
+/* -------------------------------------------------------------------------- */
+int nsfreqx_classify(UINT req_ascb, UINT req_asid, UINT asvt_maxu,
+                     const UINT *asvt_enty)
+{
+    UINT entry;
+
+    /* No identity recorded -- a slot that is claimed but not yet published is
+     * the ordinary way to reach this, and it is exactly why a CLAIMED slot is
+     * never reaped (nsfreqx_reap_ok). */
+    if (req_ascb == 0u) {
+        return NSFREQX_CL_UNKNOWN;
+    }
+    /* The STC could not reach an ASVT at all. */
+    if (asvt_enty == NULL || asvt_maxu == 0u) {
+        return NSFREQX_CL_UNKNOWN;
+    }
+    /* ASIDs are 1-based; entry[asid - 1] is the one that names this address
+     * space.  Range-check BEFORE the subtraction, so a zero ASID can never
+     * index entry[-1]. */
+    if (req_asid == 0u || req_asid > asvt_maxu) {
+        return NSFREQX_CL_UNKNOWN;
+    }
+
+    entry = asvt_enty[req_asid - 1u];
+
+    if (entry & NSFREQX_ASVT_AVAIL) {
+        return NSFREQX_CL_DEAD;         /* the ASID is free: the AS ended     */
+    }
+    if (entry != req_ascb) {
+        return NSFREQX_CL_DEAD;         /* ASID REUSED -- a different AS now  */
+    }
+    return NSFREQX_CL_LIVE;
+}
+
+/* -------------------------------------------------------------------------- */
+int nsfreqx_slot_action(UINT state, int verdict, int guard_ok, int ptr_ok)
+{
+    /* Only a published request is this drain's work item.  A DONE slot belongs
+     * to its owner (which releases it), a HELD one was already taken off the
+     * work list, and CLAIMED/FREE are mid-claim or idle. */
+    if (state != NSFREQX_ST_PENDING) {
+        return NSFREQX_ACT_NONE;
+    }
+
+    /* Liveness BEFORE storage trust (see the header): a dead client's slot is
+     * reclaimed whether or not its guard survived, and the alternative --
+     * posting into an address space that ended -- is the worse failure. */
+    if (verdict == NSFREQX_CL_DEAD) {
+        return NSFREQX_ACT_REAP;
+    }
+    if (verdict == NSFREQX_CL_UNKNOWN) {
+        return NSFREQX_ACT_HOLD;
+    }
+
+    /* The client is live, so the only question left is whether the storage
+     * describing its request can be trusted.  Neither of these POSTs. */
+    if (!guard_ok || !ptr_ok) {
+        return NSFREQX_ACT_REAP_BAD;
+    }
+    return NSFREQX_ACT_DISPATCH;
+}
+
+/* -------------------------------------------------------------------------- */
+int nsfreqx_slot_legal(UINT from, UINT to)
+{
+    switch (from) {
+    case NSFREQX_ST_FREE:
+        return (to == NSFREQX_ST_CLAIMED);
+    case NSFREQX_ST_CLAIMED:
+        /* PENDING is the publish; FREE is the bail-before-publish path. */
+        return (to == NSFREQX_ST_PENDING || to == NSFREQX_ST_FREE);
+    case NSFREQX_ST_PENDING:
+        return (to == NSFREQX_ST_DONE || to == NSFREQX_ST_HELD ||
+                to == NSFREQX_ST_FREE);
+    case NSFREQX_ST_HELD:
+        return (to == NSFREQX_ST_FREE);
+    case NSFREQX_ST_DONE:
+        return (to == NSFREQX_ST_FREE);
+    default:
+        return 0;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+int nsfreqx_reap_ok(UINT observed_state, int verdict)
+{
+    if (verdict != NSFREQX_CL_DEAD) {
+        return 0;
+    }
+    /* Published states only.  CLAIMED carries no identity to classify, and
+     * FREE is not a request at all. */
+    return (observed_state == NSFREQX_ST_PENDING ||
+            observed_state == NSFREQX_ST_HELD    ||
+            observed_state == NSFREQX_ST_DONE) ? 1 : 0;
+}
+
+/* -------------------------------------------------------------------------- */
+int nsfreqx_rc_errno(int rc)
+{
+    switch (rc) {
+    case NSFREQX_RC_OK:
+        return 0;
+    case NSFREQX_RC_NOBUF:
+        /* A full pool is a HEALTHY stack with no slot right now.  Reporting
+         * ESHUTDOWN here would tell an application to give up when the correct
+         * answer is to retry. */
+        return NSF_ENOBUFS;
+    case NSFREQX_RC_INVALID:
+    case NSFREQX_RC_CORRUPT:
+    case NSFREQX_RC_NOREQ:
+    default:
+        /* Every other rc means no STC has published an anchor, or the one that
+         * did is quiescing -- "the stack is shutting down" is the honest
+         * reading, and it is what the client mapped them to before b3. */
+        return NSF_ESHUTDOWN;
+    }
+}
