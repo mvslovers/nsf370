@@ -118,9 +118,10 @@ int nsfreqx_classify(UINT req_ascb, UINT req_asid, UINT asvt_maxu,
 {
     UINT entry;
 
-    /* No identity recorded -- a slot that is claimed but not yet published is
-     * the ordinary way to reach this, and it is exactly why a CLAIMED slot is
-     * never reaped (nsfreqx_reap_ok). */
+    /* No identity recorded at all.  NOTE this is NOT the ordinary state of a
+     * CLAIMED slot -- identity is written at the claim, before staging -- so
+     * do not read this branch as the reason CLAIMED is never reaped.  That
+     * reason is nsfreqx_reap_ok excluding it explicitly. */
     if (req_ascb == 0u) {
         return NSFREQX_CL_UNKNOWN;
     }
@@ -198,13 +199,25 @@ int nsfreqx_slot_legal(UINT from, UINT to)
 }
 
 /* -------------------------------------------------------------------------- */
-int nsfreqx_reap_ok(UINT observed_state, int verdict)
+int nsfreqx_reap_ok(UINT observed_state, int verdict, int storage_ok)
 {
-    if (verdict != NSFREQX_CL_DEAD) {
+    /* UNKNOWN NEVER RECLAIMS, whatever the storage says.  Untrusted storage
+     * means "never POST through this slot", and HOLD already achieves that
+     * without freeing anything -- so reclaiming here would buy nothing and
+     * risk the one outcome the safe-side asymmetry exists to prevent: a LIVE
+     * client having its storage freed underneath it.  This row is the whole
+     * reason UNKNOWN is a third state instead of a pessimistic DEAD. */
+    if (verdict == NSFREQX_CL_UNKNOWN) {
         return 0;
     }
-    /* Published states only.  CLAIMED carries no identity to classify, and
-     * FREE is not a request at all. */
+    /* Two reasons, not one: the client is gone, or the storage describing its
+     * request cannot be trusted and must never be POSTed through. */
+    if (verdict != NSFREQX_CL_DEAD && storage_ok) {
+        return 0;
+    }
+    /* Published states only.  FREE is not a request at all, and CLAIMED is
+     * excluded HERE and nowhere else -- see the header: it is classifiable,
+     * so nothing else excludes it. */
     return (observed_state == NSFREQX_ST_PENDING ||
             observed_state == NSFREQX_ST_HELD    ||
             observed_state == NSFREQX_ST_DONE) ? 1 : 0;

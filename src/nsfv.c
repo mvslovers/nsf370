@@ -359,9 +359,15 @@ nsfv_client_state(const NSFV_SLOT *slot)
  * routine incrementing it, and the dead one will never decrement.
  * ============================================================ */
 static int
-nsfv_reap(NSFV_ANCHOR *anchor, NSFV_SLOT *slot, UINT observed)
+nsfv_reap(NSFV_ANCHOR *anchor, NSFV_SLOT *slot, UINT observed, int verdict)
 {
     UINT want = observed;
+
+    /* Same single encoding the production STC uses -- the probe has no storage
+     * trust check of its own, so storage_ok is 1 and liveness decides. */
+    if (!nsfreqx_reap_ok(observed, verdict, 1)) {
+        return 0;
+    }
 
     /* M5-2b3: TAKE OWNERSHIP BY CS BEFORE CLEARING (ADR-0042 2).  With one
     ** slot the reaper raced with nobody; with a pool it is a THIRD OBSERVER,
@@ -423,7 +429,7 @@ nsfv_service(NSFV_ANCHOR *anchor, NSFV_SLOT *slot)
         lasid = slot->req_asid;
 
         if (cl == NSFREQX_CL_DEAD) {
-            nsfv_reap(anchor, slot, NSFV_REQ_PENDING);
+            nsfv_reap(anchor, slot, NSFV_REQ_PENDING, cl);
             linfl = anchor->inflight;
             lreap = anchor->reaped;
         } else if (cl == NSFREQX_CL_UNKNOWN) {

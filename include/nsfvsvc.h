@@ -110,14 +110,22 @@
 #define NSFV_REQ_HELD     3U
 
 /* CLAIMED (M5-2b3): the claim CS succeeded, staging is in progress, nothing is
- * published yet.  Busy to another client, and NOT a work item to the STC --
- * which is also why it is never reaped: the identity (req_ascb / req_asid) is
- * written during staging, so a CLAIMED slot carries no identity to classify.
- * nsfreqx_classify answers UNKNOWN for a zero ASCB and UNKNOWN is never
- * reaped, so the two rules agree by construction rather than by both being
- * remembered.  Consequence, stated rather than fixed: a client whose address
- * space ends between the claim and the publish leaks that slot until the STC
- * stops.  That is the fault-recovery item ADR-0039/0041 still name as open. */
+ * published yet.  Busy to another client, and NOT a work item to the STC.
+ *
+ * IT IS NEVER REAPED, AND NOT BECAUSE IT CANNOT BE CLASSIFIED.  The identity
+ * (req_ascb / req_asid) is recorded at the CLAIM -- immediately after the CS,
+ * before any staging (asm/nsfvsvc.asm, CLAIMOK) -- so a CLAIMED slot has a
+ * real ASCB and nsfreqx_classify will answer LIVE or DEAD for it.  Safety
+ * rests on nsfreqx_reap_ok excluding CLAIMED EXPLICITLY, and on nothing else.
+ *
+ * Consequence, stated rather than fixed: a client whose address space ends
+ * between the claim and the publish leaks that slot until the STC stops.  It
+ * is classifiable, so that leak is closable -- but not by widening the
+ * predicate: the two-move reap proves exclusivity with CS(observed ->
+ * CLAIMED), and when the observed state already IS CLAIMED that compare
+ * succeeds trivially and cannot tell "I took it" from "the live owner still
+ * has it".  Closing it needs a distinct fourth state (CS(CLAIMED -> REAPING)).
+ * That belongs with fault recovery, which ADR-0039/0041 still name as open. */
 #define NSFV_REQ_CLAIMED  4U
 
 /* Router return codes (-> R15 to the SVC issuer). */

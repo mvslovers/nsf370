@@ -311,9 +311,19 @@ nsfsx_client_state(const NSFV_SLOT *slot)
  * meant to reap no longer exists: tolerate it and move on, changing nothing.
  * Returns 1 if the slot was reclaimed.  Caller must already be in key 0. */
 static int
-nsfsx_reap(NSFV_SLOT *slot, UINT observed)
+nsfsx_reap(NSFV_SLOT *slot, UINT observed, int verdict, int storage_ok)
 {
     UINT want = observed;
+
+    /* THE PREDICATE GOVERNS, it does not merely describe.  Routing every reap
+     * through nsfreqx_reap_ok keeps ONE encoding of "may this slot be
+     * reclaimed" -- two encodings of one rule is how they diverge, and this is
+     * the rule that decides whether a live client's storage gets freed.  It is
+     * also what makes the seven TSTREQX assertions statements about code that
+     * runs. */
+    if (!nsfreqx_reap_ok(observed, verdict, storage_ok)) {
+        return 0;
+    }
 
     if (__cas((unsigned *)&slot->req_state, (unsigned *)&want,
               NSFV_REQ_CLAIMED) != 0) {
@@ -576,7 +586,9 @@ nsfsx_drain(void)
         lasid = slot->req_asid;
 
         if (cl == NSFREQX_CL_DEAD) {
-            nsfsx_reap(slot, NSFV_REQ_PENDING);
+            /* The completion path: storage was trusted at dispatch, so the
+            ** only reason to reclaim here is that the client died meanwhile. */
+            nsfsx_reap(slot, NSFV_REQ_PENDING, cl, 1);
         } else if (cl == NSFREQX_CL_UNKNOWN) {
             /* Neither post nor reap.  HELD keeps the slot busy to the SVC
             ** routine while taking it off this drain's work list. */
@@ -628,7 +640,7 @@ nsfsx_drain(void)
 
         switch (act) {
         case NSFREQX_ACT_REAP:
-            nsfsx_reap(slot, NSFV_REQ_PENDING);
+            nsfsx_reap(slot, NSFV_REQ_PENDING, cl, 1);
             break;
         case NSFREQX_ACT_HOLD:
             slot->req_state = NSFV_REQ_HELD;
@@ -639,7 +651,10 @@ nsfsx_drain(void)
             ** routine would happily key-0 POST to a wrong address inside our
             ** private storage. */
             corrupt = nsfreqx_guard_ok(slot->rqe_guard) ? 2 : 1;
-            nsfsx_reap(slot, NSFV_REQ_PENDING);
+            /* storage_ok = 0: this reclaim is mandated by the storage being
+            ** untrustworthy, NOT by liveness -- the client here is LIVE, and
+            ** passing the verdict alone would have the predicate refuse. */
+            nsfsx_reap(slot, NSFV_REQ_PENDING, cl, 0);
             break;
         case NSFREQX_ACT_DISPATCH:
             if (slot->xfunc == NSFV_REQ_RQE) {

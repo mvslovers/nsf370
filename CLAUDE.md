@@ -923,10 +923,25 @@ early-returns on `g_busy`** and never scans for other PENDING slots, so a second
 published request is invisible to the WAIT gate while the first is in service — it rides the
 heartbeat instead of the probe. Latency, not corruption (ADR-0025 defect (2)'s shape), and a
 state b3 created. A **measured** change worth keeping: a client that faults in the write-IN
-direction now leaves its slot **`CLAIMED`**, not FREE — and a `CLAIMED` slot carries no identity,
-so the death guard can never reclaim it. That is the documented consequence of the claim being a
-`CS`, now measured rather than predicted; fault recovery remains the open item ADR-0039/0041
-name. **#53, #54 and #56 deliberately untouched.**
+direction now leaves its slot **`CLAIMED`**, not FREE, and the death guard never reclaims it —
+**because `nsfreqx_reap_ok` excludes CLAIMED explicitly, NOT because it cannot be classified.**
+(A first draft of the rationale claimed the exclusion was redundant with the classifier; it is
+not — identity is recorded at the **claim**, before staging, so a CLAIMED slot has a real ASCB.
+Review caught it, and it mattered: a rule believed redundant is a rule someone deletes.) Because
+it *is* classifiable the leak is **closable**, but not by widening the predicate — the two-move
+reap proves exclusivity with `CS(observed→CLAIMED)`, which succeeds trivially when the observed
+state already IS CLAIMED, so it needs a distinct fourth state `CS(CLAIMED→REAPING)`; that belongs
+with fault recovery, still open per ADR-0039/0041. **One rule, one encoding:** every production
+reap is now gated on `nsfreqx_reap_ok` (it was pinned seven times and called nowhere, while the
+live path expressed the rule twice), the predicate carries **both** reclaim reasons — a DEAD
+client and untrusted storage — and TSTREQX sweeps all 60 rows asserting **every reap
+`slot_action` MANDATES is one `reap_ok` PERMITS**. That sweep earned its keep immediately: it
+failed twice before passing, first catching a contradiction I had written (untrusted storage must
+**not** reclaim an UNKNOWN client — `HELD` already guarantees "never POST through this slot"
+without freeing anything, which is the whole reason UNKNOWN is a third state), then forcing the
+invariant to be stated correctly as an **implication, not an equality** (the two helpers answer
+different questions: per-pass dispatch vs. permission, and equality failed on 14 of 60 rows that
+are all correct). **#53, #54 and #56 deliberately untouched.**
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 

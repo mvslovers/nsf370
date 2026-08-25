@@ -410,24 +410,91 @@ int main(void)
 
     /* ---- the reap predicate ----------------------------------------------- */
     {
-        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_DEAD),
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_DEAD, 1),
                  1L, "reap: a DEAD client's PENDING slot");
-        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_HELD, NSFREQX_CL_DEAD),
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_HELD, NSFREQX_CL_DEAD, 1),
                  1L, "reap: a DEAD client's HELD slot");
-        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_DONE, NSFREQX_CL_DEAD),
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_DONE, NSFREQX_CL_DEAD, 1),
                  1L, "reap: a DEAD client's DONE slot");
 
-        /* Never on a verdict that is not DEAD -- the safe-side asymmetry. */
-        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_LIVE),
-                 0L, "reap: never a LIVE client");
-        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_UNKNOWN),
-                 0L, "reap: never an UNKNOWN client");
+        /* Never on a verdict that is not DEAD -- the safe-side asymmetry --
+         * PROVIDED the storage is trustworthy. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_LIVE, 1),
+                 0L, "reap: never a LIVE client whose storage is intact");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING,
+                                       NSFREQX_CL_UNKNOWN, 1),
+                 0L, "reap: never an UNKNOWN client whose storage is intact");
 
-        /* Never a state the client has not published. */
-        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_CLAIMED, NSFREQX_CL_DEAD),
-                 0L, "reap: never CLAIMED -- there is no identity to classify");
-        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_FREE, NSFREQX_CL_DEAD),
+        /* THE SECOND REASON. Untrusted storage reclaims regardless of liveness,
+         * because the slot must never be POSTed through -- and a LIVE verdict
+         * alone would have refused. This is the row that made the predicate's
+         * old two-argument shape unusable at one of its three call sites. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING, NSFREQX_CL_LIVE, 0),
+                 1L, "reap: untrusted storage reclaims even a LIVE client");
+        /* But NOT an UNKNOWN one, and this row is the point of the third
+         * state: HOLD already guarantees "never POST through this slot"
+         * without freeing anything, so reclaiming would buy nothing and risk
+         * a LIVE client's storage. Asserted here because the agreement sweep
+         * below CAUGHT me writing the opposite. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_PENDING,
+                                       NSFREQX_CL_UNKNOWN, 0),
+                 0L, "reap: untrusted storage does NOT reclaim an UNKNOWN"
+                     " client -- HOLD covers it without freeing");
+
+        /* Never a state the client has not published -- and untrusted storage
+         * does NOT override that: an unpublished slot is not a request. */
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_CLAIMED, NSFREQX_CL_DEAD, 1),
+                 0L, "reap: never CLAIMED (excluded HERE and nowhere else --"
+                     " a CLAIMED slot IS classifiable)");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_CLAIMED, NSFREQX_CL_LIVE, 0),
+                 0L, "reap: never CLAIMED, not even on untrusted storage");
+        CHECK_EQ((long)nsfreqx_reap_ok(NSFREQX_ST_FREE, NSFREQX_CL_DEAD, 1),
                  0L, "reap: never FREE -- it is not a request");
+    }
+
+    /* ---- the two helpers must not contradict each other -------------------
+     * THIS is what keeps one rule from becoming two, and getting the invariant
+     * right took a failing run: the two functions answer DIFFERENT questions.
+     *
+     *   nsfreqx_slot_action  what the drain does with a slot ON THIS PASS --
+     *                        and only a PENDING slot is a work item at all.
+     *   nsfreqx_reap_ok      whether a slot MAY be reclaimed, ever -- which is
+     *                        also true of a dead client's HELD or DONE slot,
+     *                        reached by the completion path rather than by the
+     *                        scan.
+     *
+     * So the relationship is an IMPLICATION, not an equality: every reap the
+     * action helper MANDATES must be one the predicate PERMITS. The converse
+     * is false by design, and asserting equality here failed on 14 of 60 rows
+     * -- all of them HELD/DONE slots the predicate rightly allows and the
+     * per-pass dispatcher rightly ignores. */
+    {
+        UINT st[5];
+        int  v, g, pt, i;
+        int  mismatches = 0;
+
+        st[0] = NSFREQX_ST_FREE;    st[1] = NSFREQX_ST_PENDING;
+        st[2] = NSFREQX_ST_DONE;    st[3] = NSFREQX_ST_HELD;
+        st[4] = NSFREQX_ST_CLAIMED;
+
+        for (i = 0; i < 5; i++) {
+            for (v = 0; v <= 2; v++) {
+                for (g = 0; g <= 1; g++) {
+                    for (pt = 0; pt <= 1; pt++) {
+                        int act  = nsfreqx_slot_action(st[i], v, g, pt);
+                        int acts = (act == NSFREQX_ACT_REAP ||
+                                    act == NSFREQX_ACT_REAP_BAD);
+                        int pred = nsfreqx_reap_ok(st[i], v, (g && pt));
+                        /* mandated => permitted */
+                        if (acts && !pred) mismatches++;
+                    }
+                }
+            }
+        }
+        CHECK_EQ((long)mismatches, 0L,
+                 "every reap slot_action MANDATES is one reap_ok PERMITS,"
+                 " across all 60 inputs (the drain can never order a reclaim"
+                 " the predicate forbids)");
     }
 
     /* ---- the rc -> errno mapping ------------------------------------------ */

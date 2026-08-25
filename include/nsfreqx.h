@@ -270,21 +270,45 @@ int nsfreqx_slot_legal(UINT from, UINT to) asm("NSFRXLEG");
 /* --------------------------------------------------------------------------
  * nsfreqx_reap_ok -- may the STC reclaim this slot?
  *
- * Only a DEAD verdict reclaims, and only from a state the client has already
- * PUBLISHED (PENDING / HELD / DONE).
+ * THE WHOLE RULE, in one place.  There are two reasons to reclaim and they are
+ * not the same reason:
  *
- * A CLAIMED slot is never reaped, and the reason is not caution -- it is that
- * there is nothing to classify.  The identity (req_ascb / req_asid) is written
- * during staging, so a slot that is CLAIMED but not yet PENDING carries no
- * identity at all; nsfreqx_classify answers UNKNOWN for a zero ASCB, and
- * UNKNOWN is never reaped.  The two rules agree by construction rather than by
- * both being remembered.
+ *   the client is DEAD          -- nobody is coming back for this slot;
+ *   the storage is NOT TRUSTED  -- the slot's guard word or the published
+ *                                 wake-ECB pointer is clobbered, so we must
+ *                                 never POST through it, whatever the client
+ *                                 is doing.
+ *
+ * Either reclaims, and only from a state the client has already PUBLISHED
+ * (PENDING / HELD / DONE).  `storage_ok` is 0 when either trust check failed.
+ *
+ * This function GOVERNS -- every production reap is gated on it, and
+ * nsfreqx_slot_action's REAP / REAP_BAD rows are asserted to agree with it row
+ * for row (TSTREQX).  Two encodings of one rule is how they diverge, and this
+ * is the rule that decides whether a live client's storage gets freed.
+ *
+ * A CLAIMED slot is never reaped -- but NOT because it cannot be classified.
+ * The identity (req_ascb / req_asid) is recorded at the CLAIM, immediately
+ * after the CS and before any staging (asm/nsfvsvc.asm, CLAIMOK), so a CLAIMED
+ * slot has a real ASCB and nsfreqx_classify will answer LIVE or DEAD for it.
+ * Safety here rests on THIS function excluding CLAIMED explicitly, and on
+ * nothing else.  (An earlier version of this comment claimed the two rules
+ * agreed by construction. They do not, and that mattered: a rule believed to
+ * be redundant is a rule someone removes.)
  *
  * CONSEQUENCE, stated rather than fixed: a client whose address space ends
- * between the claim and the publish leaks that slot until the STC stops.  That
- * is the fault-recovery item ADR-0039 and ADR-0041 both still name as open.
+ * between the claim and the publish leaks that slot until the STC stops.  It
+ * is CLASSIFIABLE, so closing that leak is possible -- but it is not simply a
+ * matter of widening this predicate.  The two-move reap establishes
+ * exclusivity through CS(observed -> CLAIMED); when the observed state already
+ * IS CLAIMED that compare succeeds trivially and proves nothing, so it cannot
+ * distinguish "I took it" from "the live owner still has it".  Closing the
+ * leak needs a distinct fourth state -- CS(CLAIMED -> REAPING) -- for the
+ * reaper to prove exclusivity with.  That belongs with fault recovery, which
+ * ADR-0039 and ADR-0041 both still name as open.
  * -------------------------------------------------------------------------- */
-int nsfreqx_reap_ok(UINT observed_state, int verdict) asm("NSFRXRPO");
+int nsfreqx_reap_ok(UINT observed_state, int verdict,
+                    int storage_ok) asm("NSFRXRPO");
 
 /* --------------------------------------------------------------------------
  * nsfreqx_rc_errno -- the router return code a client got, as an errno.

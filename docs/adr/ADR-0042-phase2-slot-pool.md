@@ -275,8 +275,21 @@ bottleneck. Concurrent *service* is **b4**.
 - **Concurrent service.** One in-service request at a time (Decision 10). **b4.**
 - **Two-address-space stress.** **e.**
 - **Fault recovery and address validation.** Still open, still named by ADR-0039 and ADR-0041.
-  A slot whose owner faults mid-request leaves the slot CLAIMED; the death guard reclaims it
-  only if the owner's whole address space ended.
+  A slot whose owner faults mid-request leaves it **CLAIMED**, and `nsfreqx_reap_ok` excludes
+  CLAIMED, so the death guard never reclaims it — the slot leaks until the STC stops.
+
+  **Correcting a claim an earlier draft of this ADR made:** that exclusion is *not* redundant
+  with the classifier. Identity (`req_ascb` / `req_asid`) is recorded at the **claim**,
+  immediately after the `CS` and before any staging, so a CLAIMED slot has a real ASCB and
+  `nsfreqx_classify` answers LIVE or DEAD for it. Safety rests on the predicate's explicit
+  exclusion and on nothing else — which matters, because a rule believed redundant is a rule
+  someone deletes.
+
+  Because it *is* classifiable, the leak is closable — but not by widening the predicate. The
+  two-move reap proves exclusivity with `CS(observed → CLAIMED)`; when the observed state
+  already **is** CLAIMED that compare succeeds trivially and cannot distinguish "I took it"
+  from "the live owner still has it". Closing it needs a distinct fourth state,
+  `CS(CLAIMED → REAPING)`. Whether to spend that belongs with fault recovery.
 - **The probe scaffolding.** This step *grows* it by one verb (a slot pre-setter the live
   exhaustion and skip checks need). Removing it is **M5-2c**, and it is a **security** item, not
   hygiene: `FNXFER` is reachable by an unauthorised client and still stores under key 0.
