@@ -82,8 +82,9 @@ nsfv_anchor_alloc(void)
             ** and stamp every slot's guard.  memset already left the states
             ** FREE, which is what the claim CS compares against. */
             unsigned i;
-            anchor->nslots    = NSFV_NSLOTS;
-            anchor->exhausted = 0;
+            anchor->nslots     = NSFV_NSLOTS;
+            anchor->exhausted  = 0;
+            anchor->collisions = 0;    /* M5-2b4: contended claims           */
             for (i = 0; i < NSFV_NSLOTS; i++)
                 memcpy(anchor->slots[i].rqe_guard, NSFREQX_GUARD,
                        NSFREQX_GUARDLEN);
@@ -561,10 +562,10 @@ nsfv_process_cib(NSFV_STC *stc, CIB *cib)
         }
         if (stc->anchor)
             wtof("NSFV002I NSFV SERVED=%u INFLIGHT=%u REAPED=%u BUSY=%u"
-                 " EXH=%u",
+                 " EXH=%u COLL=%u",
                  stc->anchor->served, stc->anchor->inflight,
                  stc->anchor->reaped, nsfv_busy_slots(stc->anchor),
-                 stc->anchor->exhausted);
+                 stc->anchor->exhausted, stc->anchor->collisions);
         else
             wtof("NSFV002I NSFV NO ANCHOR");
         return;

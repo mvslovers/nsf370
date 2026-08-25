@@ -110,7 +110,9 @@ ANCREAPD EQU   32                 F    reaped (dead reqs reclaimed)
 ANCSEPTR EQU   36                 A    A(STC private key-8 wake ECB)
 ANCNSLOT EQU   40                 F    nslots -- THE SCAN'S BOUND
 ANCEXH   EQU   44                 F    exhausted (ENOBUFS count)
-ANCSLOTS EQU   48                 the slot array base
+ANCCOLL  EQU   48                 F    collisions (contended claims)
+ANCRSV0  EQU   52                 F    reserved -- header slack
+ANCSLOTS EQU   56                 the slot array base
 *  Per slot, addressed off R7 (the slot base).  ADR-0042 5.
 SLSTATE  EQU   0                  F    req_state -- THE CS CLAIM WORD
 SLTOKEN  EQU   4                  F    req_token
@@ -163,7 +165,7 @@ RCNOBUF  EQU   16                 POOL FULL -> ENOBUFS (ADR-0042 7)
 *  silently keeps the previous one (CLAUDE.md 5) -- a stale routine against a
 *  moved layout is a wild CSA store, not a wrong answer.  Two instructions
 *  turn that into RCCORR.  Bump with every layout move or it is decorative.
-ANCVERNO EQU   2                  NSFV_ANCHOR_VER
+ANCVERNO EQU   3                  NSFV_ANCHOR_VER
 *  request functions + MVCK copy constants (mirror nsfvsvc.h)
 FNECHO   EQU   1
 FNXFER   EQU   2
@@ -315,6 +317,18 @@ CLAIMLP  DS    0H
          LA    R4,STCLAIM         R4 = CLAIMED (swap-in)
          CS    R3,R4,SLSTATE(R10) free ? take it : R3 = actual
          BE    CLAIMOK            ours
+*  CONTENDED (M5-2b4).  The compare failed, so this slot was NOT FREE at the
+*  instant we compared -- somebody else's claim is there.  Count it and walk
+*  on.  R3 (the value CS handed back) and R4 (the swap-in constant) are both
+*  dead here and both re-set at the top of the next iteration; R7 is NOT
+*  touched -- it still holds the FLIH's caller ASCB until CLAIMOK records it.
+*  Plain L/LA/ST on purpose: see "COLLISIONS" in include/nsfvsvc.h.  This is
+*  the routine's one hot loop and the counter is a diagnostic that may
+*  under-report; do not turn it into the CS loop POOLFUL uses.
+         L     R3,ANCCOLL(,R2)    contended-claim counter
+         LA    R3,1(,R3)
+         ST    R3,ANCCOLL(,R2)
+CLAIMNX  DS    0H
          LA    R9,1(,R9)          next index
          LA    R10,SLOTLEN(,R10)  next slot (pointer walk)
          BCT   R11,CLAIMLP
