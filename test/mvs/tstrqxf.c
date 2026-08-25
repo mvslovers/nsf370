@@ -70,6 +70,42 @@
  * CSA), while a key-8 STORE into it is denied.  That is exactly the hazard b1
  * closes, and exactly what (B) constructs.
  * ------------------------------------------------------------------------
+ * A FAULT ALONE IS NOT EVIDENCE -- (B) MUST ALSO SHOW THE REQUEST DID NOT
+ * COMPLETE.
+ *
+ * "The request took an S0C4" says a fault happened, not WHERE.  That gap is
+ * not hypothetical: M5-2b2's first attempt broke the routine so that it
+ * faulted immediately after the POST, in code that had nothing to do with the
+ * write-out -- and (B) passed, because an S0C4 is an S0C4.  Every gate in the
+ * set went green over a broken routine.  Since b2/b3/b4 all lean on this file,
+ * (B) now asserts a fault AND that the request is demonstrably unfinished.
+ * A fault plus an unfinished request is RQEOUT; a fault alone is nothing.
+ *
+ * NOT `req_state == DONE`.  It looks like the obvious check and it is wrong:
+ * the STC sets DONE asynchronously, so DONE is reached even when the client
+ * dies the instant after the POST.  It is evidence the STC ran, never evidence
+ * the client got back.
+ *
+ * TWO SENTINELS, each independently sufficient, both asserted:
+ *
+ *   rc      the caller's NSFV_REQ.rc is pre-set to XF_RC_SENT.  REPLYC -- and
+ *           every bail path -- writes rc.  Still the sentinel => control never
+ *           reached REPLYC or any bail, so it died between DOPOST and there,
+ *           which is exactly where RQEOUT lives.
+ *   rqeimg  the caller's 64-byte NSFRQE image is pre-filled with a positional
+ *           pattern.  RQEOUT's SECOND move copies the slot back over it, and
+ *           the slot differs from what we sent (the STC wrote retcode/errno_
+ *           into it), so a completed write-back MUST change these bytes.
+ *           Byte-identical => the write-back never ran.
+ *
+ * THE THIRD CANDIDATE -- reading the target bytes back -- IS VACUOUS HERE, and
+ * the reason is worth stating so nobody adds it thinking it strengthens
+ * anything.  The safety property below is that the in-move and the out-move
+ * are the reverse of each other inside stage[], so the out-move writes back
+ * EXACTLY the bytes the in-move read.  The target is therefore byte-identical
+ * whether the store landed or not.  It cannot distinguish the two cases: the
+ * very construction that makes (B) safe to run is what makes that check empty.
+ * ------------------------------------------------------------------------
  * HOW (B) IS SAFE, WHICH IS THE WHOLE REASON IT CAN EXIST.
  *
  * The obvious way to build this case -- point `ubuf` at some piece of system
@@ -159,7 +195,14 @@
  * NSF's own staging scratch, overwritten by the next request. */
 #define XF_POISON     0x5Au
 
+/* (B)'s completion sentinels.  XF_RC_SENT is not 0 and not any NSFV_RC_*
+ * (0/4/8/12), so it cannot be confused with a real router return code. */
+#define XF_RC_SENT   0x5AB2CC01
+
 static NSFRQE      g_image;             /* a valid 64-byte image to carry     */
+static NSFRQE      g_image_ref;         /* (B): the pattern we pre-filled it   */
+static NSFV_REQ    g_breq;              /* (B): file scope so main can read it */
+                                        /*      AFTER the routine faults       */
 static unsigned    g_probe;             /* (A) the candidate under test       */
 static char        g_own[64];           /* a known-good address to start from */
 
@@ -332,14 +375,8 @@ t_stage_write(void)
 static int
 t_stage_ubuf(void)
 {
-    NSFV_REQ req;
-
-    xf_req_init(&req, NSFV_REQ_RQE);
-    req.ubuf   = (void *)g_stagep;
-    req.ulen   = XF_STAGE_LEN;
-    req.rqeimg = (void *)&g_image;
-    nsfv_svc_issue(&req);
-    g_stage_rc = req.rc;                /* reached ONLY without the window    */
+    nsfv_svc_issue(&g_breq);            /* set up by main, so it OUTLIVES this */
+    g_stage_rc = g_breq.rc;             /* reached ONLY without the window     */
     return 0;
 }
 
@@ -563,6 +600,26 @@ main(void)
      * STC services the request, and the write-out must fault under the window.
      * WITHOUT the window the store succeeds and the request returns rc=0 --
      * having performed a byte-identical staging-to-staging round trip. */
+    /* Pre-fill both sentinels.  The image pattern is POSITIONAL (byte i
+     * depends on i), so a partial write-back is detectable and not just a
+     * whole-buffer compare that a memset-like clobber could also pass. */
+    {
+        unsigned char *ip = (unsigned char *)&g_image;
+        unsigned       i;
+
+        for (i = 0; i < sizeof g_image; i++) {
+            ip[i] = (unsigned char)(0xA0u + (i & 0x0Fu));
+        }
+        memcpy(g_image.eye, "RQE ", 4);          /* still a dispatchable RQE */
+        g_image.fn = (USHORT)XF_FN_UNKNOWN;      /* -> EINVAL, no side effect */
+        memcpy(&g_image_ref, &g_image, sizeof g_image);
+    }
+    xf_req_init(&g_breq, NSFV_REQ_RQE);
+    g_breq.ubuf   = (void *)g_stagep;
+    g_breq.ulen   = XF_STAGE_LEN;
+    g_breq.rqeimg = (void *)&g_image;
+    g_breq.rc     = XF_RC_SENT;         /* REPLYC and every bail overwrite it */
+
     g_stage_rc = 0x7FFFFFFF;
     rc = ___try(t_stage_ubuf);
     printf("  key-0-ubuf request: try rc=%08X\n", (unsigned)rc);
@@ -577,10 +634,26 @@ main(void)
         printf("  the fault is S%03X\n", ((unsigned)rc >> 12) & 0xFFFu);
     }
     CHECK(rc != 0,
-          "THE GATE: the key-0 write-out FAULTS -- the M5-2b1 SPKA window"
+          "THE GATE (1/3): the key-0 write-out FAULTS -- the M5-2b1 SPKA window"
           " checks the caller-supplied destination against the caller's key");
     CHECK(rc >= 0,
           "the fault was CAUGHT (ESTAE created) -- no dump, client alive");
+
+    /* --- the fault was in the WRITE-OUT, not merely somewhere ---
+     * Without these two, an S0C4 from anywhere at all satisfies the gate --
+     * which is how M5-2b2's broken routine passed it. */
+    printf("  rc sentinel: %08X (pre-set %08X) | image %s\n",
+           (unsigned)g_breq.rc, (unsigned)XF_RC_SENT,
+           (memcmp(&g_image, &g_image_ref, sizeof g_image) == 0)
+               ? "byte-identical" : "MODIFIED");
+    wtof("TSTRQXF: (B) rc=%08X imagechg=%d", (unsigned)g_breq.rc,
+         (memcmp(&g_image, &g_image_ref, sizeof g_image) != 0));
+    CHECK_EQ((long)g_breq.rc, (long)XF_RC_SENT,
+             "THE GATE (2/3): rc is untouched -- the routine never reached"
+             " REPLYC or any bail path, so it died in between");
+    CHECK(memcmp(&g_image, &g_image_ref, sizeof g_image) == 0,
+          "THE GATE (3/3): the caller's NSFRQE image is byte-identical -- the"
+          " write-back never ran");
 
     /* --- what did the OUT direction leave behind? ---
      * PREDICTION (b1 reasoned it from a branchless path; here it is measured):

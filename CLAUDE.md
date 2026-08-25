@@ -343,6 +343,17 @@ never hardcode them.
   (MIH, IGF991I/995I)** — rapid-fire UDP echo throughput suffers on a degraded
   pair while ping and *paced* echo stay clean; the M3-5 rapid 1000/1000 echo needs
   a fresh/idle pair, not a code fix.
+- **`make deploy` fails while an STC holds `NSF.LINKLIB` — and the run afterwards
+  silently tests the OLD binary.** Order is **`P NSFS` (or `P NSFV`) → `make deploy`
+  → `S NSFS`**. **Signature:** a *mid-chain* `HTTP 500 Internal Server Error for
+  DELETE /restfiles/ds/NSF.LINKLIB: {"rc":8,...,"message":"Dataset delete failed"}`
+  — easy to miss when `deploy` is chained after `make modules`, because the lines
+  that follow it still look like a normal deploy. **The tell, which is the part
+  worth remembering:** *identical values across supposedly different builds.* Every
+  "live" result after a failed deploy is about the previous module and nothing
+  complains — this is the project's most expensive failure class in pure form.
+  It cost a full diagnostic cycle in M5-2b2, where three runs of "different" routers
+  returned byte-identical numbers. **Re-run rather than reason about it.**
 - **`ssh mvsdev`** (host-side work: `tun0` captures, reading Hercules source,
   `/proc`) is hardened **keychain-independent** — on-disk `~/.ssh/id_rsa`,
   `IdentityAgent none`, `accept-new`, via the `mvsdev` block in `~/.ssh/config`
