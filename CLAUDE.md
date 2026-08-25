@@ -878,7 +878,8 @@ continuation swallowing one, stronger than a spot diff; column 71 clean; size as
 to actually fire** by breaking one; header mirror ↔ asm EQUs cross-checked programmatically 24/24;
 alias scan 214 unique ≤8; clean build 6 modules + 49 test modules, no warnings.
 **VALIDATED LIVE on MVSCE** (the stand was restarted mid-round and came back with the CTCI
-pair working, so everything below is from the second, complete round): full Stage-0
+pair working; the figures below are from the FINAL round, re-run in full after the review fixes
+touched the reap path): full Stage-0
 **`TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH` 444 PASS CC 0 batch+TSO** at the new layout
 (**`TSTMVCD` deliberately excluded** — it is b0's probe, not a Stage-0 gate, and issue #53
 makes it fail for environmental reasons, which in a full-green round costs a re-run and erodes
@@ -903,7 +904,10 @@ was free); it refuses to start naming the size it wanted. `SVC 239` stolen and r
 STCs, `IEF404I`, **no dump**. **The per-slot death guard ran live against the PRODUCTION STC**
 (ORPHAN requests reaching NSFS): two **`NSF050I ... REQUEST REAPED`** rows and one
 **`NSF051W ... REQUEST HELD`** — so the corrected two-move `CS` reap and two of
-`nsfreqx_slot_action`'s rows are live-exercised, not only host-pinned.
+`nsfreqx_slot_action`'s rows are live-exercised, not only host-pinned. **Re-confirmed after the
+review fixes**, which is what proves `nsfreqx_reap_ok` governing every reap live: the DEAD rows
+still reap (the predicate permits) and the UNKNOWN row still holds — and TSTDEATH, which drives
+the same guard through the probe STC, is CC 0 in the 444.
 **A BLOCKING BUG FOUND BY REVIEW, NOT BY A TEST, AND FIXED:** `nsfsx_stop` called
 `nsfsx_router_unload()` **unconditionally**, before deciding whether to retain the CSA — and
 that unload `freemain`s the storage the SVC routine was `__loadhi`'d into, while a client that
