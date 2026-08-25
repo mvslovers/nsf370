@@ -349,8 +349,28 @@ xf_hop(const char *name, int (*body)(void), void *in, int *failed)
     return g_hop_out;
 }
 
-/* (C) read the five self-check words the routine leaves in the dead ANCSAVE. */
+/* (C) read the five self-check words the routine leaves in the dead ANCSAVE.
+ *
+ * THREE STATES, and the third is why this is not a bool.  1 = the check ran and
+ * passed, 2 = it ran and FAILED, 0 = it was NEVER WRITTEN.  With a 1/0 pair a
+ * word that was never reached reads exactly like one that ran and failed, and
+ * those are different faults with different next steps: "the sentinel was
+ * dead" sends you at the save area, "control never got there" sends you at the
+ * path.  Same contract as this file's CC 20 skip code, applied to the
+ * routine's own evidence.  The assertions want 1; the PRINTED line is what
+ * makes 1/2/1/1 and 1/0/1/1 distinguishable to a human reading the spool. */
 static UINT g_sv[5];
+
+static const char *
+xf_state(UINT v)
+{
+    switch (v) {
+    case 1u:  return "ran+passed";
+    case 2u:  return "RAN+FAILED";
+    case 0u:  return "NEVER WRITTEN";
+    default:  return "?? unexpected";
+    }
+}
 
 static int
 t_read_save(void)
@@ -720,12 +740,18 @@ main(void)
     failed = 0;
     (void)xf_hop("SAVE", t_read_save, NULL, &failed);
     CHECK(failed == 0, "the ANCSAVE self-check words are readable from key 8");
-    printf("  area=%08X stamp=%u postok=%u waitok=%u regok=%u\n",
-           (unsigned)g_sv[0], (unsigned)g_sv[1], (unsigned)g_sv[2],
-           (unsigned)g_sv[3], (unsigned)g_sv[4]);
-    wtof("TSTRQXF: (C) area=%08X %u/%u/%u/%u", (unsigned)g_sv[0],
-         (unsigned)g_sv[1], (unsigned)g_sv[2], (unsigned)g_sv[3],
-         (unsigned)g_sv[4]);
+    printf("  area   = %08X\n", (unsigned)g_sv[0]);
+    printf("  stamp  = %u (%s)\n",  (unsigned)g_sv[1], xf_state(g_sv[1]));
+    printf("  postok = %u (%s)\n",  (unsigned)g_sv[2], xf_state(g_sv[2]));
+    printf("  waitok = %u (%s)\n",  (unsigned)g_sv[3], xf_state(g_sv[3]));
+    printf("  regok  = %u (%s)\n",  (unsigned)g_sv[4], xf_state(g_sv[4]));
+    printf("  key: 1 = ran and passed | 2 = ran and FAILED (the sentinel was"
+           " dead) |\n");
+    printf("       0 = NEVER WRITTEN (control did not get there -- a"
+           " different fault)\n");
+    wtof("TSTRQXF: (C) area=%08X %u/%u/%u/%u (1=pass 2=fail 0=unwritten)",
+         (unsigned)g_sv[0], (unsigned)g_sv[1], (unsigned)g_sv[2],
+         (unsigned)g_sv[3], (unsigned)g_sv[4]);
 
     CHECK(g_sv[0] != 0u, "the routine recorded the save area it claimed");
     CHECK(g_sv[0] < (UINT)(void *)g_anchor
@@ -738,16 +764,25 @@ main(void)
           || g_sv[0] >= (UINT)(void *)&g_image + 4096u,
           "the save area is NOT in the client's own storage either");
 
+    /* Each wants 1.  A 2 means the check ran and the sentinel was dead; a 0
+     * means the check never ran at all -- read the printed key above before
+     * chasing either. */
     CHECK_EQ((long)g_sv[1], 1L,
-             "the sentinel stamp took at all (before the POST)");
+             "the sentinel stamp took at all (before the POST) [2=stamp failed,"
+             " 0=never reached]");
     CHECK_EQ((long)g_sv[2], 1L,
-             "POST half: the sentinel survived the branch POST");
+             "POST half: the sentinel survived the branch POST [2=clobbered by"
+             " the POST, 0=never reached]");
     CHECK_EQ((long)g_sv[3], 1L,
              "WAIT half: the sentinel survived the WAIT -- a task switch, the"
-             " STC's cross-AS POST and an SVC 1");
+             " STC's cross-AS POST and an SVC 1 [2=clobbered, 0=never reached]");
+    /* +16 is 1-or-never-written by construction: reaching the store IS the
+     * pass, because the post-WAIT eyecatcher CLC it sits behind needs both a
+     * good R2 and a good R6.  So 0 here means control did not arrive. */
     CHECK_EQ((long)g_sv[4], 1L,
              "REGISTER half: the restored R2 and R6 both still work, so the"
-             " 16 bytes actually stored into came back -- not just the tail");
+             " 16 bytes actually stored into came back -- not just the tail"
+             " [0=never reached; this word has no failure state]");
 
     /* ---- the transport still works end to end -------------------------- */
     rc = xf_query(&st2, &in2, &rp2);

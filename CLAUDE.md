@@ -843,14 +843,30 @@ isolated so M0–M4 already deliver a usable in-process stack.
    every CB, ESTAE coverage, and an 8-char `asm()` alias on every cross-module
    function (asm CSECT names match).
 4. **On-MVS validation** via `make test-mvs` at milestone boundaries and
-   before merging anything touching `asm/*.asm`. **A gate that can skip its
-   load-bearing case must not report CC 0** — return a distinct non-zero code
-   from the test itself (not by changing the mbt harness), so "the gate could
-   not run" never reads as "the gate passed" (`test/mvs/tstrqxf.c`).
-5. **Definition of Done** (§7) must hold, including the leak gate.
-6. **Keep docs honest:** when a decision changes, update the affected spec
+   before merging anything touching `asm/*.asm`.
+5. **Any operation whose ABSENCE is indistinguishable from its SUCCESS needs a
+   third state or an assert.** This is the sibling of the project's most
+   expensive bug class (host-clean, link-clean, wrong only on the machine) one
+   step earlier: *not executed, and nothing says so*. Four sightings in M5-2b
+   alone, all the same shape — the instances are the point, the rule alone reads
+   as a platitude:
+   - a gate that **skipped its load-bearing case and returned CC 0** → fixed
+     with a distinct skip code (`XF_CC_GATE_SKIPPED`, `test/mvs/tstrqxf.c`);
+     return it **from the test**, never by changing the mbt harness;
+   - **`make deploy` failing mid-chain**, after which the run silently tests the
+     previous module (§5 has the signature and the tell);
+   - a **`str.replace` that no-op'd** because a linter had quoted the target
+     line — an unasserted edit that reported success having changed nothing;
+   - a **self-check word never written** reading the same as one that ran and
+     failed → three states (1 pass / 2 ran-and-failed / 0 never-written,
+     `asm/nsfvsvc.asm` `DOPOST`).
+   The cure is always one of: a third state, an assert that the thing happened,
+   or a positive check that the thing took effect. Never infer success from the
+   absence of a complaint.
+6. **Definition of Done** (§7) must hold, including the leak gate.
+7. **Keep docs honest:** when a decision changes, update the affected spec
    chapter and add/append an ADR in the same change. Update §7 status here.
-7. **English** for all code comments, commit messages, and docs.
+8. **English** for all code comments, commit messages, and docs.
 
 ---
 

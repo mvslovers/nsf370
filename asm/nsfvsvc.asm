@@ -35,9 +35,33 @@
 *
 * Entry (Type-3 SVC, set by the SVC FLIH -- STCPSVC / igc0024e.asm):
 *   supervisor state, PSW key 0, ENABLED
-*   R1 = issuer R1 = A(NSFV_REQ) in the CALLER's storage (the M5-2 shape)
-*   R5 = A(SVRB)      R6 = A(entry point = our load point in CSA)
-*   R7 = A(caller ASCB)   R13 = issuer R13 (18-word savearea)   R14 = return
+*
+*   reg  set by the FLIH to        still valid at DOPOST / RQEOUT?
+*   ---  ------------------------  ------------------------------------------
+*   R1   A(NSFV_REQ), caller AS    no -- copied to R8 at entry; use R8
+*   R4   A(TCB)                    NO -- DESTROYED: RQEIN/XFERIN use it as the
+*                                  MVCK destination pointer (LA R4,ANCSTAGE
+*                                  and LA R4,ANCRQE).  Use PSATOLD instead.
+*   R5   A(SVRB)                   NO -- DESTROYED: RQEIN/XFERIN use it as the
+*                                  MVCK source pointer (L R5,REQUBUF and
+*                                  L R5,REQRQEI).  Use TCBRBP instead.
+*   R6   A(entry point) = base     yes (and it is our USING base -- preserve
+*                                  it across the POST or nothing addresses)
+*   R7   A(caller ASCB)            yes, but only until DOPOST stages it into
+*                                  ANCRASCB; nothing after the POST reads it
+*   R13  issuer R13                overwritten (POST parameter); the FLIH
+*                                  gives the issuer its own R13 back
+*   R14  return address            yes -- must be preserved across the POST
+*
+*   THE RULE, and it is why this is a table and not prose: a register the FLIH
+*   set at entry is trustworthy at DOPOST/RQEOUT ONLY IF no staging block has
+*   since used it as scratch.  Both registers the ancestor's convention names
+*   as useful -- R4 (TCB) and R5 (SVRB) -- are destroyed, and between them they
+*   exhaust the registers anyone would reach for.  That is not two
+*   coincidences.  It cost M5-2b1 one debugging round (R4, the TCBPKF read)
+*   and M5-2b2 another (R5, the save-area address, which put the save area
+*   inside the CLIENT's storage).  The trustworthy sources are absolute:
+*   PSATOLD for the TCB, and TCBRBP off it for the RB/SVRB.
 * Exit:  BR R14.  Per STCPSVC: "R0, R1, R15 are the only regs returned to the
 *   issuer; R2-R14 are restored by the system."  We set R15 = rc and also write
 *   the full result (echo/seq/rc) into the caller's NSFV_REQ block, which is
@@ -413,16 +437,24 @@ DOPOST   DS    0H                 POST/WAIT entry (ECHO + XFER share)
 *    +8  sentinel intact AFTER the POST
 *    +12 sentinel intact AFTER the WAIT
 *    +16 the restored R2/R6 still work (the REGISTER half, not just the tail)
+*
+*  THREE STATES, NOT TWO: 1 = ran and passed, 2 = ran and FAILED, 0 = NEVER
+*  WRITTEN.  With a pass/fail pair of 1/0 a word that was never reached is
+*  indistinguishable from one that ran and failed -- and those are different
+*  faults with different next steps ("the sentinel was dead" vs "control never
+*  got there").  Same contract TSTRQXF already uses for its CC 20 skip code.
+*  +0 is an address, not a state; +16 is 1-or-never-written by construction --
+*  reaching it IS the pass -- so 0 there means control did not arrive.
          SLR   R9,R9
          L     R9,PSATOLD(,R9)    A(current TCB)
          L     R9,TCBRBP(,R9)     A(current RB) = our SVRB
          LA    R9,RBEXSAVE(,R9)   R9 -> SVRB extended save area
          ST    R9,ANCSAVE(,R2)    self-check: the area we claimed
          MVC   RBEXSVSN(4,R9),=CL4'B2SV'   stamp the sentinel
-         SLR   R3,R3
+         LA    R3,2               2 = ran and FAILED
          CLC   RBEXSVSN(4,R9),=CL4'B2SV'
          BNE   PSTSV0
-         LA    R3,1
+         LA    R3,1               1 = ran and passed
 PSTSV0   ST    R3,ANCSAVE+4(,R2)  the stamp took
          ST    R14,0(,R9)         the four live across the POST
          ST    R2,4(,R9)
@@ -450,10 +482,10 @@ PSTECBX  DS    0H
          L     R6,8(,R9)
          L     R8,12(,R9)
 *  Self-check, POST half, before anything else can touch the area.
-         SLR   R3,R3
+         LA    R3,2               2 = ran and FAILED
          CLC   RBEXSVSN(4,R9),=CL4'B2SV'
          BNE   PSTSV1
-         LA    R3,1
+         LA    R3,1               1 = ran and passed
 PSTSV1   ST    R3,ANCSAVE+8(,R2)  sentinel survived the POST
          B     PSTOK
 PSTERR   DS    0H                 POST failed: STC ASCB gone
@@ -479,10 +511,10 @@ PSTOK    DS    0H
 *  Self-check, WAIT half -- the far side of the round trip: a real task
 *  switch, the STC's cross-AS POST and an SVC 1.  R9 is POST-preserved and the
 *  WAIT (SVC 1) preserves R2-R14, so R9 still addresses the area.
-         SLR   R3,R3
+         LA    R3,2               2 = ran and FAILED
          CLC   RBEXSVSN(4,R9),=CL4'B2SV'
          BNE   PSTSV2
-         LA    R3,1
+         LA    R3,1               1 = ran and passed
 PSTSV2   ST    R3,ANCSAVE+12(,R2) sentinel survived the WAIT
          CLC   ANCEYE(8,R2),=CL8'NSFVANCR'   anchor there?
          BNE   WGONE              freed while parked -> bail

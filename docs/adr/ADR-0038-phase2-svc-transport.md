@@ -435,3 +435,52 @@ is wrong).
   a live sighting of the CLAUDE.md §3 rule: a 73-character instruction line made `as370`
   swallow the following instruction as a continuation, emitting
   `ST R14,0(,R9)R2,4(,R9)` — one store silently gone, clean link, no diagnostic.
+- **2026-08-25 — M5-2b2 follow-up: the self-check is EVIDENCE, not a runtime guard, and it
+  is one-sided.** No mechanism change; three states on the self-check words, an explicit
+  register table in the entry-convention block, and this note.
+
+  **The post-restore self-check stores cannot report the failure they would most want to.**
+  `ANCSAVE+8` (sentinel after the POST) and `ANCSAVE+12` (sentinel after the WAIT) both
+  execute *after* `R2` has been reloaded from the save area. If that reload were broken,
+  `R2` is garbage and `ST R3,ANCSAVE+8(,R2)` does not record a 0 — it stores into
+  **arbitrary key-0 storage**. So those two words can prove success and are structurally
+  incapable of reporting that specific failure.
+
+  This is **inherent, and deliberately not fixed**: only `R9` survives the branch POST, and
+  the anchor cannot be re-derived from it. Re-deriving it through `R6` would not help either
+  — `R6` comes out of the same reload, so a broken reload takes the diagnostic with it.
+  (That is not hypothetical; it is exactly what the first attempt at this step did, and the
+  wild stores that followed are why the diagnostic rule is now "trusted registers only".)
+
+  **The note the brief asked for, with one correction of scope:** the observation was made
+  about `+8`, and it applies equally to `+12` — both are post-reload. It does **not** apply
+  to `+16`: that store sits behind the post-WAIT `CLC ANCEYE(8,R2)`, which needs a good
+  `R2` *and* a good `R6` to compare correctly, so reaching it is itself the proof and a
+  broken reload diverts to `WGONE` instead. `+0` and `+4` are pre-POST, where `R2` is
+  trusted.
+
+  **So read the five words for what they are:** evidence, collected once, that the SVRB
+  home is real — not a guard that will catch a future regression in the reload. What catches
+  that is the gate set, all of which runs through `DOPOST`.
+
+  **Three states, because two were not enough** (M5-2b1's CC-20 contract applied to the
+  routine's own evidence): **1** = the check ran and passed, **2** = it ran and failed,
+  **0** = it was never written. With a 1/0 pair a word that was never reached reads exactly
+  like one that ran and failed, and those are different faults with different next steps —
+  "the sentinel was dead" points at the save area, "control never got there" points at the
+  path. `TSTRQXF` (C) prints the decoded state next to each value so `1/2/1/1` and `1/0/1/1`
+  are distinguishable in the spool, not just red in both cases.
+
+  **The entry-convention block now carries a register TABLE, not prose.** Both registers the
+  ancestor's convention names as useful are destroyed before `DOPOST` is reached — `R4`
+  (A(TCB)) and `R5` (A(SVRB)), each used as an `MVCK` pointer in `RQEIN`/`XFERIN` — and
+  between them they exhaust the registers anyone would reach for. That is not two
+  coincidences: it cost M5-2b1 one debugging round (`R4`, the `TCBPKF` read) and M5-2b2
+  another (`R5`, the save-area address). The rule and the trustworthy sources (`PSATOLD` for
+  the TCB, `TCBRBP` off it for the RB) are now in one table rather than split across two
+  comment blocks, which is how it was missed twice.
+
+  **`ANCSAVE` dies in b3, and the self-check dies with it.** b3 moves the anchor layout
+  substantially — which is exactly why the field was left dead in place rather than removed
+  here — so when it goes, these five words and `TSTRQXF` (C) go with it. Filed as a b3
+  prerequisite rather than left to be discovered when (C) starts failing.
