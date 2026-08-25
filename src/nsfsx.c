@@ -467,15 +467,28 @@ nsfsx_stop(void)
         __prob(savekey, NULL);
     }
 
-    nsfsx_router_unload();
-
     if (g_anchor && !drained) {
-        /* RETAIN the CSA.  Leaking it costs 134 KB until IPL; freeing it with
-        ** clients still inside the routine corrupts their address spaces. */
-        wtof("NSF054W %u CLIENT(S) STILL IN FLIGHT -- CSA RETAINED",
-             g_anchor->inflight);
+        /* RETAIN EVERYTHING -- the anchor AND the routine.  Leaking 134 KB of
+        ** CSA plus the module until IPL is the cheap side of the asymmetry.
+        **
+        ** THE ROUTINE IS RETAINED FOR A SHARPER REASON THAN THE ANCHOR.  A
+        ** client that failed to drain is parked in a WAIT *inside that code*,
+        ** supervisor state, key 0.  nsfsx_router_unload freemains the CSA the
+        ** routine was __loadhi'd into, so unloading it here would pull the
+        ** instructions out from under a task that is going to resume on them.
+        ** Retaining the anchor while freeing the code is STRICTLY WORSE than
+        ** leaking both, and it would contradict the same safe-side asymmetry
+        ** this function is built on.
+        **
+        ** This is why the probe STC's nsfv_drain path frees NOTHING on a
+        ** failed drain -- its retain branch jumps past every free with a
+        ** comment saying exactly that -- and it is the shape copied here. */
+        wtof("NSF054W %u CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE"
+             " RETAINED (EXHAUSTED=%u)",
+             g_anchor->inflight, g_anchor->exhausted);
         g_anchor = NULL;
     } else {
+        nsfsx_router_unload();
         nsfsx_anchor_free();
     }
     wtof("NSF044I NSFS TRANSPORT STOPPED");

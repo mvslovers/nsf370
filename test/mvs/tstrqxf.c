@@ -960,6 +960,7 @@ main(void)
     /* ---- EXHAUSTION: a full pool answers ENOBUFS and changes nothing ----- */
     {
         UINT before_infl = 0, after_infl = 0;
+        UINT exh_before = 0, exh_after = 0;
         UINT used = 0xFFFFu;
         UINT k;
         UINT claimed = 0;
@@ -974,10 +975,22 @@ main(void)
         CHECK_EQ((long)claimed, (long)NSFV_NSLOTS,
                  "exhaustion: every one of the 64 slots was pre-claimed");
 
+        exh_before = g_anchor->exhausted;
         erc = xf_rqe_slot(&used);
+        exh_after = g_anchor->exhausted;
         printf("  with the pool full: rc=%d (want %d = NOBUF)\n",
                erc, (int)NSFV_RC_NOBUF);
-        wtof("TSTRQXF: (D) exhaustion rc=%d", erc);
+        printf("  exhausted counter: %u -> %u\n",
+               (unsigned)exh_before, (unsigned)exh_after);
+        wtof("TSTRQXF: (D) exhaustion rc=%d exh %u->%u", erc,
+             (unsigned)exh_before, (unsigned)exh_after);
+        /* The counter exists so a full pool is a SIZING FACT rather than
+         * something inferred from client-side errnos -- so it has to be read
+         * by something, or it is a diagnostic whose absence is
+         * indistinguishable from its success (CLAUDE.md 8.5). */
+        CHECK_EQ((long)(exh_after - exh_before), 1L,
+                 "exhaustion: the anchor's `exhausted` counter ticked exactly"
+                 " once");
         CHECK_EQ((long)erc, (long)NSFV_RC_NOBUF,
                  "EXHAUSTION: a full pool answers NOBUF (-> ENOBUFS), not a"
                  " hang and not a wrong slot");
