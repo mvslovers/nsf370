@@ -723,6 +723,39 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstrqxf.c"]
 
+# -- M5-2b4: the slot pool under CONTENTION (TSTRQXC) ------------------------
+# MVS-only (host = false): two address spaces sharing one CSA pool through a
+# private SVC has no host analog. The host coverage of this step is the pure
+# half -- nsfreqx_actionable and the truth tables it gates -- in TSTREQX.
+#
+# ONE PROGRAM, SEVERAL ROLES, chosen by PARM, deliberately sharing the anchor
+# chase / request shape / verification: the no-PARM SOLO run is the NEGATIVE
+# CONTROL for the two-client run, and a negative control built out of different
+# code proves less.
+#   (no PARM) SOLO   one client, sequential. Asserts b3's reuse rule AND that
+#                    `collisions` does NOT move -- which is what gives the
+#                    two-client run's `collisions > 0` its meaning. THIS is
+#                    what `make test-mvs` runs, batch and TSO.
+#   PARM='A'  LEADER the gate: barrier, a free-for-all phase, then a phase with
+#                    exactly ONE slot free in which A must be REFUSED -- which
+#                    can only happen if the other address space is holding it.
+#   PARM='B'  the other address space; hammers while A's flag is up.
+#   PARM='LEAK'      leaves a CLAIMED slot with the in-flight count leaked and
+#                    withholds the cleanup, so `P NSFS` must take the RETAIN
+#                    branch. A healthy parked client drains itself on the
+#                    shutdown nudge (the routine's WQUIES path), which is why a
+#                    blocking RECV cannot induce this.
+#   PARM='Vxxxxxxxx' after the stop, read the retained anchor back.
+#   PARM='RESET'     release every CLAIMED/HELD slot (recovery aid, not a gate).
+# A/B are hand-submitted as two CONCURRENT jobs (jcl/TSTRQXCA.jcl + B), which
+# the sequential test runner cannot do.
+# PREREQUISITE: S NSFS. The client stays UNAUTHORISED. Links only libc370.
+[[test]]
+name = "TSTRQXC"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstrqxc.c"]
+
 # -- M5-2b step 0: the DESTINATION-KEY probe (TSTMVCD) ----------------------
 # MVS-only (host = false): SSE opcodes, PSW/storage keys, SSK/ISK/LRA and the
 # CSA control blocks have no host analog. Answers the three questions M5-2b1
