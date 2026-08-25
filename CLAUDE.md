@@ -187,6 +187,25 @@ Violating one is a review-blocking defect, not a style nit.
   RR `08`/`09`) and `MVCDK`/`MVCSK` (SSE `E50F`/`E50E`, and **absent on this
   target** — they take `S0C1`, ADR-0039). `LRA` (RX `B1`) *is* in the table.
   **The `as370 -a=` listing is the gate on the emitted bytes — never a green link.**
+- **`SSK` sets the key on a REAL frame, and a pageable page moves underneath it.**
+  `SSK`/`ISK` take a *real* address, so manufacturing a protected page means
+  `LRA` the virtual page → `SSK` the real frame → touch the virtual page. If MVS
+  steals and rebinds that page in between, **the key was set on a frame the
+  program no longer has** — measured as three different real frames for the same
+  virtual page across three runs. Used in `test/mvs/tstmvcd.c` 2.2b and
+  `test/mvs/tstmvck.c` scenario 3. **The direction of the error is what decides
+  whether it invalidates a conclusion, and it is one-directional:** both tests
+  expect the access to **fault**, so a lost key means no fault means the
+  assertion **FAILS** — verified against *every* `SSK`-dependent assertion in
+  both files (2.2b's `ISK` read-back reads the *saved real address*, so it stays
+  a true statement about that frame and cannot mask the store check;
+  `tstmvck.c`'s `keyback` is logged, never asserted). So the technique yields
+  **false negatives, never false positives**: a run in which the assertion
+  PASSED is trustworthy, and ADR-0039's Stage-0b conclusion stands unchanged —
+  do not reopen it on the strength of "the technique is flaky". Prefer a
+  destination needing no `SSK` at all (a `GETMAIN SP=241` block is key 0 by
+  allocation — `tstmvcd.c` 2.2a, which this hazard cannot touch) and keep the
+  `SSK` variant only as a second, independent reading.
 - **Exception:** a routine the OS invokes as an *exit* (not called from C) is not
   a C callee and does not get `FUNHEAD` — e.g. `NSFTMEXP`, the STIMER exit.
 - **Reviewer checklist (assembler):** a new C-callable routine uses
@@ -324,6 +343,17 @@ never hardcode them.
   (MIH, IGF991I/995I)** — rapid-fire UDP echo throughput suffers on a degraded
   pair while ping and *paced* echo stay clean; the M3-5 rapid 1000/1000 echo needs
   a fresh/idle pair, not a code fix.
+- **`make deploy` fails while an STC holds `NSF.LINKLIB` — and the run afterwards
+  silently tests the OLD binary.** Order is **`P NSFS` (or `P NSFV`) → `make deploy`
+  → `S NSFS`**. **Signature:** a *mid-chain* `HTTP 500 Internal Server Error for
+  DELETE /restfiles/ds/NSF.LINKLIB: {"rc":8,...,"message":"Dataset delete failed"}`
+  — easy to miss when `deploy` is chained after `make modules`, because the lines
+  that follow it still look like a normal deploy. **The tell, which is the part
+  worth remembering:** *identical values across supposedly different builds.* Every
+  "live" result after a failed deploy is about the previous module and nothing
+  complains — this is the project's most expensive failure class in pure form.
+  It cost a full diagnostic cycle in M5-2b2, where three runs of "different" routers
+  returned byte-identical numbers. **Re-run rather than reason about it.**
 - **`ssh mvsdev`** (host-side work: `tun0` captures, reading Hercules source,
   `/proc`) is hardened **keychain-independent** — on-disk `~/.ssh/id_rsa`,
   `IdentityAgent none`, `accept-new`, via the `mvsdev` block in `~/.ssh/config`
@@ -656,9 +686,9 @@ test (**d**), 2-AS stress (**e**); the mirrored **STC-death race** is recorded a
 risk in ADR-0041, not closed. The TSO re-run of TSTRQXM FAILs by design (one-shot host
 listener consumed by the batch run → `errno 61`; batch is the gate — the TSTTCPW
 precedent). [[nsf370-m5-2a-status]]
-**M5-2b0 (the destination-key probe) — DONE, live-green.** M5-2b is the second of the
-five sub-steps; **M5 stays in progress and no milestone flips**. **b0**
-(`test/mvs/tstmvcd.c`, ADR-0039 annotation,
+**M5-2b0 (the destination-key probe) and M5-2b1 (the write-out key window) — DONE,
+live-green; b1 pending countersign.** M5-2b is the second of the five sub-steps; **M5 stays
+in progress and no milestone flips**. **b0** (`test/mvs/tstmvcd.c`, ADR-0039 annotation,
 TSTMVCD **58 PASS CC 0 batch+TSO**) answered three questions and fixed nothing: a
 **destination-keyed move does NOT exist** here — `MVCDK`/`MVCSK` both take an **operation
 exception (S0C1)** in supervisor state, the prediction recorded in the source before the
@@ -674,9 +704,125 @@ byte-exact** because it is not fetch-protected (bit `& X'08'` clear) — so unde
 caller's key both halves of the move are reachable, no landing area needed. **CSA budget:
 2064 KB total** (correction: the GDA has **no** CSA size field — `CVT+X'230'` → `GDA+8
 CSAPQEP` → `PQE+20 PQESIZE`/`+24 PQEREGN`), largest `SP=241` `GETMAIN` **≥ 1 MB** (a floor:
-the doubling search is capped at 1 MB and never failed). **b0 touches no production code**: it is a
-mechanism probe (it self-auths via SVC 244 and needs no probe STC), and its whole output
-is the measurement the write-out key window in **b1** is then built on.
+the doubling search is capped at 1 MB and never failed). **b1** (ADR-0039 + ADR-0041
+annotations) closes the window on **both** M5-2a destinations, `ubuf` **and** `rqeimg`:
+`RQEOUT`'s two moves run inside a **narrow per-piece `SPKA` window keyed from `TCBPKF`**
+(TCB+`X'1C'`, high nibble, verified against `SYS1.AMODGEN(IKJTCB)`: `TCBFLAG EQU X'F0'` /
+`TCBZERO EQU X'0F'` — which is why libc370 goes straight `IC`→`SPKA` with no shifting),
+the TCB reached by **`PSATOLD`** and NOT `R4` (the ancestor documents `R4 = A(TCB)` at SVC
+entry, but `R4` is loop scratch in `RQEIN` and the POST save/restore preserves the
+*clobbered* value). The move is a **plain `MVC` reached by `EX`** — b0 proved a keyed move
+is unnecessary under the caller's key, and `MVCK` inside a non-zero PSW key would put its
+`R3` through the CR3 key-mask check that already cost `tstmvck.c` an `S0C2`. **`EX`
+supplies LENGTH-1** (the piece cap moves 255→**256**; the 255 was an `MVCK` ambiguity guard
+and stays in `RQEIN`), and it ORs into a **copy**, so the routine stays RENT. `IPK` writes
+`R2` — the anchor base — so `R2` is parked across it, once, not per piece. **`RQEIN` is
+untouched** (its destination is key-0 CSA and its source is already keyed via `MVCK` `R3`),
+and **`XFEROUT` deliberately keeps its key-0 store** as Stage-0b probe scaffolding.
+**Gates:** the `as370 -a=` listing is the gate and was checked — `SPKA 0(R9)`→`B20A 9000`,
+`SPKA 0(R12)`→`B20A C000`, `EX R1,MVCPIEC`→`4410 6362` (base `R6`, not dropped to base 0),
+target `MVC 0(1,R4),0(R5)`→`D200 4000 5000` (length byte `X'00'`, so the OR yields exactly
+L-1). **TSTRQXM batch CC 0, 32/32** with the host peer verifying **9353 bytes byte-exact**,
+including the new **`EX` boundary**: 1-byte and 256-byte sends each byte-exact in the
+direction the window protects, plus a whole-buffer sweep for overrun (the multi-piece path
+needs no duplicate — a 2048 chunk is eight 256-byte pieces). Stage-0 regression green:
+**TSTSVC/TSTMVCK/TSTUBUF/TSTDEATH all CC 0 batch+TSO**; NSFS and NSFV start/stop clean,
+`SVC 239` restored, **no dump**; host **2846 PASS / 0 FAIL**. **The fault-path assessment
+(b1 assesses, it does not fix — recovery stays the open M5-2 item ADR-0039 names):**
+`test/mvs/tstrqxf.c` induces the fault live — **`S0C4`, caught, no dump, client alive,
+transport not wedged** — and reads the anchor back: **`req_state` FREE, `inflight` leaked
+at 1**, as predicted. **That measures the IN direction, not the out:** `RQEIN` reads `ubuf`
+before `RQEOUT` writes it and both use the same pointer, so any pointer bad enough to fault
+the write-out faults the read-in first — the **pre-existing** exposure. The one class that
+gets past the read-in is **key-0 non-fetch-protected storage** (`MVCK` permits a key-8
+read; a key-8 store is denied) — exactly the old silent clobber, and exactly what cannot be
+handed to a test safely. The out direction is therefore **reasoned from a branchless code
+path**: `req_state` stuck at **DONE** (slot busy forever, later requests `RCNOREQ` — *worse*
+than the in-direction), `inflight` leaked, staging retained; `UNSTAGE` *can* recover that
+one. **The PSW key does not leak usefully** — `SPKA` back never runs on the fault path, but
+the borrowed key is the caller's own and RTM resumes the caller's RB with the caller's PSW;
+measured, since the client went on to QUERY, UNSTAGE and run stdio normally. **Two adjacent
+findings, reported not fixed:** `UNSTAGE` early-returns on a FREE slot so it **cannot
+recover a pre-publication leak**, and **`nsfsx_stop()` does not drain `inflight` at all**
+(it frees the CSA unconditionally — `P NSFS` was same-second with `inflight` = 2), unlike
+the probe STC's `nsfv_drain` (10 s ceiling, retain-CSA on timeout). **b1 does not worsen
+the exposure:** the fault class pre-existed; b1 turns a silent key-0 clobber into a caught
+fault and leaves the dangling-state shapes unchanged. Anchor layout unmoved, **NSFRQE still
+frozen at 64 B**, C/EZASOKET/EZASMI surfaces unchanged — apps relink only.
+**M5-2b2 (the POST save area moves to the SVRB) — DONE, live-green; pending countersign.**
+Closes ADR-0038's RENT/shared-scratch caveat: `csasave` was ONE 18-word block in the CSA
+anchor that every invocation in every address space computed the same address for and stored
+into. It is now the **SVRB's own `RBEXSAVE`**, which the FLIH allocates per SVC invocation —
+no lock, no pool, no `GETMAIN` (the pool is still b3). **Offsets READ, not guessed:**
+`SYS1.AMODGEN(IHARB)`/`(IKJTCB)` read live and computed by **IFOX00 from the macros** (jobs
+RBOFF/RBOFF2) — `RBEXSAVE` at `RBSECPTR+X'60'`, `L'`=`X'30'`; `RBBASIC-RBPRFX`=`X'40'`;
+`RBSIZE-RBBASIC`=8; `TCBRBP-TCB`=0. **Twelve words, not eighteen** — the old
+`STM R14,R12,12(R13)` wants 72 bytes and does not fit; only **four** registers are live
+across the POST (R2, **R6 the CSECT base**, R8, R14), so four stores of 16 bytes replace an
+STM of eleven, deliberately minimal so the question of who owns the rest of the area stays
+small. **The bug that cost the first attempt is b1's lesson one register over:** `A(SVRB)`
+must come from **`TCBRBP`, not `R5`** — the FLIH does set R5, but **R5 is the `MVCK` source
+pointer in `RQEIN`/`XFERIN`**, so at DOPOST it holds A(caller image). Measured
+`R5=000991EC` vs `TCBRBP=009DE5F0`, `RBSIZE` off TCBRBP = 28 doublewords = 224 B (sensible)
+vs garbage off R5. The first attempt therefore put the save area **inside the client's own
+storage** and stored the caller ASCB over the test's variables — the diagnostic read back
+`C1E2C3C2`, EBCDIC **"ASCB"** — **while every gate in the set stayed green**. **The
+prediction was REFUTED:** a canary in `RBEXSAVE` survives the POST **and** the WAIT (task
+switch + cross-AS POST + SVC 1); the "available while running but not across a suspension"
+hypothesis did not hold, and the single cause was the clobbered R5. **The positive check is
+permanent** — TSTRQXF now asserts the area is outside the anchor **and outside the client's
+own storage** (the first attempt's failure mode was neither, and no "outside the anchor"
+test would have caught it), the stamp took, the sentinel survived POST and WAIT, and the
+**register half** (reaching past the post-WAIT eyecatcher proves restored R2 *and* R6).
+`ANCSAVE` stays **dead in place** (removing it shifts every later field; b3 moves the layout
+anyway) — **anchor layout unmoved, no `NSFV_OFF_ASSERT` changed**. The ancestor
+`igc0024e.asm` saves no registers anywhere and never dereferences R5: it corroborates the
+entry convention and says **nothing** about the save area — neither supporting nor
+undermining `RBEXSAVE`. A **column-71 overrun was caught by the scan** mid-step, a live
+sighting of the §3 rule: a 73-char instruction line made as370 swallow the next instruction,
+emitting `ST R14,0(,R9)R2,4(,R9)` — one store gone, clean link, no diagnostic. Gates:
+TSTRQXF **68 PASS CC 0 batch+TSO**, TSTRQXM **batch CC 0 32/32** (host peer 9353 bytes
+byte-exact), TSTSVC/TSTMVCK/TSTUBUF/TSTDEATH **444 PASS CC 0 batch+TSO**, NSFS+NSFV
+start/stop clean, `SVC 239` restored, **no dump**; host **2846 PASS / 0 FAIL**. **No
+milestone flip.**
+**b1 follow-up — the gate now DISCRIMINATES, and the window's scope is narrower than
+"closed".** No production source touched (`asm/nsfvsvc.asm` byte-identical, anchor layout
+unmoved, NSFRQE still 64 B). (1) **The discriminating case exists after all.** b1 said the
+one class that would discriminate — `ubuf` in **key-0 non-fetch-protected** storage, which
+gets PAST the key-8 read-in — could not be handed to a test safely; right about the class,
+wrong about "safely". `tstrqxf.c` now points `ubuf` at **the anchor's own staging buffer**
+(`&stage[1024]`, 64 B): the only storage at risk is NSF's own scratch, and source+dst are
+both inside `stage[]`, so a window that failed to take performs a **byte-identical round
+trip** rather than a clobber. Self-validating on three independent facts — the anchor
+eyecatcher, a key-8 READ that **succeeds**, a key-8 STORE that **faults** — which is what
+makes the observed `S0C4` a KEY fault and not a bad address. **New measured fact:** the
+**SVC table is readable from problem state key 8** — an unauthorised client chased
+`CVT 0001D048 → SCVT 0001D510 → SVCTABLE 0000FA60 → svcentry[239].svcepa 00A6F208 →
++NSFV_ANCH_OFF → anchor 00A6F688` hop-by-hop under `___try` (the kickoff's claim that
+`nsfreqc_init` already does this is **wrong** — it only issues a QUERY; the only SVCTABLE
+chase in the tree is `nsfv.c`/`nsfsx.c`, both `__super`'d into key 0 for the STORE).
+**The revert proves it discriminates:** window IN → `S0C4`, **24/24 batch + TSO CC 0**;
+`SPKA` pair commented out (verified out in the `as370 -a=` listing) → the request
+**RETURNS rc=0, the store lands**, **23/24 CC 1**; window RESTORED → `S0C4` again,
+**24/24 CC 0**, listing byte-identical to b1's. **Exactly one assertion moves.** The
+OUT-direction dangling state is now **measured**, not reasoned: `req_state` stuck at
+**DONE**, `inflight` leaked, and **`UNSTAGE` DOES recover it** (published slot), unlike the
+in-direction. (2) **Scope correction, in the ADRs:** the write-out key window is closed on
+the **RQE path**, NOT at the **SVC boundary** — **`FNXFER` is a reachable verb** driven by
+`tstubuf.c`, an **unauthorised** client, and `XFEROUT` still stores a caller-supplied
+`ubuf` under PSW key 0. So **removing the probe scaffolding is a SECURITY item, not only
+hygiene** (M5-2c obligation amended); deliberately **not** pulled forward, since
+TSTMVCK/TSTUBUF/TSTDEATH are the regression for every later step. (3) **`LRA`+`SSK` on a
+pageable frame is unreliable** (three real frames for one virtual page across three runs) —
+CLAUDE.md §3 caveat added **with the direction stated**: these tests expect a fault, so a
+lost key **fails** the assertion — **false negatives only**, a passing run is trustworthy
+and Stage-0b's conclusion stands (2.2a's `GETMAIN SP=241` destination uses no `SSK` at all).
+(4) **Four issues filed, none fixed here:** `tstmvcd.c` 2.2b flakiness, `tstmvck.c`'s
+hardcoded `SSK` restore, **`nsfsx_stop()` never drains `inflight` (marked a b3
+PREREQUISITE)**, `UNSTAGE` on a FREE slot. Regression green: TSTRQXM **batch CC 0 32/32**
+(host peer **9353 bytes byte-exact**), TSTSVC/TSTMVCK/TSTUBUF/TSTDEATH **444 PASS CC 0
+batch+TSO**, TSTRQXF **48 PASS**, NSFS+NSFV start/stop clean, `SVC 239` restored, **no
+dump**; host **2846 PASS / 0 FAIL**. **No milestone flip.**
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 
@@ -698,10 +844,29 @@ isolated so M0–M4 already deliver a usable in-process stack.
    function (asm CSECT names match).
 4. **On-MVS validation** via `make test-mvs` at milestone boundaries and
    before merging anything touching `asm/*.asm`.
-5. **Definition of Done** (§7) must hold, including the leak gate.
-6. **Keep docs honest:** when a decision changes, update the affected spec
+5. **Any operation whose ABSENCE is indistinguishable from its SUCCESS needs a
+   third state or an assert.** This is the sibling of the project's most
+   expensive bug class (host-clean, link-clean, wrong only on the machine) one
+   step earlier: *not executed, and nothing says so*. Four sightings in M5-2b
+   alone, all the same shape — the instances are the point, the rule alone reads
+   as a platitude:
+   - a gate that **skipped its load-bearing case and returned CC 0** → fixed
+     with a distinct skip code (`XF_CC_GATE_SKIPPED`, `test/mvs/tstrqxf.c`);
+     return it **from the test**, never by changing the mbt harness;
+   - **`make deploy` failing mid-chain**, after which the run silently tests the
+     previous module (§5 has the signature and the tell);
+   - a **`str.replace` that no-op'd** because a linter had quoted the target
+     line — an unasserted edit that reported success having changed nothing;
+   - a **self-check word never written** reading the same as one that ran and
+     failed → three states (1 pass / 2 ran-and-failed / 0 never-written,
+     `asm/nsfvsvc.asm` `DOPOST`).
+   The cure is always one of: a third state, an assert that the thing happened,
+   or a positive check that the thing took effect. Never infer success from the
+   absence of a complaint.
+6. **Definition of Done** (§7) must hold, including the leak gate.
+7. **Keep docs honest:** when a decision changes, update the affected spec
    chapter and add/append an ADR in the same change. Update §7 status here.
-7. **English** for all code comments, commit messages, and docs.
+8. **English** for all code comments, commit messages, and docs.
 
 ---
 

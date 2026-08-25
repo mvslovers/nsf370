@@ -194,12 +194,25 @@ NSFV_OFF_ASSERT(NSFV_REQ, rqeimg, 48);
  *     router stack-local: the SVC routine runs supervisor / key 0 throughout,
  *     so it WAITs on a key-0 CSA ECB legally (empirical unknown #1, ADR-0038;
  *     Stage-0a's key-8-stack-ECB rule does not transfer);
- *   - an 18-word scratch save area (csasave) the RENT SVC routine uses to
- *     preserve its registers across the branch POST (STM/LM, the exact @@xmpost
- *     pattern); the routine has no stack, and only R9 survives the cross-AS
- *     POST natively.  Single-client-sequential, so the shared scratch is safe
- *     here; a concurrent-client M5-2 needs per-invocation scratch (the SVRB /
- *     GETMAIN) -- ADR-0038.
+ *   - csasave: an 18-word scratch save area the RENT SVC routine USED to
+ *     preserve its registers across the branch POST.  **RETIRED IN M5-2b2 --
+ *     the field is DEAD.  The POST save area now lives in the SVRB's own
+ *     extended save area (RBEXSAVE; IHARB: RBSECPTR+X'60', 48 bytes), which
+ *     the FLIH allocates per SVC invocation.**  That is exactly what this
+ *     caveat asked for: two clients in two address spaces no longer compute
+ *     the same address and store into it -- with no lock, no pool and no
+ *     GETMAIN.  A(SVRB) is taken from TCBRBP, NOT from R5: the FLIH does set
+ *     R5 = A(SVRB), but R5 is the MVCK source pointer in RQEIN/XFERIN and is
+ *     clobbered long before the POST is reached.  The area is 12 words, not
+ *     18, so only the FOUR registers live across the POST are saved (R2, R6
+ *     the CSECT base, R8, R14) -- 16 bytes.  A canary in that area is measured
+ *     to survive both the POST and the WAIT, and TSTRQXF asserts it.
+ *     The field STAYS in the anchor on purpose: removing it would shift every
+ *     field after it and cost a full four-gate Stage-0 round for no benefit,
+ *     and b3 moves the layout substantially anyway.  Meanwhile its first five
+ *     words carry b2's self-check results, which TSTRQXF reads back out of CSA.
+ *     A concurrent-client POOL is still (b3) -- b2 moved the storage and proved
+ *     the new home; b3 is what will exercise it.
  * Stage-0c (ADR-0040) adds req_asid -- the caller's ASID, captured at SVC entry
  * from ASCBASID (ASCB+X'24') and NOT from the request, so a client cannot forge
  * it -- and reaped, the count of requests the guard reclaimed from dead clients.
@@ -219,16 +232,21 @@ NSFV_OFF_ASSERT(NSFV_REQ, rqeimg, 48);
  *   ANCRECB    EQU 36    F    reply_ecb   (client WAIT target, CSA)
  *   ANCRASCB   EQU 40    A    req_ascb    (client ASCB, POST target)
  *   ANCSERVED  EQU 44    F    served
- *   ANCSAVE    EQU 48    18F  SVC-routine POST register save area
+ *   ANCSAVE    EQU 48    18F  DEAD since M5-2b2 (see csasave below)
  *   ANCXFUNC   EQU 120   F    transform the STC applies (ECHO / XFER)
  *   ANCXLEN    EQU 124   F    bytes in the staging buffer this chunk
  *   ANCXASID   EQU 128   F    req_asid  (client ASID, ASCBASID at ASCB+X'24')
  *   ANCREAPD   EQU 132   F    reaped    (dead requests reclaimed, diagnostic)
  *   ANCSTAGE   EQU 136   2048 CSA staging buffer (the ubuf CSA bounce)
  * ============================================================================
- * The staging buffer is CSA-shared (the STC must reach it -- it cannot live in
- * the SVRB), single-client-sequential like csasave; M5-2 concurrency needs
- * per-client staging (ADR-0039).  Stage-0b adds no other shared scratch.
+ * The staging buffer is CSA-shared because the STC in the OTHER address space
+ * must read and write it -- it cannot live in the SVRB -- and it is still
+ * single-client-sequential; M5-2 concurrency needs per-client staging
+ * (ADR-0039).  NOTE: this used to read "like csasave", which is no longer true:
+ * csasave was retired in M5-2b2 and the save area moved INTO the SVRB precisely
+ * because nothing but the routine itself ever touches it.  stage[] is the
+ * remaining shared scratch, and it is shared for a reason the save area never
+ * had.
  * ============================================================ */
 typedef struct nsfv_anchor {
     char      eye[8];             /* +00 "NSFVANCR"                           */
@@ -242,7 +260,10 @@ typedef struct nsfv_anchor {
     ECB       reply_ecb;          /* +24 client WAIT target (CSA, key 0)     */
     void     *req_ascb;           /* +28 client ASCB (__xmpost target)      */
     UINT      served;             /* +2C requests serviced (diagnostic)      */
-    UINT      csasave[18];        /* +30 SVC-routine POST save area (72 B)    */
+    UINT      csasave[18];        /* +30 DEAD since M5-2b2 (was the POST save  */
+                                  /*     area; now the SVRB's RBEXSAVE).      */
+                                  /*     Carries b2's self-check; the field   */
+                                  /*     itself comes out in b3.              */
     UINT      xfunc;              /* +78 transform: NSFV_REQ_ECHO / _XFER     */
     UINT      xlen;               /* +7C bytes in stage[] this chunk          */
     UINT      req_asid;           /* +80 client ASID (ASCBASID, ASCB+X'24')   */

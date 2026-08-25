@@ -35,9 +35,33 @@
 *
 * Entry (Type-3 SVC, set by the SVC FLIH -- STCPSVC / igc0024e.asm):
 *   supervisor state, PSW key 0, ENABLED
-*   R1 = issuer R1 = A(NSFV_REQ) in the CALLER's storage (the M5-2 shape)
-*   R5 = A(SVRB)      R6 = A(entry point = our load point in CSA)
-*   R7 = A(caller ASCB)   R13 = issuer R13 (18-word savearea)   R14 = return
+*
+*   reg  set by the FLIH to        still valid at DOPOST / RQEOUT?
+*   ---  ------------------------  ------------------------------------------
+*   R1   A(NSFV_REQ), caller AS    no -- copied to R8 at entry; use R8
+*   R4   A(TCB)                    NO -- DESTROYED: RQEIN/XFERIN use it as the
+*                                  MVCK destination pointer (LA R4,ANCSTAGE
+*                                  and LA R4,ANCRQE).  Use PSATOLD instead.
+*   R5   A(SVRB)                   NO -- DESTROYED: RQEIN/XFERIN use it as the
+*                                  MVCK source pointer (L R5,REQUBUF and
+*                                  L R5,REQRQEI).  Use TCBRBP instead.
+*   R6   A(entry point) = base     yes (and it is our USING base -- preserve
+*                                  it across the POST or nothing addresses)
+*   R7   A(caller ASCB)            yes, but only until DOPOST stages it into
+*                                  ANCRASCB; nothing after the POST reads it
+*   R13  issuer R13                overwritten (POST parameter); the FLIH
+*                                  gives the issuer its own R13 back
+*   R14  return address            yes -- must be preserved across the POST
+*
+*   THE RULE, and it is why this is a table and not prose: a register the FLIH
+*   set at entry is trustworthy at DOPOST/RQEOUT ONLY IF no staging block has
+*   since used it as scratch.  Both registers the ancestor's convention names
+*   as useful -- R4 (TCB) and R5 (SVRB) -- are destroyed, and between them they
+*   exhaust the registers anyone would reach for.  That is not two
+*   coincidences.  It cost M5-2b1 one debugging round (R4, the TCBPKF read)
+*   and M5-2b2 another (R5, the save-area address, which put the save area
+*   inside the CLIENT's storage).  The trustworthy sources are absolute:
+*   PSATOLD for the TCB, and TCBRBP off it for the RB/SVRB.
 * Exit:  BR R14.  Per STCPSVC: "R0, R1, R15 are the only regs returned to the
 *   issuer; R2-R14 are restored by the system."  We set R15 = rc and also write
 *   the full result (echo/seq/rc) into the caller's NSFV_REQ block, which is
@@ -77,7 +101,7 @@ ANCTOKEN EQU   32                 F    req_token
 ANCRECB  EQU   36                 F    reply_ecb   (our WAIT target)
 ANCRASCB EQU   40                 A    req_ascb    (caller ASCB)
 ANCSERVD EQU   44                 F    served
-ANCSAVE  EQU   48                 18F  POST register save area
+ANCSAVE  EQU   48                 18F  DEAD (b2) -- see DOPOST
 ANCXFUNC EQU   120                F    transform (ECHO/XFER)
 ANCXLEN  EQU   124                F    bytes staged this chunk
 ANCXASID EQU   128                F    req_asid (client ASID)
@@ -124,6 +148,58 @@ XFCHUNK  EQU   2048               max ulen moved per SVC call
 RQELEN   EQU   64                 frozen NSFRQE size (one MVCK piece)
 MVCKMAX  EQU   255                bytes per MVCK piece
 MVCKK8   EQU   X'80'              MVCK source key 8
+MVCMAX   EQU   256                bytes per MVC piece (write-out)
+*  M5-2b1: the caller's storage key, for the write-out SPKA window.
+*  PSATOLD (PSA+X'21C') is A(the current TCB) -- the CALLER's TCB, since an
+*  SVC routine runs under the issuing task.  The ancestor (igc0024e.asm) does
+*  document R4 = A(TCB) at SVC entry, but R4 is loop scratch in RQEIN long
+*  before the write-out runs and the POST save/restore preserves the CLOBBERED
+*  value, so R4 is NOT the TCB by the time RQEOUT is reached -- PSATOLD is,
+*  always, and it is what libc370 itself uses (src/clib/getmain.c:40).
+*  TCBPKF (TCB+X'1C') holds the key in its HIGH nibble with the low nibble
+*  defined zero (IKJTCB: TCBFLAG EQU X'F0', TCBZERO EQU X'0F'), which is
+*  exactly the byte SPKA wants -- SPKA takes bits 24-27 of its operand address
+*  -- so it is used with no shifting, the same way @@super.c does.
+PSATOLD  EQU   540                PSA+X'21C' = A(current TCB)
+*  M5-2b2: the POST save area is PER-INVOCATION, in the SVRB.
+*
+*  READ, NOT GUESSED.  SYS1.AMODGEN(IHARB)/(IKJTCB) read live and the offsets
+*  computed by IFOX00 from the macros (jobs RBOFF/RBOFF2) -- these DSECTs are
+*  conditional-assembly and hand-counting them is the one mistake a RENT
+*  routine with no writable statics cannot afford:
+*    RBEXSAVE DS 0CL48  "EXTENDED SAVE AREA FOR SVC ROUTINES (SVRB-BOTH)"
+*    RBEXSAVE-RBBASIC = X'60'   L'RBEXSAVE = X'30'   RBSIZE-RBBASIC = 8
+*    RBBASIC-RBPRFX   = X'40'   TCBRBP-TCB = 0
+*
+*  A(SVRB) COMES FROM TCBRBP, NOT FROM R5.  The FLIH does set R5 = A(SVRB) --
+*  but R5 is the MVCK SOURCE POINTER in RQEIN and XFERIN, so by the time
+*  DOPOST is reached it holds A(caller ubuf) or A(caller NSFRQE), NOT the
+*  SVRB.  This is b1's PSATOLD-over-R4 finding exactly, one register over, and
+*  it is what broke the first attempt at this step: LA R13,RBEXSAVE(,R5) put
+*  the save area inside the CLIENT's storage, where the store of the caller
+*  ASCB landed on the test's own variables.  Measured: R5 = X'000991EC' (the
+*  caller's image) while TCBRBP = X'009DE5F0' (LSQA), and RBSIZE read off
+*  TCBRBP is 28 doublewords = 224 bytes, a sensible RB; off R5 it was garbage.
+*
+*  TWELVE WORDS, NOT EIGHTEEN.  L'RBEXSAVE is 48 bytes; the old shared block
+*  was an 18-word standard save area (STM R14,R12,12(R13) = 72 bytes from
+*  offset 12) and does not fit.  Only FOUR registers are live across the POST
+*  -- R2 (anchor), R6 (OUR CSECT BASE, USING NSFVSVC,R6), R8 (A(req)) and R14
+*  (return) -- so four stores of 16 bytes are used instead of an STM of 11.
+*  Deliberately minimal: the less of this area we touch, the smaller the
+*  question of who owns the rest becomes.  R5/R10/R11/R12 are reloaded after
+*  the POST, R13 is never restored, and R9 carries the area pointer because R9
+*  is the one register the branch POST preserves.
+*
+*  MEASURED, NOT ASSUMED: a canary stamped in this area survives BOTH the
+*  branch POST and the WAIT -- the three-point self-check below records it and
+*  TSTRQXF asserts it.  The predicted failure (that RBEXSAVE would be usable
+*  while the routine runs but not across a suspension) did NOT occur.
+RBEXSAVE EQU   96                 SVRB+X'60' (IHARB, RBSECPTR-relative)
+RBEXSVLN EQU   48                 L'RBEXSAVE -- 12 words, NOT 18
+RBEXSVSN EQU   16                 our sentinel, past the 16 bytes used
+TCBRBP   EQU   0                  TCB+0 = A(current RB) = A(SVRB)
+TCBPKF   EQU   28                 TCB+X'1C'  = task storage key
 *----------------------------------------------------------------------
          USING NSFVSVC,R6         base = our entry (R6, FLIH-set)
          B     NSFVGO             skip the STC-patched anchor word
@@ -345,9 +421,45 @@ RQINPUB  DS    0H
 *  from the save area afterward, and the later WAIT (SVC 1) preserves R2-R14.
 *----------------------------------------------------------------------
 DOPOST   DS    0H                 POST/WAIT entry (ECHO + XFER share)
-         LA    R13,ANCSAVE(,R2)   R13 -> 18-word POST save area
-         STM   R14,R12,12(R13)    preserve regs across the POST
-         LR    R9,R13             R9: the only reg POST preserves
+*  PER-INVOCATION save area (M5-2b2).  Was ANCSAVE -- ONE 18-word block in the
+*  CSA anchor that every invocation in every address space computed the same
+*  address for and stored into.  Now the SVRB's own extended save area, which
+*  the FLIH allocates per SVC invocation, so two clients in two address spaces
+*  get two areas with no lock and no pool.  See the RBEXSAVE block above.
+*
+*  ANCSAVE is DEAD as a save area and STAYS in the anchor: removing it would
+*  shift every field after it and cost a full four-gate Stage-0 round for
+*  nothing, and b3 moves the layout anyway, so it comes out there for free.
+*  Its first five words now carry b2's SELF-CHECK, which TSTRQXF reads back
+*  out of CSA -- positive proof the new home is real and not merely unused:
+*    +0  the area address claimed (must be OUTSIDE the anchor)
+*    +4  sentinel intact BEFORE the POST (the stamp took at all)
+*    +8  sentinel intact AFTER the POST
+*    +12 sentinel intact AFTER the WAIT
+*    +16 the restored R2/R6 still work (the REGISTER half, not just the tail)
+*
+*  THREE STATES, NOT TWO: 1 = ran and passed, 2 = ran and FAILED, 0 = NEVER
+*  WRITTEN.  With a pass/fail pair of 1/0 a word that was never reached is
+*  indistinguishable from one that ran and failed -- and those are different
+*  faults with different next steps ("the sentinel was dead" vs "control never
+*  got there").  Same contract TSTRQXF already uses for its CC 20 skip code.
+*  +0 is an address, not a state; +16 is 1-or-never-written by construction --
+*  reaching it IS the pass -- so 0 there means control did not arrive.
+         SLR   R9,R9
+         L     R9,PSATOLD(,R9)    A(current TCB)
+         L     R9,TCBRBP(,R9)     A(current RB) = our SVRB
+         LA    R9,RBEXSAVE(,R9)   R9 -> SVRB extended save area
+         ST    R9,ANCSAVE(,R2)    self-check: the area we claimed
+         MVC   RBEXSVSN(4,R9),=CL4'B2SV'   stamp the sentinel
+         LA    R3,2               2 = ran and FAILED
+         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
+         BNE   PSTSV0
+         LA    R3,1               1 = ran and passed
+PSTSV0   ST    R3,ANCSAVE+4(,R2)  the stamp took
+         ST    R14,0(,R9)         the four live across the POST
+         ST    R2,4(,R9)
+         ST    R6,8(,R9)
+         ST    R8,12(,R9)
          L     R10,=X'40000000'   POST completion code (0)
 *  POST target: the STC's published key-8 private ECB if it has one, else
 *  the key-0 CSA server_ecb.  The executive WAITs from problem state, where a
@@ -365,12 +477,22 @@ PSTECBX  DS    0H
          L     R15,16(,R15)       R15 = CVT (absolute location 16)
          L     R15,CVT0PT01-CVTMAP(,R15)   POST branch entry
          BALR  R14,R15
-         LR    R13,R9             restore save-area pointer
-         LM    R14,R12,12(R13)    restore our registers
+         L     R14,0(,R9)         restore the four
+         L     R2,4(,R9)
+         L     R6,8(,R9)
+         L     R8,12(,R9)
+*  Self-check, POST half, before anything else can touch the area.
+         LA    R3,2               2 = ran and FAILED
+         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
+         BNE   PSTSV1
+         LA    R3,1               1 = ran and passed
+PSTSV1   ST    R3,ANCSAVE+8(,R2)  sentinel survived the POST
          B     PSTOK
 PSTERR   DS    0H                 POST failed: STC ASCB gone
-         LR    R13,R9
-         LM    R14,R12,12(R13)
+         L     R14,0(,R9)
+         L     R2,4(,R9)
+         L     R6,8(,R9)
+         L     R8,12(,R9)
          B     PSTFAIL
 PSTOK    DS    0H
 *  ORPHAN leaves here: the STC is awake, the request is in flight, and this
@@ -386,8 +508,22 @@ PSTOK    DS    0H
 *----------------------------------------------------------------------
          LA    R3,ANCRECB(,R2)    A(reply_ecb)
          WAIT  1,ECB=(R3)
+*  Self-check, WAIT half -- the far side of the round trip: a real task
+*  switch, the STC's cross-AS POST and an SVC 1.  R9 is POST-preserved and the
+*  WAIT (SVC 1) preserves R2-R14, so R9 still addresses the area.
+         LA    R3,2               2 = ran and FAILED
+         CLC   RBEXSVSN(4,R9),=CL4'B2SV'
+         BNE   PSTSV2
+         LA    R3,1               1 = ran and passed
+PSTSV2   ST    R3,ANCSAVE+12(,R2) sentinel survived the WAIT
          CLC   ANCEYE(8,R2),=CL8'NSFVANCR'   anchor there?
          BNE   WGONE              freed while parked -> bail
+*  The REGISTER half.  Reaching here means the restored R2 still addresses the
+*  anchor AND the restored R6 still resolves our literal pool -- the CLC above
+*  needs both -- so the 16 bytes actually stored into came back, not merely the
+*  sentinel sitting in the untouched tail.
+         LA    R3,1
+         ST    R3,ANCSAVE+16(,R2)
          L     R3,ANCSTATE(,R2)
          C     R3,=A(STDONE)      serviced?
          BNE   WQUIES             no -> quiesce wake, bail
@@ -408,8 +544,13 @@ PSTOK    DS    0H
 *  XFER read-out: MVCK the transformed staging (source key 0) back out to
 *  the caller's ubuf (dst key 0), L = ANCXLEN bytes (reloaded from CSA --
 *  it survived POST/WAIT), <= 255 bytes/piece, offset recomputed.  Piece
-*  length saved in R0 to advance (MVCK not trusted to preserve R1).  The
-*  write-out is key 0 in Stage-0b; M5-2 tightens the write-side key.
+*  length saved in R0 to advance (MVCK not trusted to preserve R1).
+*
+*  THIS PATH KEEPS THE KEY-0 WRITE-OUT, deliberately.  M5-2b1 closed the
+*  window on RQEOUT -- the M5-2 transport -- and left XFER alone: XFER is
+*  Stage-0b PROBE scaffolding (TSTUBUF), it carries no NSFRQE and no
+*  application data, and it is already listed for removal with the rest of
+*  the probe verbs.  Do not read its key-0 store as the transport's.
 *----------------------------------------------------------------------
 XFEROUT  DS    0H
          L     R10,ANCXLEN(,R2)   R10 = remaining = L
@@ -457,30 +598,59 @@ UDEC1    LR    R4,R3
 *  where the field policy is host-tested, and it is deliberately not
 *  duplicated here in assembler.
 *
-*  TWO KEYS, ONE SENTENCE APART -- do not conflate them.  The SOURCE key is 0
-*  because the staging buffer and the slot are key-0 CSA; that half is correct
-*  and harmless.  The HAZARD is the DESTINATION: both moves store into
-*  CALLER-SUPPLIED addresses (ubuf, and now rqeimg) while running under PSW
-*  key 0, so the hardware does NOT check them against the caller's key.  That
-*  window stays open and is M5-2b, not this step -- and after M5-2a it has TWO
-*  destinations, not one.
+*  THE DESTINATION-KEY WINDOW (M5-2b1, ADR-0039).  Both moves below store into
+*  CALLER-SUPPLIED addresses -- ubuf, and since M5-2a the 64-byte NSFRQE image
+*  -- so under the routine's own PSW key 0 the hardware would NOT check either
+*  against the caller's key, and a wrong or hostile pointer would be a silent
+*  clobber.  Both therefore run inside a NARROW SPKA window set to the
+*  CALLER's key: see MOVEOUT below, which is the only code that leaves key 0.
+*
+*  The SOURCE key was never the hazard -- the staging buffer and the slot ARE
+*  key-0 CSA and reading them is correct.  Do not conflate the two halves.
 *----------------------------------------------------------------------
 RQEOUT   DS    0H
+*  Window setup, ONCE.  R9 and R12 come out holding SPKA OPERANDS, NOT keys.
+*  SPKA takes the key from bits 24-27 of its operand ADDRESS and ignores
+*  every other bit, so neither register reads as a small integer in a dump:
+*
+*    R9  = the TCBPKF byte itself, key in the HIGH nibble -- X'00000080'
+*          for a key-8 caller.  80, not 08.
+*    R12 = the anchor base with IPK's result merged into its low byte.  IPK
+*          writes ONLY bits 24-27 (and zeroes 28-31); bits 0-23 keep what
+*          they had, which here is the top of the anchor address.  For an
+*          anchor at X'00A6F688' under key 0 that reads X'00A6F600'.
+*
+*  THAT IS NOT CORRUPTION.  R12 is never used as an address and never
+*  dereferenced -- only SPKA reads it, and only four bits of it.  Restoring
+*  through the value IPK produced is deliberate: it puts back whatever key
+*  the routine actually ran under instead of assuming 0.
+*
+*  IPK writes R2 -- our anchor base -- so R2 is parked across it and put
+*  straight back.  R9 and R12 are untouched by the loop and by MOVEOUT.
+         LR    R9,R2              park the anchor base across IPK
+         IPK   0                  R2 = PSW key in bits 24-27
+         LR    R12,R2             R12 = SPKA operand (restore)
+         LR    R2,R9              anchor base back
+         SLR   R9,R9
+         L     R9,PSATOLD(,R9)    R9 = A(caller TCB)
+         SLR   R3,R3
+         IC    R3,TCBPKF(,R9)     caller's key, high nibble
+         LR    R9,R3              R9 = SPKA operand (borrow)
          L     R10,ANCXLEN(,R2)   R10 = remaining = L
          SLR   R11,R11            R11 = offset
 RQOTLP   LTR   R10,R10            bytes left? (0 -> skip)
          BNP   RQOTRQE
          LR    R1,R10             R1 = piece length
-         C     R1,=A(MVCKMAX)
+         C     R1,=A(MVCMAX)
          BNH   RQOTSZ
-         LA    R1,MVCKMAX         cap at 255
-RQOTSZ   LR    R0,R1              save piece length
+         LA    R1,MVCMAX          cap at 256
+RQOTSZ   LR    R0,R1              save TRUE piece length
          L     R4,REQUBUF(,R8)    R4 = ubuf base (dst B1)
          ALR   R4,R11
          LA    R5,ANCSTAGE(,R2)   R5 = &stage (source B2)
          ALR   R5,R11
-         SLR   R3,R3              R3 = source key 0
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         BCTR  R1,0               EX takes LENGTH-1
+         BAL   R15,MOVEOUT        move under the caller's key
          ALR   R11,R0             off += piece
          SLR   R10,R0             remaining -= piece
          B     RQOTLP
@@ -489,10 +659,51 @@ RQOTRQE  DS    0H
          LTR   R4,R4              no image supplied?
          BZ    REPLYC             then nothing to give back
          LA    R5,ANCRQE(,R2)     R5 = &anchor.rqe (source B2)
-         LA    R1,RQELEN          R1 = 64 (one piece)
-         SLR   R3,R3              R3 = source key 0
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         LA    R1,RQELEN-1        R1 = 63 (EX length-1)
+         BAL   R15,MOVEOUT        move under the caller's key
          B     REPLYC             EXPLICIT: never fall through
+*----------------------------------------------------------------------
+*  MOVEOUT -- the write-out key window (M5-2b1, ADR-0039).  Moves R1+1 bytes
+*  from 0(R5) to 0(R4) with the PSW key set to the CALLER's, so the hardware
+*  checks the caller-supplied DESTINATION against the key that owns it.  In:
+*  R1 = length-1, R4 = dst, R5 = src, R9/R12 = SPKA OPERANDS (bits 24-27 are
+*  the borrowed and the restored key respectively -- see the RQEOUT header;
+*  they are not key integers and R12 is not an address).  Link R15.
+*
+*  THIS IS THE ONLY BLOCK IN THE ROUTINE THAT RUNS UNDER A KEY OTHER THAN 0,
+*  AND IT MUST STAY THAT WAY.  Four instructions, two call sites: that is
+*  what makes "what executes under a borrowed key" a question with a short,
+*  checkable answer, and the property is easy to lose and hard to get back.
+*  The window is per piece rather than around the loop for the same reason --
+*  the routine's own bookkeeping never executes under a key it does not
+*  control, and the ONLY instruction that can take a protection exception is
+*  the move itself.
+*
+*  b3 WILL BE TEMPTED to wrap the slot-pool CS claim loop in a window too.
+*  Do not: a claim needs an interlocked compare (CS), which is a
+*  serialization problem, not a key problem.  The two are unrelated and
+*  conflating them would put a retry loop under a borrowed key for no gain.
+*
+*  A plain MVC, not MVCK: b0 (tstmvcd.c) measured that under the caller's key
+*  BOTH operands are reachable -- the key-0 CSA staging is not fetch-protected
+*  (ISK X'06') so it reads, and the caller's private storage is its own key so
+*  it writes.  MVCK inside a non-zero PSW key would put its R3 source key
+*  through the CR3 key-mask check that already cost tstmvck.c an S0C2; buying
+*  that unknown back to reuse an encoding would be the wrong trade.  MVC takes
+*  its length from the instruction, hence EX -- which ORs R1's low byte into a
+*  COPY and modifies no storage, so the routine stays RENT (the same trick
+*  src/nsfreqc.c uses for the SVC number).
+*
+*  IF TCBPKF READS 0 the window is a no-op and there is no protection.  That
+*  is CORRECT, not a bug: a key-0 caller can already store anywhere, so there
+*  is nothing to protect it from.  Do not "fix" this into a hardcoded key 8.
+*----------------------------------------------------------------------
+MOVEOUT  DS    0H
+         SPKA  0(R9)              -> the caller's key
+         EX    R1,MVCPIEC         move R1+1 bytes
+         SPKA  0(R12)             -> back to our own key
+         BR    R15
+MVCPIEC  MVC   0(1,R4),0(R5)      EX target: length from R1
 *----------------------------------------------------------------------
 *  Stage-0c probe handlers (ADR-0040 8).  Probe-only: not part of the M5-2
 *  transport.  ORPHRET is the no-WAIT return; DOQUERY reports the anchor's

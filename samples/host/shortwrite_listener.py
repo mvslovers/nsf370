@@ -22,10 +22,10 @@ Usage:
 
     host      bind address (default 192.168.200.2 -- the CTCI host peer)
     port      listen port  (default 3003 -- matches tstrqxm.c SW_PORT)
-    --expect  exact byte count required (default 9096 -- see tstrqxm.c)
+    --expect  exact byte count required (default 9353 -- see tstrqxm.c)
 
 Bring it up BEFORE submitting the TSTRQXM job:
-    python3 shortwrite_listener.py 192.168.200.2 3003 --expect 9096
+    python3 shortwrite_listener.py 192.168.200.2 3003 --expect 9353
 
 Exit 0 when exactly --expect bytes arrived and every one matched; 1 otherwise.
 """
@@ -40,7 +40,7 @@ def pat(i):
 def main():
     host = "192.168.200.2"
     port = 3003
-    expect = 9096
+    expect = 9353
 
     args = sys.argv[1:]
     pos = []

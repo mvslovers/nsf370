@@ -427,3 +427,83 @@ second go quiet — which is precisely how a known hazard becomes an unknown one
 Note also the distinction the `RQEOUT` header comment previously blurred (now corrected in
 `asm/nsfvsvc.asm`): the **source** key being 0 is correct and harmless — the staging buffer
 and the slot *are* key-0 CSA. The hazard is entirely on the **destination** side.
+
+### Update (2026-08-23) — the write-out key window is CLOSED for BOTH destinations
+
+M5-2b1 discharges the **mechanism** half of the deferred-obligations row above. Both
+key-0 stores this ADR named — `ubuf` and the M5-2a `rqeimg` — now run inside a narrow
+`SPKA` window set to the **caller's own key**, so the hardware checks each
+caller-supplied destination against the key that owns it. The move is a plain `MVC`
+reached by `EX`; the key comes from `TCBPKF` (TCB+`X'1C'`, reached via `PSATOLD`), never
+a hardcoded 8. The full decision, the rejected `MVCK`-inside-the-window alternative, the
+`as370` listing bytes and the live gates are recorded **append-only in ADR-0039**, which
+framed the obligation — this entry only re-reads the row.
+
+**The obligation row above should now read: mechanism CLOSED for both destinations;
+recovery still OPEN.** Concretely:
+
+| Was | Now |
+|---|---|
+| `ubuf` written under PSW key 0 | written under the caller's key — hardware-checked |
+| `rqeimg` written under PSW key 0 | written under the caller's key — hardware-checked |
+| a wrong/hostile pointer is a **silent clobber** | a wrong/hostile pointer is a **caught `S0C4`** |
+| — | **recovery from that fault: still open**, an M5-2 item ADR-0039 already names |
+
+**What closing it exposed, so the next reader does not have to rediscover it.** A fault in
+the write-out leaves the anchor dirty: `req_state` stuck at **DONE** (the slot busy
+forever, every later request `RCNOREQ`) and `inflight` leaked. That shape is *worse* than
+the in-direction's (which leaves the slot FREE, because the fault precedes publication),
+and it is the input to deciding where recovery lands. ADR-0039's b1 entry carries the
+measured and reasoned assessment in full, including two adjacent findings that are **not**
+b1's to fix: `UNSTAGE` cannot recover a pre-publication leak, and `nsfsx_stop()` does not
+drain `inflight` at all — unlike the Stage-0 probe STC's `nsfv_drain`.
+
+**`XFEROUT` is deliberately untouched** and keeps its key-0 write-out: it is Stage-0b probe
+scaffolding, carries no NSFRQE and no application data, and is already listed for removal
+with the other probe verbs in (c). Do not read its key-0 store as this transport's.
+
+Nothing in this ADR's own subject changed: the anchor layout did not move, `NSFV_REQ` and
+`NSFV_ANCHOR` are unchanged, **NSFRQE stays frozen at 64 bytes**, and the C / EZASOKET /
+EZASMI surfaces are untouched — applications relink only.
+
+### Update (2026-08-23, follow-up) — closed on THIS path, not at the SVC boundary
+
+The entry above says "the write-out key window is CLOSED for BOTH destinations". That is
+true of the destinations **this ADR owns** — the M5-2a transport's `ubuf` and `rqeimg` —
+and it is the wrong sentence to read on its own. Corrected here, in the terms a future
+reader needs:
+
+> **The write-out key window is closed on the RQE path. It is not closed at the SVC
+> boundary.**
+
+`FNXFER` is a **reachable** SVC verb: dispatched by the same routine on the same
+slot-take path, and driven today by `test/mvs/tstubuf.c`, which is an **unauthorised**
+client. `XFEROUT` therefore still stores into a **caller-supplied `ubuf` under PSW key 0**,
+reachable by anyone who can issue the SVC. Leaving it alone remains correct — it is
+Stage-0b scaffolding, it carries no NSFRQE and no application data, and `TSTMVCK` /
+`TSTUBUF` / `TSTDEATH` are the regression for every step after this one — but it must not
+be described as closed.
+
+**The (c) row of the deferred table above is amended** (append-only, so the row stands and
+this qualifies it): removal of the probe scaffolding — `NSFV_REQ_ORPHAN`, `pascb`/`pasid`,
+and with them `XFER`/`XFEROUT` — is **a security item, not only hygiene**. It is what
+actually closes the boundary; until then a key-0 write-out to a caller-supplied address
+survives behind a verb an unauthorised caller can reach.
+
+**The gate that proves the RQE path is now real, and it did not exist before.** ADR-0039's
+follow-up entry carries it in full: `ubuf` pointed into the anchor's own staging buffer —
+key-0, non-fetch-protected storage, the one class that gets past the key-8 read-in — is
+faulted `S0C4` by the window and **stored successfully with the window removed**, one
+assertion moving and nothing else, in all three of window-in / window-out / window-restored.
+The anchor is reached by an **unauthorised** client through the SVC table
+(`CVT → SCVT → SVCTABLE → svcentry[239].svcepa → +NSFV_ANCH_OFF`), which is itself a new
+measured fact: **the SVC table is readable from problem state key 8 on this system**, and
+no client-side discovery path existed before — `nsfreqc_init` only issues a `QUERY`.
+
+**The OUT-direction dangling state above was reasoned; it is now measured** and matches:
+`req_state` stuck at **DONE**, `inflight` leaked, and `UNSTAGE` **does** recover it
+(the slot is published), unlike the in-direction case.
+
+Nothing in this ADR's own subject changed: no production source was touched, the anchor
+layout did not move, `NSFV_REQ` and `NSFV_ANCHOR` are unchanged, **NSFRQE stays frozen at
+64 bytes**, and the C / EZASOKET / EZASMI surfaces are untouched — applications relink only.
