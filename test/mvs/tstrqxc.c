@@ -18,7 +18,9 @@
  *                        reasons that have nothing to do with a second client.
  *   PARM='A'   LEADER    the two-client gate.  Barrier, a free-for-all phase,
  *                        then a phase in which A pre-claims all but ONE slot
- *                        and asserts it is refused while B holds it.
+ *                        and asserts that it is BOTH refused (because B holds
+ *                        the one free slot) and served (because it can still
+ *                        win it -- no outright starvation).
  *   PARM='B'   FOLLOWER  hammers the pool for as long as A's flag is up.  It
  *                        asserts only what it can see on its own; the gate's
  *                        hard assertions belong to A, which is the only party
@@ -153,11 +155,18 @@
 
 #define XC_N_SOLO       8u          /* SOLO: sequential requests              */
 #define XC_N_PHASE1     150u        /* A: free-for-all requests                */
-#define XC_N_PHASE2     150u        /* A: requests with one slot free          */
+/* Phase 2 is bounded by ATTEMPTS, not by served requests: with one slot free
+ * most attempts are refusals, and refusals are the evidence.  A does NOT back
+ * off between them -- the first run of this gate did, and it starved itself:
+ * both clients scan from slot 0, so the one that asks more often gets it, and
+ * A asking every 10 ms against B asking continuously meant A was served ZERO
+ * times out of 150.  That is a real property of a claim scan (it is not a
+ * queue and makes no fairness promise), but it is not what phase 2 is for. */
+#define XC_N_PHASE2     3000u       /* A: attempts with one slot free          */
 #define XC_B_CAP        20000u      /* B: safety cap if A never clears its flag*/
 #define XC_BARRIER_POLL 120u        /* 120 * 0.5 s = 60 s                      */
 #define XC_PAUSE_HALF   50u         /* 0.50 s, in hundredths                   */
-#define XC_PAUSE_TICK   1u          /* 0.01 s -- the ENOBUFS backoff           */
+#define XC_PAUSE_TICK   1u          /* 0.01 s -- pre-claim sweeps, B backoff   */
 #define XC_CLAIM_SWEEPS 40u         /* pre-claim retries (B holds slots too)   */
 
 /* An NSFRQE function code no dispatcher case claims, so nsfreq_dispatch takes
@@ -558,19 +567,15 @@ xc_run_a(void)
     exh0 = g_anchor->exhausted;
     for (k = 0; k < XC_N_PHASE2; k++) {
         rc = xc_request(XC_ID_A, 0x800000u + k, &slot, &mine);
-        if (rc == NSFV_RC_NOBUF) {
-            nobuf2++;
-            xc_pause(XC_PAUSE_TICK);        /* do not spin the address space  */
-            continue;
-        }
+        if (rc == NSFV_RC_NOBUF) { nobuf2++; continue; }
         if (rc != NSFV_RC_OK || !mine) { wrong2++; continue; }
         if (slot != 0u)                { wrong2++; continue; }
         ok2++;
     }
     exh1 = g_anchor->exhausted;
-    printf("  served=%u refused=%u wrong=%u | exhausted %u -> %u\n",
-           (unsigned)ok2, (unsigned)nobuf2, (unsigned)wrong2,
-           (unsigned)exh0, (unsigned)exh1);
+    printf("  %u attempts: served=%u refused=%u wrong=%u | exhausted %u -> %u\n",
+           (unsigned)XC_N_PHASE2, (unsigned)ok2, (unsigned)nobuf2,
+           (unsigned)wrong2, (unsigned)exh0, (unsigned)exh1);
     wtof("TSTRQXC: A phase2 ok=%u nobuf=%u wrong=%u exh delta=%u",
          (unsigned)ok2, (unsigned)nobuf2, (unsigned)wrong2,
          (unsigned)(exh1 - exh0));
@@ -578,7 +583,12 @@ xc_run_a(void)
     CHECK_EQ((long)wrong2, 0L,
              "phase 2: every served request got slot 0 -- the only free slot --"
              " and its own identity back");
-    CHECK(ok2 > 0u, "phase 2: A was served at least once");
+    /* Both directions have to happen, and each says something the other does
+     * not: served-at-least-once says A can still win the single free slot (no
+     * starvation), refused-at-least-once is witness 3. */
+    CHECK(ok2 > 0u,
+          "phase 2: A won the single free slot at least once -- the scan does"
+          " not starve one address space outright");
     /* WITNESS 3, and the strongest.  A holds no slot between its own requests,
      * and slot 0 is the only slot a request can be given, so a refusal has
      * exactly one possible cause. */
@@ -601,24 +611,24 @@ xc_run_a(void)
     CHECK_EQ((long)xc_slot_cas(XC_FLAG_A, NSFV_REQ_HELD, NSFV_REQ_FREE),
              (long)NSFV_RC_OK, "A lowered its flag");
 
+    /* Report B's exit; do NOT assert on it.  A cannot assert the state of the
+     * whole pool, because B is legitimately still using it -- B stops when it
+     * next sees A's flag down, which is one request later, and a request can
+     * take a while (see the report's note on the transport's wake latency).
+     * "The pool is clean at the end" therefore belongs to whoever leaves LAST,
+     * which is B. */
     for (n = 0; n < XC_BARRIER_POLL; n++) {
         if (g_anchor->slots[XC_FLAG_B].req_state == NSFV_REQ_FREE) break;
         xc_pause(XC_PAUSE_HALF);
     }
-    printf("  B lowered its flag: %s\n",
-           (g_anchor->slots[XC_FLAG_B].req_state == NSFV_REQ_FREE)
-               ? "yes" : "NOT within the timeout");
-
-    /* The pool must be exactly as it was found, or every later gate in the
-     * round inherits a restricted pool and fails for the wrong reason. */
     held = 0;
     for (k = 0; k < NSFV_NSLOTS; k++) {
         if (g_anchor->slots[k].req_state == NSFV_REQ_FREE) held++;
     }
-    printf("  slots FREE at exit: %u of %u\n",
+    printf("  B lowered its flag: %s | slots FREE as A leaves: %u of %u\n",
+           (g_anchor->slots[XC_FLAG_B].req_state == NSFV_REQ_FREE)
+               ? "yes" : "not yet (it is still running -- B checks the pool)",
            (unsigned)held, (unsigned)NSFV_NSLOTS);
-    CHECK_EQ((long)held, (long)NSFV_NSLOTS,
-             "the whole pool is FREE again -- the round leaves nothing behind");
     return 0;
 }
 
@@ -670,6 +680,23 @@ xc_run_b(void)
 
     CHECK_EQ((long)xc_slot_cas(XC_FLAG_B, NSFV_REQ_HELD, NSFV_REQ_FREE),
              (long)NSFV_RC_OK, "B lowered its flag");
+
+    /* B IS THE LAST ONE OUT, so the pool-clean check is its job: it stops only
+     * after A's flag is down, and A releases everything before lowering it.
+     * If this fails, a later gate in the round would inherit a restricted pool
+     * and fail for a reason that has nothing to do with what it tests. */
+    {
+        UINT free_now = 0;
+
+        for (k = 0; k < NSFV_NSLOTS; k++) {
+            if (g_anchor->slots[k].req_state == NSFV_REQ_FREE) free_now++;
+        }
+        printf("  slots FREE at exit: %u of %u\n",
+               (unsigned)free_now, (unsigned)NSFV_NSLOTS);
+        CHECK_EQ((long)free_now, (long)NSFV_NSLOTS,
+                 "the whole pool is FREE again -- the round leaves nothing"
+                 " behind for the next gate to trip over");
+    }
     return 0;
 }
 
