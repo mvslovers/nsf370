@@ -318,3 +318,198 @@ perform (Decision 4).
 **Decoupled staging buffers.** Rejected: ~96 KB saved against a second claim path, a
 partial-claim rollback and a second exhaustion case, in the layer that cannot be host-tested
 (Decision 4).
+
+---
+
+## Annotation — M5-2b4: contention measured, and the branch nobody had entered
+
+**Appended 2026-08-25.** Nothing above is retracted. This records what the step that follows
+b3 measured, what it could not measure, and one thing it found by accident.
+
+### 1. A failed `CS` is invisible, so the gate needed instrumentation
+
+The problem had to be stated before the test could be designed. A client that scans, finds slot
+K taken and moves to K+1 is externally **indistinguishable** from one that found K free, lost the
+compare and moved on — and from one that simply started at K+1. No arrangement of clients and
+slots recovers the difference, so a gate built on "two clients ran and both were served
+correctly" would have proved nothing about the claim discipline. That is the same
+non-discriminating shape this milestone paid for three times already (TSTRQXF (B) twice, a
+skipped gate reporting CC 0, and `nsfreqx_reap_ok` pinned but unwired).
+
+So the anchor header gained **`collisions`**, incremented once per `CS` that failed during a
+claim scan, plus **one reserved word** — because b3 left the header with no slack, which is the
+entire reason one diagnostic word costs a full Stage-0 round. Header 48 → 56, slot array moves
+by 8, `NSFV_ANCHOR_VER` 2 → 3, slot internals unchanged.
+
+**What the counter means, exactly:** *a claim attempt found a slot that was not FREE at the
+instant of the compare.* **What it cannot separate:** "the slot was already busy" from "I lost a
+simultaneous race" — `CS` reports only the value it found, and the routine performs no load
+before the compare that a second value could be compared against. Adding one would sharpen it
+into a true lost-race count at the price of a second counter and a second word; that is what
+`rsvd0` is there for, and it was **not** done here. Worth knowing when reading a number from it:
+the MVSCE stand runs Hercules with `NUMCPU 2` and MVS dispatches on both processors (measured:
+both `Processor CP00` and `CP01` threads executing), so a genuinely simultaneous compare is
+physically possible here rather than only defended against on paper.
+
+**The increment is deliberately not interlocked** — a plain `L`/`LA`/`ST`, not the `CS` loop
+`exhausted` uses next door. A lost update makes it under-report, never over-report, so
+"collisions ≥ 1" stays sound while "collisions == N" is not a number to build on. Aligned
+fullword stores do not tear. `exhausted` can afford a `CS` loop because a full pool is rare;
+this sits inside the routine's one hot loop. Do not "fix" it into a `CS` loop.
+
+### 2. Three witnesses, and a negative control built from the same code
+
+`TSTRQXC` is one program with roles selected by PARM, and that is deliberate: the no-PARM SOLO
+run is the **negative control** for the two-client run, and a negative control built out of
+different code proves less.
+
+| | Witness | Why a single client cannot produce it |
+|---|---|---|
+| 1 | `collisions` moved | SOLO asserts the delta is **zero**: one client releases before it asks again, so its scan finds slot 0 free every time |
+| 2 | A was given a slot **other than 0** | the scan takes the lowest FREE slot, so a solo client gets slot 0 forever (b3 measured 0/0/0/0) |
+| 3 | A was **refused** while exactly one slot was free | A holds no slot between its own requests, and slot 0 is the only slot a request can be given — so an `ENOBUFS` handed to A has exactly one cause: the other address space was occupying it at that instant |
+
+Witness 3 is the strongest and the one that makes the gate fail honestly when the second client
+is absent: A never sees a refusal, and the gate reports that rather than passing quietly.
+
+**No slot held by two clients** needs no counter. An unauthorised client cannot store into CSA,
+but every request carries a 64-byte `NSFRQE` image *through* the slot and back, and the STC
+writes only the six result fields into it. Each client stamps a per-request identity in fields
+it owns (`reqid`, `sockdesc`) and asserts the image that comes back is its own; two clients
+sharing a slot would stage into the same `rqe` and one would read the other's. No race in the
+check — the copy-back happens while the client still owns the slot.
+
+**Still not proven, and stated so it is not read as proven:** that two CPUs executed the compare
+on the same word at the same instant and the hardware arbitrated. Witness 1 cannot separate that
+case, by construction.
+
+### 3. A property of the claim scan, found by being starved by it
+
+The first run of the gate had A back off 10 ms after each refusal. It was served **0 times out
+of 150** while B, asking continuously, held slot 0 throughout. That is not a defect: **the scan
+is not a queue and makes no fairness promise** — both clients start at slot 0, so the client
+that asks more often gets it. It is worth recording because a future step that wants fairness
+will not get it from this structure, and because a test that backs off can starve itself into
+looking like a broken pool. Phase 2 now spends a bounded number of *attempts* with no backoff
+and asserts **both** directions: refused at least once (witness 3) and served at least once (no
+outright starvation).
+
+### 4. The retain branch: why a blocking operation cannot induce it
+
+`nsfsx_stop` clears `ANCHOR_ACTIVE` **before** it nudges parked clients, so a nudged client wakes
+inside the SVC routine, finds the anchor quiescing, takes the routine's `WQUIES` path — slot to
+FREE, in-flight decremented, `RCCORR` to the caller — and **drains itself**. A blocking `accept`
+or `RECV` therefore cleans up on the nudge and lands in the *drained* branch, which is what b3's
+two induction attempts kept discovering. That is correct behaviour, and it is why the retain
+branch is hard to reach at all.
+
+What reaches it is a slot left **CLAIMED** with the in-flight count already taken and **nobody
+waiting on its reply ECB**: no waiter for the nudge to wake, and `nsfreqx_reap_ok` excludes
+CLAIMED, so the death guard never reclaims it either. A client that faults inside the routine's
+write-IN move leaves exactly that, because the claim and the in-flight increment both happen
+before the move. The induction is that fault with the cleanup deliberately withheld
+(`TSTRQXC PARM='LEAK'`).
+
+**The `nsfsx_router_unload` fix is proven FORWARD, not by revert, and that is weaker.** The house
+habit is to prove a fix by reverting it and watching the gate go red. Reverting this one means
+freeing the CSA a client is parked inside, in supervisor state, key 0 — the failure mode is the
+system, not the test. The evidence is therefore: the retain decision is reached (`NSF054W`), the
+unload is not called, and the anchor is still readable afterwards **with its eyecatcher intact**
+— `nsfsx_anchor_free` zeroes that eyecatcher before the `freemain` precisely so a parked client
+cannot accept reused storage, so an intact eye after a stop says the free path was not taken.
+That is not the same as demonstrating the bad outcome absent, and it should not be written up as
+if it were.
+
+### 5. The WAIT-gate probe: what "scan all slots" would actually have done
+
+b3 recorded that `nsfsx_pending()` returns early on `g_busy` and never looks at another slot, and
+proposed to make it scan all of them. Taken literally that is **a hot spin, not a latency fix**:
+`evt_mainloop` skips its WAIT whenever a probe answers non-zero, and `nsfsx_drain`'s dispatch arm
+needs the single private `NSFRQE`, so a probe reporting a dispatchable second request produces a
+pass that does nothing and repeats. The rule was already written down next door —
+`nsfdev_work_pending` "mirrors service's consume conditions".
+
+The split is by **what the outcome needs**. `REAP` / `HOLD` / `REAP_BAD` all finish inside the
+CSA slot and never POST, so they are consumed whether or not a request is in service, one per
+pass. `DISPATCH` needs the private `NSFRQE` and stays invisible until it frees. `nsfreqx_actionable`
+is the one encoding of that question, asked by both the drain and the probe, so they cannot
+drift apart — the drift *is* the spin. Host-pinned in TSTREQX including the anti-spin row.
+
+What this fixes was not hypothetical: a second client that published a request and then **died**
+sat un-reaped for as long as an unrelated client's blocking operation ran. What it does not fix
+is a dispatchable second request served sooner — that needs **concurrent service**, still open.
+
+Writing it exposed one real bug: **the slot in service is still PENDING**, so a selector that
+scans while busy would classify it, and a client that died with its request parked would have
+been reaped from under the executive. Reaping clears `stage`, which is exactly what the parked
+request's `ubuf` points at. The selector skips it explicitly; step 1 remains the one place that
+finishes the in-service slot.
+
+### 6. Found while running the gate, NOT fixed here: the executive can sleep through a request
+
+Measured on MVSCE (issue #64). Client B published a request at ~15:13 and was serviced at
+**15:24:04** — eleven minutes later. A `F NSFS,STATS` issued at 15:20:52 was answered **in the
+same second**, which is what identifies the sleeper: the STC, not the client, because the
+operator drain runs unconditionally on every pass of `evt_mainloop`. What woke it was unrelated
+inbound device traffic (a `ping` from the host); one wake then processed both. The anchor read
+live through `/.dm` during the stall showed the shape exactly: slot 0 PENDING, `inflight = 1`,
+`served = 0x18D`, and `served = 0x18E` afterwards.
+
+**It is conditional, and idleness alone is not the trigger.** The second run of the two-client
+gate crawled at roughly three requests per minute until a continuous `ping` was started as an
+external wake floor, after which it completed normally. But a freshly started STC served eight
+sequential requests in **0.39 s** with no ping running — and still in **0.44 s** after five
+minutes idle and **0.24 s** after fifteen. What distinguished the slow instance is that it had
+previously run a TCP workload (`TSTRQXM`) and a long two-client run. So something a prior
+workload leaves behind decides whether the transport's wake reaches a sleeping executive; whoever
+picks this up should start from that difference rather than from the theory.
+
+This is **pre-existing M5-2a behaviour, not something b4 introduced** — the new probe is strictly
+more permissive than b3's, returning 1 in every state where the old one did, so it cannot lose a
+wake the old one caught. Two concrete asymmetries against the Phase-1 original are worth
+recording as starting points, not as a diagnosis: `nsfsx_drain` never resets its wake ECB, where
+`nsfreq_drain` resets `g_reqecb` **before** taking the queue and double-checks after (ADR-0022,
+the #27 class); and the `nsftmr_plat_arm(1u)` heartbeat does not survive an empty timer queue
+(ADR-0034: queue empty ⟺ STIMER disarmed), so there is no periodic floor under the latency.
+Filed, not fixed: diagnosing a wake path is its own investigation, and a guess in one is exactly
+what this project punishes.
+
+### 7. The live round
+
+MVSCE, deployed at the 56-byte header (`NSF055I CSA POOL 137272 BYTES (64 SLOTS X 2144)`), the
+client unauthorised throughout.
+
+| Gate | Result |
+|---|---|
+| Stage-0 `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH` | **444 PASS, CC 0 batch + TSO** (`TSTMVCD` excluded, #53) |
+| `TSTRQXM` | **batch CC 0, 32/32**, host peer verified **9353 bytes byte-exact** (TSO leg fails by design — one-shot listener) |
+| `TSTRQXF` | **53/53 CC 0 batch + TSO** |
+| `TSTRQXC` SOLO (the negative control) | **8/8 CC 0 batch + TSO**, `collisions 9888 → 9888` |
+| `TSTRQXC` A (leader) | **CC 0000, 13/13** |
+| `TSTRQXC` B (follower) | **CC 0000, 8/8** |
+| `TSTRQXC` LEAK (induction) | **CC 0000, 8/8** — slot CLAIMED, `inflight` 0 → 1, S0C4 caught, no dump |
+| `TSTRQXC` V (after the stop) | **CC 0000, 5/5** |
+| Host suite | **2925 PASS / 0 FAIL** (TSTREQX 119 → 137) |
+
+The two-client numbers, because the shape of them is the evidence: phase 1, 150 requests,
+**all 150 landed on a slot other than 0** (highest 1) with `collisions` delta exactly 150; phase
+2, 3000 attempts with one slot free, **served 1375 / refused 1625 / wrong 0**, `exhausted`
+152 → 7927; B served 167, refused 6150, every reply carrying its own identity; pool 64/64 FREE at
+exit. The probe STC's own stats line independently reported **`COLL=0`** across the 126
+sequential requests of the Stage-0 four — a second negative control, from different code.
+
+The retain branch: `NSF043I SVC 239 RESTORED` at 15:43:52, **`NSF054W 1 CLIENT(S) STILL IN
+FLIGHT -- CSA AND SVC ROUTINE RETAINED (EXHAUSTED=2)`** at 15:44:02 — the 10 s drain ceiling
+elapsed with the nudge loop running through every claimed slot. The anchor read back afterwards
+still carried **`NSFVANCR`**, `ACTIVE` clear and `inflight = 1`. And the restart is its own
+witness: the next `S NSFS` came up on a **different anchor (00AAD7C8, was 00A8B7C8) and a
+different router (00A8B248, was 00A820C8)**, with the largest free CSA block down from 1073152 to
+933888 — a drop of 139264 bytes, which is the retained pool plus the retained module, measured.
+
+### 8. What M5-2b4 still does not prove
+
+- **Concurrent service.** One dispatch at a time (Decision 10) is unchanged.
+- **Hardware arbitration of a simultaneous `CS`.** See §1.
+- **Two-address-space stress.** Still **(e)**.
+- **Fault recovery, address validation, the CLAIMED-slot leak.** Unchanged and still open.
+- **The transport's wake latency** (§6).

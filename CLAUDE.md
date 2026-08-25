@@ -946,7 +946,85 @@ without freeing anything, which is the whole reason UNKNOWN is a third state), t
 invariant to be stated correctly as an **implication, not an equality** (the two helpers answer
 different questions: per-pass dispatch vs. permission, and equality failed on 14 of 60 rows that
 are all correct). **#53, #54 and #56 deliberately untouched.**
-[[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
+**M5-2b4 (contention, the retain branch, and the WAIT-gate probe) — DONE, live-green;
+pending countersign.** The last sub-step of M5-2b; **M5 stays in progress and no milestone
+flips.** Three things, and the first needed instrumentation before it could be tested at all.
+**(1) Contention.** A failed `CS` on a slot word is **invisible from outside the routine** — a
+client that finds slot K taken and moves to K+1 is externally identical to one that found K free,
+lost the compare, and moved on, and to one that simply started at K+1. So the anchor header gained
+**`collisions`** (one per failed `CS` in a claim scan) **plus one reserved word** — b3 left no
+slack, which is the whole reason one diagnostic word costs a Stage-0 round. Header 48→**56**,
+slot array moves by 8, `NSFV_ANCHOR_VER` 2→**3**, slot internals unchanged, `NSFV_ANCHOR`
+137264→**137272**. The counter means exactly *"a claim attempt found a slot that was not FREE at
+the instant of the compare"*; it **cannot** separate "already busy" from "lost a simultaneous
+race" (`CS` reports only the value it found), and sharpening it needs a load before the compare
+and a second counter — that is what `rsvd0` is for, deliberately unspent. The increment is a
+**plain `L`/`LA`/`ST`, not the `CS` loop `exhausted` uses next door**: this is the routine's one
+hot loop and a lost update makes a diagnostic under-report, never over-report. (Worth knowing:
+the stand runs Hercules `NUMCPU 2` and **both CPs execute**, so a simultaneous compare is
+physically possible here, not merely defended against.) **THREE independent witnesses**, because
+"two clients ran and both were served" proves nothing: `collisions` moved (SOLO asserts the delta
+is **zero** — the negative control, in the same binary); **A was given a slot other than 0** (the
+scan takes the lowest FREE slot, so a solo client gets 0 forever); and the strongest — **A was
+REFUSED while exactly one slot was free**, which with A holding no slot between its own requests
+has exactly one cause: the other address space was occupying it. **No slot double-held** needs no
+counter: every request carries a 64-byte `NSFRQE` image *through* the slot and back and the STC
+writes only the six result fields, so each client stamps a per-request identity (`reqid`,
+`sockdesc`) and asserts the image returned is its own. **(2) The retain branch.** A blocking
+`RECV` cannot induce it: `nsfsx_stop` clears `ANCHOR_ACTIVE` **before** it nudges, so a nudged
+client takes the routine's `WQUIES` path and **drains itself** — b3's two failed attempts, explained.
+What reaches it is a slot left **CLAIMED** with the count taken and **nobody on its reply ECB**;
+a client that faults in the write-IN move leaves exactly that, so the induction is that fault with
+the cleanup withheld. **The `nsfsx_router_unload` fix is proven FORWARD, not by revert** — reverting
+means freeing CSA a task is executing in, so the failure mode would be the system — and that is
+**weaker evidence, labelled as such**. **(3) `nsfsx_pending`.** b3 asked for "scan all slots";
+taken literally that is a **hot spin**, because `evt_mainloop` skips its WAIT whenever a probe
+answers non-zero and the drain's dispatch arm needs the one private `NSFRQE`. Split by what the
+outcome NEEDS: `REAP`/`HOLD`/`REAP_BAD` finish inside the CSA slot and never POST, so they are
+consumed whether or not one is in service; `DISPATCH` stays invisible until it frees. New pure
+`nsfreqx_actionable` (`NSFRXABL`) is the ONE encoding both the drain and the probe ask through —
+the drift *is* the spin. It fixes a real hole (a second client that published and then **died**
+sat un-reaped for as long as an unrelated blocking op ran) and deliberately not the starvation,
+which needs **concurrent service** (still open). Writing it found a bug: **the in-service slot is
+still PENDING**, so a scan-while-busy would have reaped a dead client's slot *from under the
+executive* — and reaping clears `stage`, which is what the parked request's `ubuf` points at
+(cross-AS use-after-free); the selector skips it explicitly. **§4:** `nsfreqx_reap_ok`'s UNKNOWN
+rationale replaced — "HELD already prevents the POST" is equally true of LIVE, and the LIVE row
+deliberately reclaims a live client's storage; what separates them is the **standing of the
+evidence** (with LIVE the identity was corroborated against the ASVT; with UNKNOWN the
+storage-trust judgement rests on the same unreadable ground). Comment only.
+**Offline gates:** `as370 -a=` listing checked (`L/ST` at displacement `X'030'` off R2, `CS` still
+`BA34 A000` with base R10 **not** dropped to 0, stride still `41A0 A860`) and **all 962 source
+statements present byte-identical in source order** — **verified to discriminate**: a deliberate
+over-long comment makes as370 emit `LA R3,1(,R3)R3,ANCCOLL(,R2)` and the check catches it. Column
+71 clean; size assert **verified to fire**; alias scan clean (217 unique ≤8, one new `NSFRXABL`);
+host **2846→2925** (TSTREQX 119→**137**, and **verified to discriminate** — 3 fail with the
+anti-spin rule broken). **VALIDATED LIVE on MVSCE:** Stage-0 `TSTSVC`/`TSTMVCK`/`TSTUBUF`/
+`TSTDEATH` **444 PASS CC 0 batch+TSO** at the new layout (`TSTMVCD` excluded, #53); `TSTRQXM`
+**batch CC 0 32/32** with the host peer verifying **9353 bytes byte-exact**; `TSTRQXF` **53/53 CC 0
+batch+TSO**; startup `NSF055I CSA POOL 137272 BYTES (64 SLOTS X 2144)`. **The two-client gate:
+A CC 0000 13/13, B CC 0000 8/8** — phase 1 **150/150 requests on a slot other than 0** with
+`collisions` delta exactly 150; phase 2 **served 1375 / refused 1625 / wrong 0**, `exhausted`
+152→7927; pool **64/64 FREE** at exit; SOLO negative control `collisions 9888→9888`, and the probe
+STC's own stats independently `COLL=0` over 126 sequential requests. **The retain branch RAN:**
+`NSF043I SVC 239 RESTORED` then **`NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE
+RETAINED`** 10 s later; the anchor read back afterwards still carried `NSFVANCR` with `ACTIVE`
+clear and `inflight = 1`, and the next `S NSFS` came up on a **different anchor and a different
+router** with the largest free CSA block down **1073152→933888** (139264 = pool + module,
+measured). **A finding filed, not fixed (#64): the executive can sleep through a published
+request** — one sat 11 minutes, and a `F NSFS,STATS` queued in between was answered in the *same
+second*, which is what identifies the sleeper as the STC. It is **conditional** (a freshly started
+STC served 8 sequential requests in 0.39 s with nothing else running), **pre-existing** (the new
+probe is strictly more permissive than b3's), and two asymmetries against Phase 1 are the starting
+points: `nsfsx_drain` never resets its wake ECB where `nsfreq_drain` does, and the
+`nsftmr_plat_arm(1u)` heartbeat does not survive an empty timer queue. **Two defects in the gate
+itself, both mine:** phase 2 **starved itself** by backing off 10 ms per refusal (served 0/150 —
+which is a real property: *the scan is not a queue and makes no fairness promise*), and A asserted
+the whole pool was clean **while B was still using it** (that check belongs to whoever leaves
+last). **b4 does NOT prove:** concurrent service, hardware arbitration of a simultaneous `CS`,
+2-AS stress (**e**), fault recovery / the CLAIMED-slot leak, or #64.
+[[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
+[[nsf370-m5-2b3-slot-pool]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 
 Critical path: **M0-1** (MBT project + build) and **M0-2** (NSFQUE/NSFMM);
