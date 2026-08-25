@@ -877,35 +877,56 @@ checked (`CS`→`BA34 A000`, base R10 **not** dropped to 0; stride `41A0 A860` =
 continuation swallowing one, stronger than a spot diff; column 71 clean; size asserts **verified
 to actually fire** by breaking one; header mirror ↔ asm EQUs cross-checked programmatically 24/24;
 alias scan 214 unique ≤8; clean build 6 modules + 49 test modules, no warnings.
-**VALIDATED LIVE on MVSCE:** full Stage-0 round **`TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH` 444
-PASS CC 0 batch+TSO** at the new layout (**`TSTMVCD` deliberately excluded** — it is b0's probe,
-not a Stage-0 gate, and issue #53 makes it fail for environmental reasons, which in a
-full-green round costs a re-run and erodes confidence); **`TSTRQXF` 104 PASS CC 0 batch+TSO**
-carrying b3's own gates — **(C)** `ver=2 nslots=64 guards=64` plus the **STRIDE CROSS-CHECK**
-(the routine is told to change slot **3** — not slot 0, where no stride is exercised at all —
-and the test reads slot 3 back through the C struct; `SLOTLEN` in asm and `sizeof(NSFV_SLOT)` in
-C are two hand-maintained numbers in two languages and **nothing else in the suite compares
-them**), and **(D)** the three §7 checks: **reuse `0/0/0/0`** (0,1,2,3 would mean release is
-broken), **skip → slot 5** with 0–4 pre-claimed (what proves the scan is a scan and not a
-constant; each pre-claim asserted, since the `SLOT` probe verb is a `CS` precisely so this is an
-observation), **exhaustion `rc=16`** = NOBUF with `inflight before=0 after=0` and every slot
-left exactly as found. Startup reports **`NSF055I CSA POOL 137264 BYTES (64 SLOTS X 2144) --
-LARGEST FREE BLOCK NOW 1015808`**, which closes the sizing gap b0 left (it measured total and a
-*floor* on contiguous, never what was free), and refuses to start naming the size it wanted.
-`SVC 239` stolen and restored by both STCs, `IEF404I`, **no dump**. **THREE THINGS b3 DOES NOT
-PROVE, stated plainly:** (1) **two clients in two address spaces racing on the same slot word** —
-the `CS` makes it true by construction, and construction is not a live gate (**b4**); (2) the
-**`nsfsx_stop` retain branch and the nudge-all-slots loop are live-UNEXERCISED** — `inflight`
-was 0 at every stop, so the drain returned immediately and freed; (3) **`TSTRQXM` ran 34 PASS /
-6 FAIL** and the 6 are exactly the three device-dependent rows (2×SENDTO, CONNECT) over both
-runs — **the CTCI pair is down at the Hercules level on this stand** (`HHC00138E Error setting
-TUN/TAP mode` → `0:0501 device initialization failed` at Hercules start; `tun0` absent, 500/501
-`HAS NO LOGICAL PATHS`), so every dispatcher row passed and the crossing itself is proven, but
-the UDP/TCP half needs the pair re-attached. A **measured** change worth keeping: a client that
-faults in the write-IN direction now leaves its slot **`CLAIMED`**, not FREE — and a `CLAIMED`
-slot carries no identity, so the death guard can never reclaim it. That is the documented
-consequence of the claim being a `CS`, now measured rather than predicted; fault recovery
-remains the open item ADR-0039/0041 name. **#53, #54 and #56 deliberately untouched.**
+**VALIDATED LIVE on MVSCE** (the stand was restarted mid-round and came back with the CTCI
+pair working, so everything below is from the second, complete round): full Stage-0
+**`TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH` 444 PASS CC 0 batch+TSO** at the new layout
+(**`TSTMVCD` deliberately excluded** — it is b0's probe, not a Stage-0 gate, and issue #53
+makes it fail for environmental reasons, which in a full-green round costs a re-run and erodes
+confidence). **`TSTRQXF` 106 PASS CC 0 batch+TSO** carrying b3's own gates — **(C)** `ver=2
+nslots=64 guards=64` plus the **STRIDE CROSS-CHECK** (the routine is told to change slot **3** —
+not slot 0, where no stride is exercised at all — and the test reads slot 3 back through the C
+struct; `SLOTLEN` in asm and `sizeof(NSFV_SLOT)` in C are two hand-maintained numbers in two
+languages and **nothing else in the suite compares them**), and **(D)** the three §7 checks:
+**reuse `0/0/0/0`** (0,1,2,3 would mean release is broken), **skip → slot 5** with 0–4
+pre-claimed (what proves the scan is a scan and not a constant; each pre-claim asserted, since
+the `SLOT` probe verb is a `CS` precisely so this is an observation), **exhaustion `rc=16`** =
+NOBUF with `inflight before=0 after=0`, every slot left exactly as found, and the anchor's
+`exhausted` counter ticking **0→1 then 1→2** across the batch and TSO runs — which is also what
+proves it is the anchor's counter and not a local. **`TSTRQXM` batch CC 0, 32/32**, with
+`samples/host/shortwrite_listener.py` verifying **9353 bytes byte-exact** on the wire (the TSO
+re-run FAILs by design — the one-shot listener was consumed by the batch run, so CONNECT and its
+dependent CLOSE fail; batch is the gate, the TSTTCPW precedent). Startup is **clean with the
+device present** — `NSF210I CTCI 0500/0501 UP ... MTU 1500`, `NSF211I INTERFACE LNK1 UP` — and
+reports **`NSF055I CSA POOL 137264 BYTES (64 SLOTS X 2144) -- LARGEST FREE BLOCK NOW 905216`**,
+which closes the sizing gap b0 left (it measured total and a *floor* on contiguous, never what
+was free); it refuses to start naming the size it wanted. `SVC 239` stolen and restored by both
+STCs, `IEF404I`, **no dump**. **The per-slot death guard ran live against the PRODUCTION STC**
+(ORPHAN requests reaching NSFS): two **`NSF050I ... REQUEST REAPED`** rows and one
+**`NSF051W ... REQUEST HELD`** — so the corrected two-move `CS` reap and two of
+`nsfreqx_slot_action`'s rows are live-exercised, not only host-pinned.
+**A BLOCKING BUG FOUND BY REVIEW, NOT BY A TEST, AND FIXED:** `nsfsx_stop` called
+`nsfsx_router_unload()` **unconditionally**, before deciding whether to retain the CSA — and
+that unload `freemain`s the storage the SVC routine was `__loadhi`'d into, while a client that
+failed to drain is parked in a `WAIT` **inside that code**, supervisor state, key 0. Retaining
+the anchor while freeing the code is *strictly worse* than leaking both and contradicts the same
+safe-side asymmetry the function is built on; the probe STC gets this right and was the stated
+model. The unload now sits in the drained branch. **No gate covers this**, which is the point —
+see gap (2). **TWO THINGS b3 DOES NOT PROVE, stated plainly:** (1) **two clients in two address
+spaces racing on the same slot word** — the `CS` makes it true by construction, and construction
+is not a live gate (**b4**); (2) **the `nsfsx_stop` retain branch and its nudge-all-slots loop
+are live-UNEXERCISED** — `inflight` reached 0 before every stop (the reaps and the probes' own
+`UNSTAGE` give it back), so the drain returned immediately and freed. Two attempts to induce it
+were made and both self-cleaned; inducing it reliably needs a client that leaks `inflight` and
+does **not** clean up, which is a test change and a deploy cycle — a defensible b4 item, and
+exactly the branch the blocking fix above lives in. Also worth naming: **`nsfsx_pending()`
+early-returns on `g_busy`** and never scans for other PENDING slots, so a second client's
+published request is invisible to the WAIT gate while the first is in service — it rides the
+heartbeat instead of the probe. Latency, not corruption (ADR-0025 defect (2)'s shape), and a
+state b3 created. A **measured** change worth keeping: a client that faults in the write-IN
+direction now leaves its slot **`CLAIMED`**, not FREE — and a `CLAIMED` slot carries no identity,
+so the death guard can never reclaim it. That is the documented consequence of the claim being a
+`CS`, now measured rather than predicted; fault recovery remains the open item ADR-0039/0041
+name. **#53, #54 and #56 deliberately untouched.**
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 
