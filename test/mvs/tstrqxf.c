@@ -556,10 +556,22 @@ main(void)
                (unsigned)st1, (unsigned)in1, (unsigned)rp1);
         wtof("TSTRQXF: (A) after fault state=%u inflight=%u",
              (unsigned)st1, (unsigned)in1);
-        printf("  FINDING: slot %s, inflight %s (predicted: FREE / stuck at"
-               " %u)\n",
-               (st1 == NSFV_REQ_FREE) ? "FREE (not published)" : "NOT free",
-               (in1 > in0) ? "LEAKED" : "clean", (unsigned)(in0 + 1u));
+        /* M5-2b3 CHANGED THIS OUTCOME, so the prediction is restated rather
+         * than left stale.  Before the pool a client that faulted in the
+         * write-IN direction left its slot FREE (it had not published yet) and
+         * inflight leaked.  With the pool the claim is a CS to CLAIMED, so the
+         * slot is now stuck CLAIMED -- and a CLAIMED slot carries no identity,
+         * so the death guard can never reclaim it.  That is exactly the
+         * consequence ADR-0042 states and nsfvsvc.h documents next to
+         * NSFV_REQ_CLAIMED; this line is where it is MEASURED rather than
+         * predicted.  Reported, not asserted: fault recovery is still open. */
+        printf("  FINDING: slot %s, inflight %s (b3 predicts CLAIMED=%u /"
+               " stuck at %u)\n",
+               (st1 == NSFV_REQ_CLAIMED) ? "CLAIMED (claimed, never published)"
+                                         : ((st1 == NSFV_REQ_FREE) ? "FREE"
+                                                                   : "other"),
+               (in1 > in0) ? "LEAKED" : "clean",
+               (unsigned)NSFV_REQ_CLAIMED, (unsigned)(in0 + 1u));
 
         /* Can the probe verbs clean up after it?  Reported, not asserted --
          * only "UNSTAGE is accepted and the slot ends FREE" is an invariant. */

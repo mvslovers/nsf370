@@ -484,3 +484,37 @@ is wrong).
   substantially — which is exactly why the field was left dead in place rather than removed
   here — so when it goes, these five words and `TSTRQXF` (C) go with it. Filed as a b3
   prerequisite rather than left to be discovered when (C) starts failing.
+
+---
+
+## Addendum (2026-08-25, M5-2b3) — the RENT / shared-scratch caveat is fully retired
+
+This ADR shipped with a caveat: the routine is RENT and holds no writable statics, but it
+*did* use two shared writable regions in the CSA anchor — an 18-word save area (`csasave`)
+and a 2048-byte staging buffer — both of which every invocation in every address space
+computed the same address for. The probe's single-client-sequential model made that safe, and
+the caveat said so explicitly, naming a concurrent-client pool as the thing that would have to
+resolve it.
+
+It is resolved, in two steps:
+
+- **M5-2b2** moved the save area into the **SVRB's own `RBEXSAVE`**, which the FLIH allocates
+  per SVC invocation — no lock, no pool, no `GETMAIN`. `csasave` stayed in the anchor only
+  because removing it would have shifted every later field.
+- **M5-2b3** (ADR-0042) makes the staging buffer **per slot**, in a 64-slot pool, and removes
+  `csasave` outright with the layout move. Two clients in two address spaces now share nothing
+  writable but the claim discipline itself: `inflight`, `served`, `reaped` and `exhausted` are
+  counters updated by interlocked instructions, and every byte a request actually owns lives
+  in the slot it claimed.
+
+**The save-area self-check goes with it (issue #61).** The five words this routine wrote into
+the dead `csasave` were one-time evidence that `RBEXSAVE` is a genuine per-invocation area —
+including the measured fact that a canary in it survives both the branch POST and the WAIT,
+which *refuted* the prediction that it would be usable while the routine ran but not across a
+suspension. That evidence is recorded here, permanently, which is what makes it safe to stop
+paying five stores and three `CLC`s per request to keep re-establishing it. `TSTRQXF` part (C)
+was converted rather than deleted, so the same shape of positive check now covers the pool.
+
+**What has NOT changed:** `MOVEOUT` is still the only block in the routine that runs under a
+PSW key other than 0 (ADR-0039 / M5-2b1). The claim loop is deliberately *not* wrapped in a
+key window — a claim needs an interlocked compare, which is serialisation, not protection.

@@ -834,6 +834,78 @@ gate" rule is about a *moved layout*, not about which branch a commit sits on. T
 checkable habit: read `baseRefName` (`gh pr list --json number,baseRefName`) before
 merging a stacked PR — a child PR's base still names the parent branch until it is
 retargeted.
+**M5-2b3 (the 64-slot pool) — DONE, live-green except two named gaps; pending countersign.**
+The structural step of M5-2b, and where the transport stops being safe by construction. The
+single request area — which turned a second caller away with `RCNOREQ` — becomes **64
+independent slots**, each claimed by `CS` on its **own** state word (**ADR-0042**). ABA-free by
+construction because *the location being compared IS the resource*: no head pointer can go
+stale, which is why there is **no free list** — `asm/nsfxq.asm`'s own header forbids the
+per-element pop a free list needs, and it can afford that rule only because it has a single
+consumer draining whole chains. **Three writers, three rules:** claim by `CS`, release by plain
+`ST` (the owner races with nobody), **reap by `CS` — the reaper is a THIRD observer**. A
+correction found while implementing and folded back into the ADR: `CS(observed→FREE)` is still
+wrong, because reclaiming means *clearing* CSA, so the reap is **two moves** — `CS` to
+`CLAIMED` (which nobody else can claim), then clear, then `ST FREE`; `CLAIMED` therefore means
+"owned, not available", not "owned by a client". **Layout:** 48-byte header (`ANC*` EQUs) +
+`NSFV_SLOT` 2144 B (`SL*` EQUs) × 64 = **137,264 B**, one contiguous `SP=241` `GETMAIN`, 6.5 %
+of the measured 2064 KB CSA. Header is a multiple of 8 so every slot — hence every `CS` claim
+word — is doubleword aligned. **Not padded to a power of two:** the scan walks a *pointer*
+(`LA Rn,SLOTLEN(,Rn)`) and performs **no index multiply anywhere**, so 2560/4096 would cost
+26–120 KB for nothing. `stage[]` stays last, and the consequence is **stated, not fixed**: an
+over-long move now lands on the NEXT slot's claim word instead of adjacent CSA — a different
+shape of hazard, not a smaller one — and the `min(ulen,2048)` clamp is still the only thing
+preventing it, unchanged from b1. **Two cheap defences against a stale `NSFVSVC` in CSA against
+a newer `NSFS`** (separate load modules; a mid-chain deploy failure silently keeps the previous
+one, §5): the scan's bound comes from the anchor's **`nslots`**, written by the party that
+allocated the storage, and the routine **checks `version`**, bumped 1→2 in the same change that
+moved the layout. **`csasave` is gone and b2's five-word self-check with it (#61)** — one-time
+evidence, collected, recorded in ADR-0038; five stores and three `CLC`s per request to re-prove
+a settled fact is not a hot-path trade. **`nsfsx_stop` now drains before it frees (#55)**, which
+stopped being inert exactly here: with service serialised, 63 clients are legitimately parked in
+ORDINARY operation, and it nudges **every** claimed slot (the probe's single-slot wake does not
+survive a pool — waking one and timing out on 63 looks exactly like a hang) and **RETAINS** the
+CSA rather than freeing it under a live client. **The classifier is extracted** into
+`src/nsfreqx.c` and host-pinned (the Stage-0c obligation, the way ufsd did into `ufsd#asv.c`);
+**both** STCs now call it instead of each carrying a hand-written copy, and the client seam maps
+a full pool to **`ENOBUFS`, not `ESHUTDOWN`** — a healthy stack with no slot right now should
+make an app retry, not give up. Host **2907 PASS / 0 FAIL** (TSTREQX 58→119; the `asid-1` index
+is pinned by a fake ASVT with a neighbour on both sides and **verified to discriminate** — the
+suite goes red 4-fail with the index deliberately wrong; `nsfreqx_slot_action` is swept over all
+**60** input rows asserting **exactly one** dispatches). **Offline gates:** `as370 -a=` listing
+checked (`CS`→`BA34 A000`, base R10 **not** dropped to 0; stride `41A0 A860` = 2144) and **all
+480 source statements verified present in the listing** — the direct check against a column-72
+continuation swallowing one, stronger than a spot diff; column 71 clean; size asserts **verified
+to actually fire** by breaking one; header mirror ↔ asm EQUs cross-checked programmatically 24/24;
+alias scan 214 unique ≤8; clean build 6 modules + 49 test modules, no warnings.
+**VALIDATED LIVE on MVSCE:** full Stage-0 round **`TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH` 444
+PASS CC 0 batch+TSO** at the new layout (**`TSTMVCD` deliberately excluded** — it is b0's probe,
+not a Stage-0 gate, and issue #53 makes it fail for environmental reasons, which in a
+full-green round costs a re-run and erodes confidence); **`TSTRQXF` 104 PASS CC 0 batch+TSO**
+carrying b3's own gates — **(C)** `ver=2 nslots=64 guards=64` plus the **STRIDE CROSS-CHECK**
+(the routine is told to change slot **3** — not slot 0, where no stride is exercised at all —
+and the test reads slot 3 back through the C struct; `SLOTLEN` in asm and `sizeof(NSFV_SLOT)` in
+C are two hand-maintained numbers in two languages and **nothing else in the suite compares
+them**), and **(D)** the three §7 checks: **reuse `0/0/0/0`** (0,1,2,3 would mean release is
+broken), **skip → slot 5** with 0–4 pre-claimed (what proves the scan is a scan and not a
+constant; each pre-claim asserted, since the `SLOT` probe verb is a `CS` precisely so this is an
+observation), **exhaustion `rc=16`** = NOBUF with `inflight before=0 after=0` and every slot
+left exactly as found. Startup reports **`NSF055I CSA POOL 137264 BYTES (64 SLOTS X 2144) --
+LARGEST FREE BLOCK NOW 1015808`**, which closes the sizing gap b0 left (it measured total and a
+*floor* on contiguous, never what was free), and refuses to start naming the size it wanted.
+`SVC 239` stolen and restored by both STCs, `IEF404I`, **no dump**. **THREE THINGS b3 DOES NOT
+PROVE, stated plainly:** (1) **two clients in two address spaces racing on the same slot word** —
+the `CS` makes it true by construction, and construction is not a live gate (**b4**); (2) the
+**`nsfsx_stop` retain branch and the nudge-all-slots loop are live-UNEXERCISED** — `inflight`
+was 0 at every stop, so the drain returned immediately and freed; (3) **`TSTRQXM` ran 34 PASS /
+6 FAIL** and the 6 are exactly the three device-dependent rows (2×SENDTO, CONNECT) over both
+runs — **the CTCI pair is down at the Hercules level on this stand** (`HHC00138E Error setting
+TUN/TAP mode` → `0:0501 device initialization failed` at Hercules start; `tun0` absent, 500/501
+`HAS NO LOGICAL PATHS`), so every dispatcher row passed and the crossing itself is proven, but
+the UDP/TCP half needs the pair re-attached. A **measured** change worth keeping: a client that
+faults in the write-IN direction now leaves its slot **`CLAIMED`**, not FREE — and a `CLAIMED`
+slot carries no identity, so the death guard can never reclaim it. That is the documented
+consequence of the claim being a `CS`, now measured rather than predicted; fault recovery
+remains the open item ADR-0039/0041 name. **#53, #54 and #56 deliberately untouched.**
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 

@@ -81,9 +81,24 @@ the client will read.
 classifies its client DEAD, and decides to reclaim it. Between that read and the reclaim, the
 owner can complete, release the slot, and a *new* client can claim it. A blind `ST FREE` from
 the reaper then steals a live client's slot — a slot handed to two owners at once, which is the
-worst failure this whole layer can produce. The reap therefore does
-`__cas(&slot->req_state, observed_state, FREE)` and **tolerates failure by moving on**: a failed
-compare means the world changed under it, and the request it meant to reap no longer exists.
+worst failure this whole layer can produce. The reap **tolerates a failed compare by moving
+on**: it means the world changed under it, and the request it meant to reap no longer exists.
+
+**Correction, found while implementing this and folded back in.** The obvious form —
+`__cas(&slot->req_state, observed, FREE)` — is *still wrong*, in a smaller way, because
+reclaiming a slot means **clearing a dead client's data out of CSA** and the clear cannot
+happen before the compare (a failed compare would then have wiped somebody else's slot) or
+after a store to FREE (a new client can claim it and begin staging into storage the reaper is
+still wiping). So the reap is **two moves**:
+
+1. `__cas(&slot->req_state, observed, CLAIMED)` — take the slot out of circulation. `CLAIMED`
+   is a state no other party can claim.
+2. clear, then a plain `ST FREE` — by then the reaper is the outright owner and races with
+   nobody, exactly like a client releasing its own slot.
+
+This makes `CLAIMED` mean **"owned, not available"** rather than "owned by a client": the
+reaper is an owner too. `nsfreqx_slot_legal` therefore admits `PENDING/HELD/DONE → CLAIMED`,
+and TSTREQX pins it.
 
 "ABA-free by construction" covers the **claim**. It does not cover a third observer, and the
 reaper is a third observer.
