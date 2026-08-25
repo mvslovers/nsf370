@@ -487,18 +487,33 @@ UDEC1    LR    R4,R3
 *  key-0 CSA and reading them is correct.  Do not conflate the two halves.
 *----------------------------------------------------------------------
 RQEOUT   DS    0H
-*  Window setup, ONCE: R12 = the key to restore, R9 = the caller's key.
+*  Window setup, ONCE.  R9 and R12 come out holding SPKA OPERANDS, NOT keys.
+*  SPKA takes the key from bits 24-27 of its operand ADDRESS and ignores
+*  every other bit, so neither register reads as a small integer in a dump:
+*
+*    R9  = the TCBPKF byte itself, key in the HIGH nibble -- X'00000080'
+*          for a key-8 caller.  80, not 08.
+*    R12 = the anchor base with IPK's result merged into its low byte.  IPK
+*          writes ONLY bits 24-27 (and zeroes 28-31); bits 0-23 keep what
+*          they had, which here is the top of the anchor address.  For an
+*          anchor at X'00A6F688' under key 0 that reads X'00A6F600'.
+*
+*  THAT IS NOT CORRUPTION.  R12 is never used as an address and never
+*  dereferenced -- only SPKA reads it, and only four bits of it.  Restoring
+*  through the value IPK produced is deliberate: it puts back whatever key
+*  the routine actually ran under instead of assuming 0.
+*
 *  IPK writes R2 -- our anchor base -- so R2 is parked across it and put
 *  straight back.  R9 and R12 are untouched by the loop and by MOVEOUT.
          LR    R9,R2              park the anchor base across IPK
-         IPK   0                  R2 = the PSW key we run under
-         LR    R12,R2             R12 = key to restore
+         IPK   0                  R2 = PSW key in bits 24-27
+         LR    R12,R2             R12 = SPKA operand (restore)
          LR    R2,R9              anchor base back
          SLR   R9,R9
          L     R9,PSATOLD(,R9)    R9 = A(caller TCB)
          SLR   R3,R3
          IC    R3,TCBPKF(,R9)     caller's key, high nibble
-         LR    R9,R3              R9 = SPKA operand
+         LR    R9,R3              R9 = SPKA operand (borrow)
          L     R10,ANCXLEN(,R2)   R10 = remaining = L
          SLR   R11,R11            R11 = offset
 RQOTLP   LTR   R10,R10            bytes left? (0 -> skip)
@@ -529,11 +544,23 @@ RQOTRQE  DS    0H
 *  MOVEOUT -- the write-out key window (M5-2b1, ADR-0039).  Moves R1+1 bytes
 *  from 0(R5) to 0(R4) with the PSW key set to the CALLER's, so the hardware
 *  checks the caller-supplied DESTINATION against the key that owns it.  In:
-*  R1 = length-1, R4 = dst, R5 = src, R9 = caller key, R12 = key to restore.
-*  Link R15.  Nothing but the move runs under the borrowed key -- the window
-*  is per piece, not around the loop, so the routine's own bookkeeping is
-*  never executed under a key it does not control, and the ONLY instruction
-*  that can take a protection exception is the move itself.
+*  R1 = length-1, R4 = dst, R5 = src, R9/R12 = SPKA OPERANDS (bits 24-27 are
+*  the borrowed and the restored key respectively -- see the RQEOUT header;
+*  they are not key integers and R12 is not an address).  Link R15.
+*
+*  THIS IS THE ONLY BLOCK IN THE ROUTINE THAT RUNS UNDER A KEY OTHER THAN 0,
+*  AND IT MUST STAY THAT WAY.  Four instructions, two call sites: that is
+*  what makes "what executes under a borrowed key" a question with a short,
+*  checkable answer, and the property is easy to lose and hard to get back.
+*  The window is per piece rather than around the loop for the same reason --
+*  the routine's own bookkeeping never executes under a key it does not
+*  control, and the ONLY instruction that can take a protection exception is
+*  the move itself.
+*
+*  b3 WILL BE TEMPTED to wrap the slot-pool CS claim loop in a window too.
+*  Do not: a claim needs an interlocked compare (CS), which is a
+*  serialization problem, not a key problem.  The two are unrelated and
+*  conflating them would put a retry loop under a borrowed key for no gain.
 *
 *  A plain MVC, not MVCK: b0 (tstmvcd.c) measured that under the caller's key
 *  BOTH operands are reachable -- the key-0 CSA staging is not fetch-protected

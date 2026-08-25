@@ -33,6 +33,28 @@
  * before anything else runs.
  *
  * ------------------------------------------------------------------------
+ * THE RETURN CODE HAS THREE STATES, NOT TWO.
+ *
+ *    0                     everything ran and everything passed
+ *    1                     the gate RAN and something FAILED (mbt_test_summary)
+ *    XF_CC_GATE_SKIPPED    the gate COULD NOT RUN -- (B) was skipped
+ *
+ * The third one exists because this file becomes the standing regression for
+ * b2/b3/b4, and (B) carries b1's entire proof.  (B) skips when the anchor
+ * cannot be found or validated, and skipping is the RIGHT behaviour -- asserting
+ * against an address that was never validated would be worse than not asserting,
+ * and a hard failure would make the test lie when NSFS simply is not started.
+ * But a skip that reports CC 0 makes a run with NO PROOF IN IT indistinguishable
+ * from a run that proved the window works, and six months from now "TSTRQXF
+ * CC 0" would be read as "the window was exercised".
+ *
+ * So a skip returns its own code.  "The gate could not run" and "the gate ran
+ * and failed" are different facts and do not share a code.  The skip code takes
+ * PRECEDENCE over the failure code: a skip is always accompanied by the failing
+ * CHECK that caused it, so if failure won, the skip code would be unreachable --
+ * and of the two facts, "the central claim went unproven" is the one that
+ * invalidates the whole run.
+ * ------------------------------------------------------------------------
  * WHY (A) CANNOT MEASURE THE WRITE-OUT -- read this before believing its name.
  *
  * The routine reads the caller's `ubuf` on the way IN (RQEIN, an MVCK with
@@ -126,6 +148,11 @@
  * held in NSFS with no token to release it.  Do not "improve" this into a
  * realistic verb. */
 #define XF_FN_UNKNOWN 250u
+
+/* The COND CODE for "the load-bearing case could not run" -- see the header.
+ * Deliberately NOT 1: mbt_test_summary returns 0/1, so 1 already means "ran and
+ * failed".  Returned from the test itself; the mbt harness is not modified. */
+#define XF_CC_GATE_SKIPPED 20
 
 /* A byte value to attempt to store during the store-protection pre-check.  It
  * is never expected to land; if the store ever succeeded the target would be
@@ -316,6 +343,25 @@ t_stage_ubuf(void)
     return 0;
 }
 
+/* The ONE exit.  Prints the summary as usual, then decides the code. */
+static int
+xf_finish(int skipped)
+{
+    int rc = mbt_test_summary("TSTRQXF");
+
+    if (skipped) {
+        printf("*** (B) DID NOT RUN.  This run contains NO evidence about the"
+               " write-out key\n");
+        printf("*** window.  Returning CC %d rather than %d so it cannot be"
+               " mistaken for a\n", XF_CC_GATE_SKIPPED, rc);
+        printf("*** clean pass -- see the header.\n");
+        wtof("TSTRQXF: GATE SKIPPED -- CC %d, NOT a pass",
+             XF_CC_GATE_SKIPPED);
+        return XF_CC_GATE_SKIPPED;
+    }
+    return rc;
+}
+
 int
 main(void)
 {
@@ -444,7 +490,11 @@ main(void)
     }
     anch = xf_hop("ANCHOR", t_hop_anch, epa, &failed);
 
-    CHECK(failed == 0,
+    /* One assertion over both ways this can go wrong: a faulting hop, and a
+     * chase that completed every hop but read back a null anchor word (no STC
+     * has published one).  The second used to pass this CHECK and then skip
+     * with CC 0 -- the silent case the return-code contract closes. */
+    CHECK(failed == 0 && anch != NULL,
           "an UNAUTHORISED client can chase CVT -> SCVT -> SVCTABLE -> the"
           " routine EP -> the anchor word");
 
@@ -452,7 +502,7 @@ main(void)
         printf("  (B) SKIPPED: the anchor chase did not complete\n");
         wtof("TSTRQXF: (B) SKIPPED -- chase incomplete");
         wtof("TSTRQXF: WRITE-OUT FAULT TESTS DONE (B skipped)");
-        return mbt_test_summary("TSTRQXF");
+        return xf_finish(1);
     }
 
     /* Confirmation 1: this really is NSF's anchor, not an arbitrary address. */
@@ -468,7 +518,7 @@ main(void)
         wtof("TSTRQXF: (B) SKIPPED -- no anchor eyecatcher at %08X",
              (unsigned)anch);
         wtof("TSTRQXF: WRITE-OUT FAULT TESTS DONE (B skipped)");
-        return mbt_test_summary("TSTRQXF");
+        return xf_finish(1);
     }
 
     g_anchor = (NSFV_ANCHOR *)anch;
@@ -566,5 +616,5 @@ main(void)
     CHECK_EQ((long)rc, (long)NSFV_RC_OK, "the transport survived the whole run");
 
     wtof("TSTRQXF: WRITE-OUT FAULT TESTS DONE");
-    return mbt_test_summary("TSTRQXF");
+    return xf_finish(0);
 }

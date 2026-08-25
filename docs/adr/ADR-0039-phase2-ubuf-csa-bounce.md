@@ -570,3 +570,88 @@ carries the open promise, and Stage-0b closes it.
   `TSTDEATH` **444 PASS, 0 FAIL, CC 0 batch + TSO**; `TSTRQXF` **48 PASS** (batch + TSO);
   NSFS and NSFV each start and stop clean, `SVC 239` stolen and restored every cycle,
   `IEF404I`, **no dump**; host suite **2846 PASS / 0 FAIL**. No milestone flipped.
+- **2026-08-25 — M5-2b1 countersign notes: `TCBPKF` versus the caller's ACTUAL PSW key,
+  and the single-key-exit constraint.** Words and one return code; no instruction, no
+  layout and no offset moved, and the `as370 -a=` listing was re-diffed in full to prove it
+  (all **994** emitted address+byte lines identical, not a spot check).
+
+  ### `TCBPKF` is the task's key, not necessarily the key the caller was running under
+
+  The b1 entry above covers `TCBPKF == 0`. It does not cover the caller that issued its own
+  `SPKA` before the SVC, so `TCBPKF` and the caller's live PSW key disagree. The analysis
+  comes out safe **in both directions**, and both are stated here because "it is safe"
+  without the direction is the kind of claim that gets reopened as a scare.
+
+  Terms first, because "higher key" is ambiguous and the ambiguity is the whole difficulty:
+  below, **more privileged** means a numerically *lower* key (key 0 being the most
+  privileged), and the window is **wider** than the caller when the key it borrows is more
+  privileged than the caller's own.
+
+  - **Window NARROWER than the caller** — reachable, and harmless. A caller that `SPKA`'d
+    itself to a more privileged key (key 0) before issuing the SVC still has `TCBPKF`
+    reading 8, so the window borrows 8 while the caller was running under 0. A store that
+    the caller could legitimately have made itself then faults `S0C4`. That is a **false
+    rejection — a correctness annoyance, not a protection hole**: the transport refuses a
+    request it could have served. Nothing is written that should not have been.
+  - **Window WIDER than the caller** — this is the direction that would be a hole, and an
+    unauthorised client cannot reach it. In problem state `SPKA` is gated by the PSW-key
+    mask in CR3, so an ordinary job cannot set its PSW key to anything but its own; its
+    live key **is** `TCBPKF`, and the window is therefore exactly the caller's key with
+    nothing to widen. **This is measured, not assumed** — `tstmvck.c` scenario 2 took a
+    **privileged-operation exception `S0C2`** when `MVCK` named a foreign source key from
+    problem state, which is the same CR3 key-mask check refusing the same thing.
+    An **authorised** caller could arrange the disagreement, but an authorised caller can
+    `SPKA` to key 0 and store anywhere directly — the window was never what stood between
+    it and the storage, so it is not the weak link.
+
+  The asymmetry is the reassuring one: the reachable direction costs a served request, and
+  the expensive direction is not reachable from where the threat is.
+
+  ### `MOVEOUT` is the only block that leaves key 0 — now a stated constraint
+
+  `MOVEOUT` is four instructions reached from exactly two call sites, which is what makes
+  "what runs under a borrowed key" a question with a short, checkable answer. That property
+  is worth more than its size suggests and is easy to lose, so it is now written into the
+  block's header as a **standing constraint** rather than left as an emergent fact.
+
+  With the specific temptation named: **b3 will want to put the slot-pool `CS` claim loop
+  under a window too.** It must not. A claim needs an interlocked compare, which is a
+  *serialization* problem; the window solves a *key* problem. The two are unrelated, and
+  conflating them would put a retry loop under a borrowed key for no gain.
+
+  ### `R9` and `R12` hold SPKA operands, not keys
+
+  A documentation defect worth recording because it would have cost someone a bug report.
+  `IPK` writes only bits 24-27 of `R2` (zeroing 28-31) and leaves bits 0-23 alone — so
+  `LR R12,R2` parks the **anchor base with the key merged into its low byte**, e.g.
+  `X'00A6F600'` for an anchor at `X'00A6F688'` under key 0. `SPKA` reads bits 24-27 of its
+  operand address and ignores the rest, so the code is correct — and more robust than a
+  hardcoded `SPKA 0`, because it restores whatever key the routine actually ran under.
+  `R9` is likewise the `TCBPKF` **byte** (`X'00000080'` for key 8 — 80, not 08), not a key
+  integer. The mechanism is untouched; only the comments now say what the registers hold,
+  so `R12 = 00A6F600` in a dump reads as designed rather than as corruption.
+
+  ### A skipped gate no longer reports success
+
+  `TSTRQXF`'s scenario (B) skips when the anchor cannot be found or validated. **The skip
+  is correct** — asserting against an unvalidated address would be worse than not
+  asserting, and a hard failure would make the test lie when NSFS is simply not started —
+  but it reported **CC 0**, so a run containing none of b1's proof was indistinguishable
+  from a run that proved the window works. As this file becomes the standing regression for
+  b2/b3/b4, that reading gets more dangerous, not less.
+
+  A skip now returns **CC 20** (`XF_CC_GATE_SKIPPED`), from the test itself — the mbt
+  harness is untouched. `mbt_test_summary` already returns 0/1, so **"the gate could not
+  run" and "the gate ran and failed" no longer share a code.** The skip code takes
+  precedence over the failure code: a skip is always accompanied by the failing CHECK that
+  caused it, so if failure won the skip code would be unreachable — and of the two facts,
+  "the central claim went unproven" is the one that invalidates the run. One silent path
+  was also closed on the way: a chase that completed every hop but read back a **null**
+  anchor word used to pass its CHECK and then skip at CC 0; the assertion now covers both
+  a faulting hop and a null anchor.
+
+  **All three states demonstrated live** (see the M5-2b1 follow-up entry for the revert
+  apparatus): clean run **CC 0**; gate ran and failed **CC 1** (the `SPKA` pair commented
+  out of `MOVEOUT`); gate skipped **CC 20** (a forced-skip build). The general rule — a
+  gate that can skip its load-bearing case must not report success — is recorded in
+  CLAUDE.md §8.4.

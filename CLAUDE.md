@@ -796,7 +796,10 @@ isolated so M0–M4 already deliver a usable in-process stack.
    every CB, ESTAE coverage, and an 8-char `asm()` alias on every cross-module
    function (asm CSECT names match).
 4. **On-MVS validation** via `make test-mvs` at milestone boundaries and
-   before merging anything touching `asm/*.asm`.
+   before merging anything touching `asm/*.asm`. **A gate that can skip its
+   load-bearing case must not report CC 0** — return a distinct non-zero code
+   from the test itself (not by changing the mbt harness), so "the gate could
+   not run" never reads as "the gate passed" (`test/mvs/tstrqxf.c`).
 5. **Definition of Done** (§7) must hold, including the leak gate.
 6. **Keep docs honest:** when a decision changes, update the affected spec
    chapter and add/append an ADR in the same change. Update §7 status here.
