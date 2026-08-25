@@ -175,6 +175,18 @@ Violating one is a review-blocking defect, not a style nit.
   instruction-line comments short and within column 71; put long rationale in a
   leading `*` comment block (those are full-width, whole-line comments and are
   safe).
+- **`as370` knows five instruction formats and three S-format instructions.** Its
+  table is RR/RX/RS/SI/SS plus exactly `IPK`/`SPKA`/`STCK` — there is **no SSE and
+  no RRE format at all**. Anything outside that set must be emitted as raw bytes
+  (`DC X'…'`) with the encoding derived from **primary source** (the Hercules
+  `opcode.c`/`control.c` for this target, not memory), and there are **two distinct
+  failure modes with one rule**: a mnemonic as370 *knows* can assemble to silently
+  **wrong** bytes — `MVCK` is in the table as plain `F_SS`, so it drops the `R1`
+  length and `R3` key registers (hence raw `D9`, ≤255-byte pieces, ADR-0039) —
+  while a mnemonic it does **not** know cannot assemble at all: `SSK`/`ISK` (raw
+  RR `08`/`09`) and `MVCDK`/`MVCSK` (SSE `E50F`/`E50E`, and **absent on this
+  target** — they take `S0C1`, ADR-0039). `LRA` (RX `B1`) *is* in the table.
+  **The `as370 -a=` listing is the gate on the emitted bytes — never a green link.**
 - **Exception:** a routine the OS invokes as an *exit* (not called from C) is not
   a C callee and does not get `FUNHEAD` — e.g. `NSFTMEXP`, the STIMER exit.
 - **Reviewer checklist (assembler):** a new C-callable routine uses
@@ -644,6 +656,27 @@ test (**d**), 2-AS stress (**e**); the mirrored **STC-death race** is recorded a
 risk in ADR-0041, not closed. The TSO re-run of TSTRQXM FAILs by design (one-shot host
 listener consumed by the batch run → `errno 61`; batch is the gate — the TSTTCPW
 precedent). [[nsf370-m5-2a-status]]
+**M5-2b0 (the destination-key probe) — DONE, live-green.** M5-2b is the second of the
+five sub-steps; **M5 stays in progress and no milestone flips**. **b0**
+(`test/mvs/tstmvcd.c`, ADR-0039 annotation,
+TSTMVCD **58 PASS CC 0 batch+TSO**) answered three questions and fixed nothing: a
+**destination-keyed move does NOT exist** here — `MVCDK`/`MVCSK` both take an **operation
+exception (S0C1)** in supervisor state, the prediction recorded in the source before the
+run, corroborated from primary source first (Hercules `opcode.c` gates both
+`GENx___x390x900`, so the S/370 slot is `operation_exception`; `ARCHMODE S/370`). **Two
+corrections to the briefed encoding, both from primary source:** the opcodes are **`E50F`/
+`E50E`**, not `B20F`/`B20E`, and the registers are **R0 = length MINUS ONE, R1 = key**, not
+the reverse. An **`SPKA` window DOES close the hole**: with `IPK` read INSIDE the window
+confirming `X'80'` every time, a key-8 store into key-0 storage **faults `S0C4`** on **two
+independent destinations** (a `GETMAIN SP=241` block taken in key 0, `ISK` `X'06'`; and an
+own frame `SSK`'d to key 0), while a key-8 **fetch** of that CSA block **succeeds
+byte-exact** because it is not fetch-protected (bit `& X'08'` clear) — so under the
+caller's key both halves of the move are reachable, no landing area needed. **CSA budget:
+2064 KB total** (correction: the GDA has **no** CSA size field — `CVT+X'230'` → `GDA+8
+CSAPQEP` → `PQE+20 PQESIZE`/`+24 PQEREGN`), largest `SP=241` `GETMAIN` **≥ 1 MB** (a floor:
+the doubling search is capped at 1 MB and never failed). **b0 touches no production code**: it is a
+mechanism probe (it self-auths via SVC 244 and needs no probe STC), and its whole output
+is the measurement the write-out key window in **b1** is then built on.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 

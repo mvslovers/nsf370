@@ -694,6 +694,29 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstdeath.c"]
 
+# -- M5-2b step 0: the DESTINATION-KEY probe (TSTMVCD) ----------------------
+# MVS-only (host = false): SSE opcodes, PSW/storage keys, SSK/ISK/LRA and the
+# CSA control blocks have no host analog. Answers the three questions M5-2b1
+# needs and FIXES NOTHING (no production code, no anchor, no SVC steal):
+# (1) does a DESTINATION-keyed move exist here -- MVCDK/MVCSK emitted as raw
+# SSE opcodes E50F/E50E (as370 knows neither mnemonic and has no SSE format at
+# all), run under try() so an operation exception IS the answer with no dump;
+# (2) does an SPKA window close the write-out hole -- a key-8 store into key-0
+# storage must fault S0C4, asked of TWO independent destinations (a getmain
+# SP=241 block taken in key 0, and one of our own frames SSK'd to key 0), with
+# IPK read INSIDE the window so "no fault" can never be confused with "SPKA
+# never took"; (3) the CSA budget (CVT -> CVTGDA -> CSAPQEP -> PQESIZE, plus
+# the largest SP=241 GETMAIN, freed immediately). A MECHANISM probe: it
+# self-auths (SVC 244) like TSTMVCK, so the UNAUTHORISED-CLIENT red line does
+# not apply -- that governs the clients (TSTUBUF/TSTDEATH/TSTRQXM).
+# NO PROBE STC IS NEEDED: unlike TSTUBUF/TSTDEATH there is no anchor, no
+# private SVC and no rendezvous -- do NOT start NSFV for this one.
+[[test]]
+name = "TSTMVCD"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstmvcd.c"]
+
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
 # under ESTAE. src/nsfmain.c owns main() + the ESTAE recovery C function; it is
