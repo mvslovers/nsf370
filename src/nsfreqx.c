@@ -176,6 +176,29 @@ int nsfreqx_slot_action(UINT state, int verdict, int guard_ok, int ptr_ok)
 }
 
 /* -------------------------------------------------------------------------- */
+int nsfreqx_actionable(int act, int busy)
+{
+    switch (act) {
+    case NSFREQX_ACT_REAP:
+    case NSFREQX_ACT_HOLD:
+    case NSFREQX_ACT_REAP_BAD:
+        /* All three finish inside the CSA slot and never POST: no private
+         * NSFRQE, no executive dispatch, so nothing about them waits on the
+         * request already in service. */
+        return 1;
+    case NSFREQX_ACT_DISPATCH:
+        /* The one outcome that needs the single private NSFRQE (ADR-0042 10).
+         * Reporting it while that is held is what turns a WAIT-gate probe into
+         * a hot spin -- the loop skips its WAIT, the drain declines the work,
+         * and the pass makes no progress.  See the header. */
+        return busy ? 0 : 1;
+    case NSFREQX_ACT_NONE:
+    default:
+        return 0;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 int nsfreqx_slot_legal(UINT from, UINT to)
 {
     switch (from) {
@@ -201,12 +224,18 @@ int nsfreqx_slot_legal(UINT from, UINT to)
 /* -------------------------------------------------------------------------- */
 int nsfreqx_reap_ok(UINT observed_state, int verdict, int storage_ok)
 {
-    /* UNKNOWN NEVER RECLAIMS, whatever the storage says.  Untrusted storage
-     * means "never POST through this slot", and HOLD already achieves that
-     * without freeing anything -- so reclaiming here would buy nothing and
-     * risk the one outcome the safe-side asymmetry exists to prevent: a LIVE
-     * client having its storage freed underneath it.  This row is the whole
-     * reason UNKNOWN is a third state instead of a pessimistic DEAD. */
+    /* UNKNOWN NEVER RECLAIMS, whatever the storage says -- and the reason is
+     * the STANDING OF THE EVIDENCE, not "HOLD already prevents the POST".
+     * That would prevent a LIVE client's POST equally well, and the row below
+     * deliberately reclaims from a LIVE client on untrusted storage.  The
+     * difference is that with LIVE the identity was CORROBORATED against the
+     * ASVT, so a storage-trust judgement is a judgement about a slot whose
+     * owner is known; with UNKNOWN the identity could not be corroborated at
+     * all, so that judgement rests on the same unreadable ground and is not
+     * independent evidence.  HELD costs nothing and guarantees the one thing
+     * that must hold, so there is no case for spending an irreversible
+     * reclaim on a verdict that could not be established.  This row is the
+     * whole reason UNKNOWN is a third state instead of a pessimistic DEAD. */
     if (verdict == NSFREQX_CL_UNKNOWN) {
         return 0;
     }
