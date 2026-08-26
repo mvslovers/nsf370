@@ -353,6 +353,13 @@ int main(int argc, char **argv)
     }
     evt_set_request(nsfsx_ecb(), nsfsx_drain, nsfsx_pending);
 
+    /* The transport's own STATS supplement (issue #64, step 64-0): the raw
+     * wake-ECB word with its POSTED bit decoded, next to the counters that
+     * interpret it. Phase 2 only -- src/nsfmain.c registers nothing, so the
+     * Phase-1 STATS reply is unchanged. Registered AFTER nsfsx_start so the
+     * first STATS already reports a live anchor. */
+    nsfopr_set_stats_extra(nsfsx_stats_extra);
+
     /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
     __estae(ESTAE_CREATE, (void *)nsf_recover, NULL);
 

@@ -25,7 +25,7 @@
 /* asm() external-symbol aliases (see CLAUDE.md §3, "External symbols"): every
  * cross-module function pins a unique 8-char linker name. Scheme NSFOP*:
  *   nsfopr_dispatch NSFOPDSP   nsfopr_init NSFOPINI   nsfopr_ecb NSFOPECB
- *   nsfopr_drain NSFOPDRN
+ *   nsfopr_drain NSFOPDRN      nsfopr_set_stats_extra NSFOPSXT
  *   (host-only inject: nsfopr_host_cmd NSFOPHCM   nsfopr_host_stop NSFOPHST) */
 
 /* Route one MODIFY command string to its handler, WTOing NSF8xx replies. Pure C
@@ -47,6 +47,14 @@ NSFECB *nsfopr_ecb(void) asm("NSFOPECB");
  * A CIBSTOP verb requests shutdown (nsfevt_stop); CIBMODFY text goes to
  * nsfopr_dispatch. */
 void nsfopr_drain(void) asm("NSFOPDRN");
+
+/* Register an optional supplement to the STATS reply, WTOed after the rendered
+ * NSF811I counter lines (issue #64, step 64-0). NULL (the default) leaves the
+ * reply exactly as it was, so the Phase-1 STC is unaffected; the Phase-2 STC
+ * registers nsfsx_stats_extra, which reports the transport's raw wake-ECB word
+ * -- a machine word whose meaning is in its top two bits, so not expressible as
+ * an NSFSTS counter -- alongside the counters that interpret it. */
+void nsfopr_set_stats_extra(void (*fn)(void)) asm("NSFOPSXT");
 
 #if NSF_DEBUG
 /* Host-only injection so a test can drive the operator path through the real

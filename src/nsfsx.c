@@ -20,6 +20,8 @@
 #include "nsfreq.h"           /* NSFRQE, nsfreq_dispatch                       */
 #include "nsfreqx.h"          /* the host-tested field rules + guard truth table */
 #include "nsfevtp.h"          /* NSFECB_POSTED                                 */
+#include "nsfsts.h"           /* the wakeposts counter (issue #64, 64-0)       */
+#include "nsftmr.h"           /* nsftmr_count (armed timers, reported at STATS) */
 
 #include <string.h>
 #include <clibos.h>           /* __super/__prob/__ascb/__xmpost/getmain/loadhi */
@@ -48,6 +50,24 @@ static int           g_svc_stolen;
 
 /* The executive's wake target: STC-private, key 8 (ADR-0041 addendum). */
 static NSFECB        g_wake_ecb;
+
+/* DID THE TRANSPORT'S WAKE EVER LAND? (issue #64, step 64-0.)
+ *
+ * COUNTS OBSERVATIONS, NOT POSTS.  It is incremented on every drain that finds
+ * the POSTED bit set, and NOTHING CLEARS g_wake_ecb -- it is assigned zero
+ * exactly once, in nsfsx_start (verified against the wait seam too:
+ * nsfevt_plat_wait copies the list into a local array and libc370's
+ * ecb_waitlist is a bare WAIT ECBLIST, so neither writes the ECB).  The
+ * counter is therefore MONOTONE AND LATCHING BY CONSTRUCTION: once the first
+ * POST lands it goes non-zero and thereafter tracks evtpasses.  A reader
+ * seeing "wakeposts 5000" must not read that as 5000 wakes; the whole weight
+ * of the measurement is on the zero / non-zero distinction.
+ *
+ * A ZERO READING ALONGSIDE A NON-ZERO `served` IS THE FINDING: it says every
+ * request that instance ever completed was picked up by the WAIT-gate probe on
+ * a pass that happened for some other reason, i.e. the transport's wake did
+ * not merely lack a floor -- it never arrived. */
+static STSCTR       *g_wakeposts;
 
 /* The request the executive is working on, and whether one is in flight.
  *
@@ -408,6 +428,11 @@ nsfsx_start(void)
         nsfsx_anchor_free();
         return -1;
     }
+    /* Register once (sts_register APPENDS, and it never abends -- NULL when
+     * the fixed registry is full, so the use site is guarded). */
+    if (g_wakeposts == NULL) {
+        g_wakeposts = sts_register("NSFSX", "wakeposts");
+    }
     wtof("NSF041I NSFS TRANSPORT READY -- ANCHOR=%08X ECB=%08X",
          (unsigned)g_anchor, (unsigned)&g_wake_ecb);
     return 0;
@@ -520,6 +545,67 @@ UINT *
 nsfsx_ecb(void)
 {
     return (UINT *)&g_wake_ecb;
+}
+
+/* ==========================================================================
+ * The Phase-2 STATS supplement (issue #64, step 64-0), hung on the operator's
+ * STATS handler through nsfopr_set_stats_extra.  Phase 1 registers nothing, so
+ * `F NSF,STATS` is byte-for-byte unchanged.
+ *
+ * WHY A SEAM RATHER THAN TWO MORE NSFSTS COUNTERS.  The raw wake-ECB word is
+ * not a counter -- it is a machine word whose MEANING is in its top two bits,
+ * and a human reading `X'80A6F210'` next to `wakeposts 0` sees an RB-address
+ * remnant for what it is where a bare number would mislead.  It is also the
+ * one value that must be read at the instant STATS runs.
+ *
+ * THE LINE IS ALSO THE DEPLOY-TOOK-EFFECT CHECK.  If NSF812I is absent from
+ * the reply, the running module is the previous one -- CLAUDE.md 5's most
+ * expensive failure class, caught here for free rather than reasoned about.
+ *
+ * Everything the 64-0 prediction weighs is on ONE line: the ECB word, its
+ * POSTED bit decoded, wakeposts and served.  "wakeposts == 0 while served ==
+ * N" is then a single observation, not a cross-reference between two.
+ * ========================================================================== */
+void
+nsfsx_stats_extra(void)
+{
+    unsigned ecb = (unsigned)g_wake_ecb;
+
+    /* WPREG IS NOT DECORATION -- IT IS THE THIRD STATE (CLAUDE.md 8.5).
+     * sts_register returns NULL when the fixed registry is full, and a
+     * never-incremented counter reads 0 -- which is INDISTINGUISHABLE from the
+     * finding this whole step exists to establish ("wakeposts == 0 while
+     * served == N").  An absence that looks exactly like its own success is
+     * the shape this project pays the most for, so registration is reported
+     * rather than assumed, and WAKEPOSTS is read through the cached pointer,
+     * not through sts_value (which also answers 0 for "no such counter").
+     *
+     * EVTPASSES needs no such flag, and the reason is worth stating: STATS is
+     * dispatched from nsfopr_drain, which runs INSIDE evt_mainloop, so by the
+     * time this line is written at least one pass has completed and a healthy
+     * counter is >= 1.  EVTPASSES=0 is therefore already a third state -- it
+     * can only mean not registered or not incremented, never "no passes". */
+    wtof("NSF812I WAKEECB=%08X POSTED=%s EVTPASSES=%u WAKEPOSTS=%u WPREG=%s"
+         " SERVED=%u",
+         ecb,
+         ((g_wake_ecb & NSFECB_POSTED) != 0u) ? "Y" : "N",
+         (unsigned)sts_value("NSFEVT", "evtpasses"),
+         (g_wakeposts != NULL) ? (unsigned)g_wakeposts->value : 0u,
+         (g_wakeposts != NULL) ? "Y" : "N",
+         (g_anchor != NULL) ? (unsigned)g_anchor->served : 0u);
+
+    /* The context that says whether the numbers above are about a live
+     * transport, plus the timer-queue depth.  nsftmr_count() == 0 does NOT
+     * imply the STIMER is disarmed -- nsfsmain's nsftmr_plat_arm(1u) heartbeat
+     * sits outside g_armed's bookkeeping and g_armed has no accessor -- so
+     * this reports the queue, and EVTPASSES growth over an idle window is what
+     * actually measures whether a periodic wake still exists. */
+    wtof("NSF813I TMRQ=%u INFLIGHT=%u EXHAUSTED=%u COLLISIONS=%u REAPED=%u",
+         (unsigned)nsftmr_count(),
+         (g_anchor != NULL) ? (unsigned)g_anchor->inflight   : 0u,
+         (g_anchor != NULL) ? (unsigned)g_anchor->exhausted  : 0u,
+         (g_anchor != NULL) ? (unsigned)g_anchor->collisions : 0u,
+         (g_anchor != NULL) ? (unsigned)g_anchor->reaped     : 0u);
 }
 
 /* Is any slot carrying a published request OTHER THAN THE ONE IN SERVICE?
@@ -661,6 +747,23 @@ nsfsx_drain(void)
     unsigned      lasid = 0;
 
     if (g_anchor == NULL) return;
+
+    /* THE WAKE OBSERVATION (issue #64, 64-0).  Placed ahead of BOTH early
+     * returns below: lower down it would silently become "the bit was set on a
+     * pass that also had pending work", which is a different claim.
+     *
+     * POSTED BIT ONLY, never a non-zero test -- a satisfied multi-ECB WAIT
+     * leaves an RB-address remnant (X'80......') in the ECBs that were not
+     * posted (CLAUDE.md 4), so an un-posted g_wake_ecb reads non-zero the
+     * moment the loop has waited once.  A non-zero test would report POSTED
+     * for an ECB that never was, and confirm the exact opposite of the truth.
+     *
+     * READ-ONLY.  This does not reset the ECB.  Resetting it is the candidate
+     * fix (64-1) and is deliberately NOT done here: the measurement is only
+     * worth anything taken before any fix. */
+    if ((g_wake_ecb & NSFECB_POSTED) != 0u && g_wakeposts != NULL) {
+        STS_INC(g_wakeposts);
+    }
 
     /* ---- 1. Finish the completed request ----------------------------------
      * The executive has run soc_complete on the private copy, so retcode /

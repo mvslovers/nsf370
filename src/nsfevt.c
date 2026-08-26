@@ -13,6 +13,7 @@
 #include "nsfxq.h"
 #include "nsftmr.h"
 #include "nsfstim.h"            /* nsftmr_plat_ecb / _disarm (the timer ECB) */
+#include "nsfsts.h"             /* the evtpasses counter (issue #64, 64-0)   */
 
 /* EVT pool size. Comfortably larger than the drain budget so the budget test
  * (post > 64 events, prove the loop still re-WAITs and fires timers) has events
@@ -39,6 +40,23 @@ static int       g_stop;                /* orderly-stop flag                  */
 static UINT      g_ticks;               /* timer wakes serviced               */
 static UINT      g_tickadv;             /* ticks advanced by nsftmr_wake (#40) */
 static UINT      g_drops;               /* evt_post pool-exhaustion drops     */
+
+/* THE EXECUTIVE'S OWN PULSE (issue #64, step 64-0) -- one increment per pass of
+ * evt_mainloop.  A PRODUCTION NSFSTS counter, not an NSF_DEBUG probe: the thing
+ * it has to answer ("was the executive running at all while that request sat
+ * unserved?") is asked of the deployed module, where the #if NSF_DEBUG
+ * accessors below do not exist.  The increment is unconditional, exactly like
+ * g_ticks / g_tickadv / g_drops next to it -- the loop already scans up to 64
+ * CSA state words per pass, so one add is not the cost question.
+ *
+ * WHAT IT MEASURES THAT NOTHING ELSE CAN.  ADR-0034's g_armed has no accessor,
+ * and nsftmr_count() == 0 does NOT imply the STIMER is disarmed, because
+ * nsfsmain's nsftmr_plat_arm(1u) heartbeat is deliberately outside g_armed's
+ * bookkeeping.  Growth of this counter over a known-idle window is therefore
+ * the direct observation of whether ANY periodic wake still exists underneath
+ * the WAIT -- and it separates "the executive never ran" from "it ran and did
+ * not take the work", which is a distinction the latency alone cannot make. */
+static STSCTR   *g_evtpasses;
 
 /* ECBLIST capacity: {timer, handoff, wake} + up to NSFDEV_MAX device ECBs +
  * {cib} + {stop}. Sized independently of NSFDEV (NSFEVT stays decoupled) with
@@ -77,6 +95,22 @@ int nsfevt_init(void)
     if (g_evtpool == NULL) {
         g_evtpool = mm_pool_create("NSFEVT  ", (USHORT)sizeof(EVT),
                                    EVT_POOL_COUNT);
+    }
+
+    /* Register ONCE, for the same reason the pool is created once: nsfevt_init
+     * runs again per scenario in the host tests, and sts_register APPENDS --
+     * a second call would burn a registry slot per re-init.  The guard is the
+     * cached pointer itself (nsfudp's udp_stats_ready shape).
+     *
+     * ORDERING THIS DEPENDS ON: sts_init() must not run AFTER us, or it
+     * memsets the registry and this pointer aims at a slot that will be
+     * re-issued to another component -- the increment would then land on
+     * someone else's counter.  Every caller in the tree calls sts_init() first
+     * and once (test/tstevt.c calls neither, which is safe: the registry is
+     * BSS and reads as empty).  sts_register never abends; it returns NULL
+     * when the fixed registry is full, so every use below is guarded. */
+    if (g_evtpasses == NULL) {
+        g_evtpasses = sts_register("NSFEVT", "evtpasses");
     }
     return (g_evtpool != NULL) ? 0 : 1;
 }
@@ -253,6 +287,14 @@ void evt_mainloop(void)
     for (;;) {
         int    budget;
         QELEM *qe;
+
+        /* The pass counter, first statement of the pass and ahead of every
+         * gate, so "a pass happened" is recorded whatever the pass then does
+         * (issue #64).  Read-only with respect to the loop: nothing here
+         * touches an ECB or the pending-work gate. */
+        if (g_evtpasses != NULL) {
+            STS_INC(g_evtpasses);
+        }
 
         /* 0. Operator: drain queued commands UNCONDITIONALLY -- NOT gated on the
          *    console ECB bit. A startup CIB may be queued without a POST, and
