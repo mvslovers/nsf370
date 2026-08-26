@@ -1050,10 +1050,15 @@ in service); **that the nudge loop reaches more than ONE parked client** (the in
 exactly one, so the 64-slot loop found one — b3's change over the probe's single-slot wake is no
 better exercised than before); 2-AS stress (**e**); fault recovery / the CLAIMED-slot leak; or
 #64.
-**M5-2c0 (the last unwindowed key-0 write-out) — DONE, live-green in all three states;
-pending countersign.** The first sub-step of M5-2c; **M5 stays in progress and no milestone
-flips.** `XFEROUT` was the last read-out in the SVC routine that stored into a
-caller-supplied `ubuf` under **PSW key 0**. b1 closed that window on the RQE path
+**M5-2c0 (the last unwindowed key-0 write-out) — DONE, live-green in all three revert
+states, COUNTERSIGNED by Mike 2026-08-26 (PR #66).** The first sub-step of M5-2c;
+**M5 stays in progress and no milestone flips** — `#64`, c1, c2, (e) and c3 are ahead,
+and an IPL is still owed before (e) (b4's induction left ~137 KB plus the old router
+module retained). **Obligation #1 — the write-out key window on `ubuf` — is now CLOSED
+on BOTH destinations**, the RQE path (b1) and the XFER path (c0); the obligation as a
+whole is restated in three categories below, with category 3 open and homed in (d).
+`XFEROUT` was the last read-out in the SVC routine that stored into a caller-supplied
+`ubuf` under **PSW key 0**. b1 closed that window on the RQE path
 (`RQEOUT` → `MOVEOUT`) and left `XFER` alone on a recorded assumption — that (c) would
 **delete** the verb. **The assumption had expired:** deleting `XFER` retires `TSTUBUF`, the
 only gate that proves the keyed `ubuf` bounce, so the verb survives to **c3 at the earliest**,
