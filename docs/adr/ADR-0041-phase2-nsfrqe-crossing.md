@@ -507,3 +507,87 @@ no client-side discovery path existed before — `nsfreqc_init` only issues a `Q
 Nothing in this ADR's own subject changed: no production source was touched, the anchor
 layout did not move, `NSFV_REQ` and `NSFV_ANCHOR` are unchanged, **NSFRQE stays frozen at
 64 bytes**, and the C / EZASOKET / EZASMI surfaces are untouched — applications relink only.
+
+### Update (2026-08-26, M5-2c0) — `XFEROUT` is closed, and one reachability claim above is wrong
+
+Two sentences in the entries above are superseded by M5-2c0. They are quoted verbatim so a
+grep for the old claim lands here, and each is corrected in the terms a reader needs.
+
+> **`XFEROUT` is deliberately untouched** and keeps its key-0 write-out: it is Stage-0b probe
+> scaffolding, carries no NSFRQE and no application data, and is already listed for removal
+> with the other probe verbs in (c). Do not read its key-0 store as this transport's.
+
+**Superseded.** `XFEROUT`'s move now runs through the same `MOVEOUT` window as `RQEOUT`'s.
+The deferral rested on the verb being deleted in (c); it is not, because deleting `XFER`
+retires `TSTUBUF` — the only gate that proves the keyed `ubuf` bounce — so the verb survives
+to **c3 at the earliest**, after (e). A deferral whose premise has expired is a decision.
+The *characterisation* still stands: `XFER` carries no NSFRQE and no application data, and
+its key-0 store was never this transport's. ADR-0039's M5-2c0 entry carries the change and
+its live evidence in full.
+
+> `XFEROUT` therefore still stores into a **caller-supplied `ubuf` under PSW key 0**,
+> reachable by anyone who can issue the SVC.
+
+**Not accurate as written**, and it was not accurate when written. The verb is
+**dispatchable** at the SVC boundary by any unauthorised caller — that half is right, and it
+is why the removal is a security item. But the **key-0 write-out only ever executed under
+the probe STC**, and that is an enumeration rather than an inference, because "no other path
+reaches it" is exactly the shape of claim this correction is replacing:
+
+- `src/nsfsx.c` contains **exactly one** assignment of `NSFV_REQ_DONE`, in step 1 of
+  `nsfsx_drain`, guarded by `g_busy && g_busy_slot && (g_priv.ecb & NSFECB_POSTED)`.
+- `g_busy` / `g_busy_slot` are set at **exactly one** place, under `if (ok)`, and `ok` is set
+  at **exactly one** place: the `ACT_DISPATCH` arm's `xfunc == NSFV_REQ_RQE` branch. A
+  non-RQE `xfunc` takes that arm's `else` and is set `NSFV_REQ_HELD`, leaving `ok` zero.
+- The other action arms reach `nsfsx_reap` (→ `FREE`) or `HELD`; neither reaches `DONE`.
+  `nsfsx_next_actionable` skips any slot that is not `PENDING`, so a `HELD` slot is never
+  revisited.
+- The shutdown nudge cannot substitute for it either: `nsfsx_stop` clears
+  `NSFV_ANCHOR_ACTIVE` **before** draining, and `nsfsx_wake_parked` POSTs `reply_ecb`
+  without touching `req_state` — so a nudged `XFER` client wakes on a `HELD` slot, fails the
+  routine's `C R3,=A(STDONE)`, and takes `WQUIES` rather than the read-out.
+
+`DONE` is what the client's post-`WAIT` path tests before it reaches `XFEROUT`, and only
+`src/nsfv.c` sets it for an `XFER`.
+
+The precise statement, now that the store is windowed either way: **the verb is dispatchable
+by an unauthorised caller against either STC; against NSFS it is rejected to `HELD` and the
+read-out never runs; against NSFV it runs, and since M5-2c0 it runs under the caller's key.**
+
+That correction *narrows* the exposure this ADR described and *widens* a different one:
+against NSFS the request is consumed and never answered, which is a slot-lifetime concern
+rather than a storage-protection one. Recorded separately; out of M5-2c0's scope.
+
+### The write-out obligation, restated in three categories
+
+The obligation ADR-0039 opened and this ADR inherited has been discharged unevenly, and
+"the write-out key window is closed" is now true of two categories out of three. Counted
+from the source rather than taken on trust:
+
+| # | destination | status |
+|---|---|---|
+| 1 | **`ubuf`** — the caller's data buffer, on both the RQE path (`RQEOUT`) and the XFER path (`XFEROUT`) | **closed** — b1 for the RQE path, **M5-2c0** for the XFER path |
+| 2 | **`rqeimg`** — the caller's 64-byte NSFRQE image, `RQEOUT`'s second move | **closed** (b1) |
+| 3 | **the caller's `NSFV_REQ` block** — **20** unwindowed key-0 stores of the form `ST R…,REQ*(,R8)` | **open**, and its home is **(d)** |
+
+Category 3 is genuinely lower risk than category 1 was, and the reason is a check that
+already exists: `R8` is the caller-supplied request pointer, and the routine rejects it at
+entry unless it carries the `"NSFV"` eyecatcher (`CLC REQEYE(4,R8),=CL4'NSFV'` → `BADREQ`).
+That is a validation of the pointer, not of the key, so it is **lower, not none** — a caller
+that stamps the eyecatcher into storage it does not own still gets 20 key-0 stores through
+a pointer it chose.
+
+Its home is **(d), request validation at the SVC boundary**, and the shape there is **one
+validation of `R8`**, not twenty scattered `SPKA` windows. Twenty windows would also break
+the property that makes the current design checkable at all — that `MOVEOUT` is the only
+block in the routine that leaves key 0, which M5-2c0 preserved by adding a *caller* rather
+than a second such block.
+
+Nothing in this ADR's own subject changed: the anchor layout did not move,
+`NSFV_ANCHOR_VER` stays 3, `NSFV_REQ` and `NSFV_ANCHOR` are unchanged, **NSFRQE stays frozen
+at 64 bytes**, and the C / EZASOKET / EZASMI surfaces are untouched — applications relink
+only. The RQE path's instruction stream is **byte-for-byte unchanged**: M5-2c0 duplicated
+`RQEOUT`'s nine-instruction window set-up inline in `XFEROUT` rather than extracting it into
+a shared subroutine, precisely so that this claim is provable by diff. `TSTRQXM` (batch
+**CC 0, 32/32**, host peer **9353 bytes byte-exact**) and `TSTRQXF` (**53/53 CC 0**
+batch+TSO) were re-run as confirmation of it, not as proof of it.

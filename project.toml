@@ -694,6 +694,42 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstdeath.c"]
 
+# -- M5-2c0: the XFER write-out key window gate (TSTXFW) ---------------------
+# MVS-only (host = false): SVC dispatch, CSA and storage keys have no host
+# analog. M5-2b1 gave the RQE read-out (RQEOUT) an SPKA window keyed from the
+# caller's TCBPKF and deliberately left the XFER read-out (XFEROUT) storing
+# under PSW key 0, on the assumption that M5-2c would DELETE the verb. It does
+# not: deleting XFER retires TSTUBUF, the only gate that proves the keyed ubuf
+# bounce, so the verb survives to c3 at the earliest and FNXFER stays reachable
+# by an UNAUTHORISED client. M5-2c0 routes XFEROUT through the same MOVEOUT
+# window; this is the gate on that change.
+# TWO PARTS, and neither alone pins the window. (1) THE POSITIVE CONTROL -- an
+# ordinary XFER into the client's OWN key-8 buffer, run FIRST: it fails if the
+# window borrows a WRONG non-zero key, which the gate alone cannot distinguish
+# from correct behaviour. (2) THE GATE -- ubuf in KEY-0, NON-FETCH-PROTECTED
+# storage, the one class that gets PAST the key-8 read-in and that the old
+# key-0 write-out clobbered silently; under the window that store must fault,
+# and the rc sentinel must be untouched so the fault is attributable to the
+# write-out rather than to anywhere at all. Built SAFELY: the target is the
+# anchor's OWN staging buffer at a non-zero offset, reached through the routine
+# EP in the SVC table read-only, hop by hop under try().
+# IT CLEANS UP AFTER ITSELF and asserts that it did: the fault leaves the
+# claimed slot at DONE with the in-flight count taken, so it UNSTAGEs the slot
+# CLAIMOK reported and asserts the slot is FREE and in-flight is back where it
+# was. Without that, every run costs a slot and forces P NSFV to retain the
+# whole CSA anchor to IPL.
+# THE RETURN CODE HAS THREE STATES (the TSTRQXF contract): 0 ran+passed,
+# 1 ran+failed, 20 the gate COULD NOT RUN -- a skip must never read as a pass.
+# PREREQUISITE: the probe STC NSFV must be started -- S NSFV, NOT S NSFS. The
+# production STC sets a non-RQE request to HELD and never revisits it, so an
+# XFER against NSFS would park in WAIT forever. RUN IT LAST in the NSFV round.
+# Client stays UNAUTHORISED (asserts __isauth() == 0) and never self-auths.
+[[test]]
+name = "TSTXFW"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstxfw.c"]
+
 # -- M5-2b1: the write-out fault tests (TSTRQXF) ----------------------------
 # MVS-only (host = false). TWO scenarios asking different questions.
 # (A) UNREADABLE ubuf -- OBSERVATION ONLY, green on unmodified code too: the
