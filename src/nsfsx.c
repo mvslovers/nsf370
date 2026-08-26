@@ -569,7 +569,12 @@ nsfsx_ecb(void)
 void
 nsfsx_stats_extra(void)
 {
-    unsigned ecb = (unsigned)g_wake_ecb;
+    unsigned ecb      = (unsigned)g_wake_ecb;
+    int      busyslot = -1;         /* -1 = none; valid indices are 0..63 */
+
+    if (g_anchor != NULL && g_busy_slot != NULL) {
+        busyslot = (int)(g_busy_slot - g_anchor->slots);
+    }
 
     /* WPREG IS NOT DECORATION -- IT IS THE THIRD STATE (CLAUDE.md 8.5).
      * sts_register returns NULL when the fixed registry is full, and a
@@ -585,14 +590,31 @@ nsfsx_stats_extra(void)
      * time this line is written at least one pass has completed and a healthy
      * counter is >= 1.  EVTPASSES=0 is therefore already a third state -- it
      * can only mean not registered or not incremented, never "no passes". */
+    /* BUSY / BUSYSLOT ARE NOT DECORATION EITHER, AND THEY BELONG ON THIS LINE
+     * (64-0b).  If a stall reproduces while EVTPASSES is CLIMBING, the loop is
+     * running and not taking the work -- and exactly one structure in the
+     * drain produces that: g_busy set with g_busy_slot pointing at a slot
+     * whose private ECB never gets posted.  Step 1 then waits on a completion
+     * that never comes, step 2 dispatches nothing, and nsfsx_any_pending_other
+     * skips the in-service slot BY DESIGN -- so the WAIT-gate pre-filter
+     * answers "nothing to do" while a request sits PENDING.
+     *
+     * Without these two fields that state is INDISTINGUISHABLE from a wake
+     * failure, which is the distinction the whole round turns on.  Reading
+     * them beside EVTPASSES and POSTED makes it one observation rather than a
+     * cross-reference -- the same reason SERVED sits here.
+     *
+     * BUSYSLOT is -1 for "none", never 0: slot 0 is a perfectly ordinary
+     * in-service slot and is what a single client gets every time. */
     wtof("NSF812I WAKEECB=%08X POSTED=%s EVTPASSES=%u WAKEPOSTS=%u WPREG=%s"
-         " SERVED=%u",
+         " SERVED=%u BUSY=%d BUSYSLOT=%d",
          ecb,
          ((g_wake_ecb & NSFECB_POSTED) != 0u) ? "Y" : "N",
          (unsigned)sts_value("NSFEVT", "evtpasses"),
          (g_wakeposts != NULL) ? (unsigned)g_wakeposts->value : 0u,
          (g_wakeposts != NULL) ? "Y" : "N",
-         (g_anchor != NULL) ? (unsigned)g_anchor->served : 0u);
+         (g_anchor != NULL) ? (unsigned)g_anchor->served : 0u,
+         g_busy, busyslot);
 
     /* The context that says whether the numbers above are about a live
      * transport, plus the timer-queue depth.  nsftmr_count() == 0 does NOT
