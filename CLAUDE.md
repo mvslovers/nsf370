@@ -1003,12 +1003,14 @@ anti-spin rule broken). **VALIDATED LIVE on MVSCE:** Stage-0 `TSTSVC`/`TSTMVCK`/
 `TSTDEATH` **444 PASS CC 0 batch+TSO** at the new layout (`TSTMVCD` excluded, #53); `TSTRQXM`
 **batch CC 0 32/32** with the host peer verifying **9353 bytes byte-exact**; `TSTRQXF` **53/53 CC 0
 batch+TSO**; startup `NSF055I CSA POOL 137272 BYTES (64 SLOTS X 2144)`. **The two-client gate:
-A CC 0000 13/13, B CC 0000 8/8** — phase 1 **150/150 requests on a slot other than 0** with
-`collisions` delta exactly 150; phase 2 **served 1375 / refused 1625 / wrong 0**, `exhausted`
-152→7927; pool **64/64 FREE** at exit. **The negative control and the gate ran on the SAME STC
-instance, minutes apart, off the same counter baseline** — SOLO `collisions 9888→9888`, then the
-gate `9888→10038` — which is stronger than two runs on two instances; and the probe STC's own
-stats independently read `COLL=0` over 126 sequential requests. **The retain branch RAN:**
+A CC 0000 13/13, B CC 0000 8/8** — mechanism (phase 1) **150/150 on slot 1**,
+`collisions` **0→150** on a fresh anchor, B's index never anything but 0; **the gate** (phase 2)
+**A served 239 / refused 2761 / wrong 0** while **B was served 194 / refused 154** — both refused
+by the other and both winning the slot, the interleaving measured from both ends — with
+`exhausted` **0→2915** and 2761+154 = **2915 exactly**; pool **64/64 FREE** at exit. SOLO on the same instance minutes before read `collisions 0→0`; the
+probe STC's own stats independently read `COLL=0` over 126 sequential requests (a second negative
+control, different code). The first gate run, on the previous instance, gave the same verdict from
+a non-zero baseline (`9888→10038` against SOLO `9888→9888`). **The retain branch RAN:**
 `NSF043I SVC 239 RESTORED` then **`NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE
 RETAINED`** 10 s later; the anchor read back afterwards still carried `NSFVANCR` with `ACTIVE`
 clear and `inflight = 1`, and the next `S NSFS` came up on a **different anchor AND a different
@@ -1031,10 +1033,16 @@ points: `nsfsx_drain` never resets its wake ECB where `nsfreq_drain` does, and t
 itself, both mine:** phase 2 **starved itself** by backing off 10 ms per refusal (served 0/150 —
 which is a real property: *the scan is not a queue and makes no fairness promise*), and A asserted
 the whole pool was clean **while B was still using it** (that check belongs to whoever leaves
-last). **One acceptance item was SUPERSEDED, not met:** "B's request visible to the WAIT gate while A is
+last). **TWO THINGS MUST HAPPEN BEFORE (e):** **#64 is a prerequisite, not housekeeping** — an executive
+that does not wake without device traffic makes any throughput/latency number from a stress round
+meaningless, and (e) measures exactly those; and **IPL before (e)**, because the induction's ~137 KB
++ router leak until IPL, so b3's `LARGEST FREE BLOCK NOW 905216` no longer describes this stand
+(1073152 before the induction, 933888 after) and (e) would otherwise size itself against an
+artificially small pool. **One acceptance item was SUPERSEDED, not met:** "B's request visible to the WAIT gate while A is
 served" is exactly the spin under serialised service, so what replaced it is the non-dispatch
 outcomes — read the list against a green round without this line and it looks met. **b4 does NOT
-prove:** concurrent service; hardware arbitration of a simultaneous `CS`; **reaping a second
+prove:** concurrent service; hardware arbitration of a simultaneous `CS` — and phase 1 is positive evidence that no lost race
+occurred *in that phase*, so on this stand it is unobserved, not merely unmeasured; **reaping a second
 client's slot WHILE a request is in service** — the very hole the probe fix closes went
 LIVE-UNEXERCISED (no `NSF050I`/`NSF051W` from NSFS all round, because nothing died mid-service;
 the decision is host-pinned and wired, and b3's live reap evidence was collected with nothing else

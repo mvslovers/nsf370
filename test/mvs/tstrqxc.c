@@ -16,11 +16,10 @@
  *                        what gives the two-client run's `collisions > 0` its
  *                        meaning; without it the counter could be ticking for
  *                        reasons that have nothing to do with a second client.
- *   PARM='A'   LEADER    the two-client gate.  Barrier, a free-for-all phase,
- *                        then a phase in which A pre-claims all but ONE slot
- *                        and asserts that it is BOTH refused (because B holds
- *                        the one free slot) and served (because it can still
- *                        win it -- no outright starvation).
+ *   PARM='A'   LEADER    a free-for-all phase (the MECHANISM check), then THE
+ *                        GATE: A pre-claims all but ONE slot and asserts it is
+ *                        BOTH refused (B holds the one free slot) and served
+ *                        (it can still win it -- no outright starvation).
  *   PARM='B'   FOLLOWER  hammers the pool for as long as A's flag is up.  It
  *                        asserts only what it can see on its own; the gate's
  *                        hard assertions belong to A, which is the only party
@@ -46,40 +45,38 @@
  * the gate out of that would repeat the non-discriminating shape this
  * milestone has already paid for three times.
  *
- * Hence THREE independent witnesses, none of which a single client can
- * produce:
+ * The two phases below therefore do DIFFERENT jobs, and it took a review to
+ * say so precisely.  They are not three interchangeable witnesses.
  *
- *   1. `collisions` (M5-2b4).  The routine counts every CS that failed during
- *      a claim scan.  SOLO asserts the delta is ZERO -- one client releases
- *      its slot before the next request, so the scan finds slot 0 free every
- *      time and never fails a compare.  The two-client run asserts it is
- *      NON-ZERO.  See "COLLISIONS" in nsfvsvc.h for exactly what the counter
- *      can and cannot separate.
+ * PHASE 1 IS A MECHANISM CHECK, NOT CONTENTION EVIDENCE.  With the other
+ * client sitting on slot 0, every one of A's scans fails exactly one compare
+ * and lands on slot 1, so `collisions` MUST read one per request -- 150 over
+ * 150 -- and A's slot index MUST be non-zero.  Those two numbers are the SAME
+ * observation counted twice, not two independent ones, and neither is a lost
+ * race: what they show is that the scan walks past an occupied slot and that
+ * the counter tracks it, with the SOLO run's ZERO delta as the negative
+ * control.  Read the highest index the other way and it is positive evidence
+ * AGAINST a lost race in this phase: had the two clients ever raced for slot
+ * 1, the loser would have walked on to slot 2, and none did (measured: A
+ * always slot 1, B always slot 0 -- a stable disjoint assignment).
  *
- *   2. A LANDED ON A SLOT OTHER THAN 0.  Independent of the counter and just
- *      as decisive: the scan takes the lowest FREE slot, so a solo client gets
- *      slot 0 forever (b3 measured 0/0/0/0).  Any other index means somebody
- *      else's claim was sitting on the lower ones.
+ * PHASE 2 CARRIES THE GATE, ALONE.  A holds slots 1..61 CLAIMED and the flag
+ * slots are taken, so slot 0 is the only slot a request can be given, and A
+ * holds no slot between its own requests -- the routine releases before it
+ * returns.  So an ENOBUFS handed to A has exactly one possible cause: THE
+ * OTHER ADDRESS SPACE WAS OCCUPYING SLOT 0 AT THAT INSTANT.  Both clients
+ * being served AND refused across the same run is the two of them genuinely
+ * alternating on one slot word.  If B is not running, A is never refused and
+ * the gate FAILS, which is the behaviour a gate should have.
  *
- *   3. A WAS REFUSED WHILE EXACTLY ONE SLOT WAS FREE.  This is the strongest
- *      of the three and the one worth reading twice.  In phase 2 A holds slots
- *      1..61 CLAIMED and the flag slots are taken, so slot 0 is the only slot
- *      a request can be given.  A holds no slot between its own requests --
- *      the routine releases before it returns.  So an ENOBUFS handed to A can
- *      have exactly one cause: THE OTHER ADDRESS SPACE WAS OCCUPYING SLOT 0 AT
- *      THAT INSTANT.  That is genuine concurrent occupancy of the pool by two
- *      address spaces, measured rather than construed -- and if B is not
- *      running, A never sees it and the gate FAILS, which is the behaviour a
- *      gate should have.
- *
- * WHAT NONE OF THEM PROVE, stated here so the report can repeat it: that two
- * CPUs executed the compare-and-swap on the same word at the same instant and
- * the hardware arbitrated.  (1) cannot separate that from "the slot was
- * already busy", by construction.  The stand does run Hercules with NUMCPU 2
- * and MVS dispatches on both, so it is physically possible rather than merely
- * defended against -- but "possible" is not "observed", and sharpening the
- * counter into a true lost-race count needs a load before the compare and a
- * second counter.  Recorded as a refinement, not done here.
+ * WHAT IS PROVEN, then, is that two address spaces share the pool and
+ * interleave correctly on one slot under saturation.  WHAT IS NOT is that two
+ * CPUs executed the compare on the same word at the same instant and the
+ * hardware arbitrated: `collisions` cannot separate that from "the slot was
+ * already busy" (see "COLLISIONS" in nsfvsvc.h), and no test on this stand can
+ * isolate it.  The stand does run Hercules with NUMCPU 2 and MVS dispatches on
+ * both, so it is physically possible rather than merely defended against --
+ * but possible is not observed, and that half stays construction.
  *
  * NO SLOT IS EVER HELD BY TWO CLIENTS is checked differently, and needs no
  * counter.  An unauthorised client cannot store into CSA, so it cannot stamp
@@ -525,16 +522,22 @@ xc_run_a(void)
     CHECK_EQ((long)bad, 0L,
              "phase 1: every request was served and came back with its own"
              " identity -- NO slot was handed to two clients");
-    /* WITNESS 1.  The negative control (the SOLO run) asserts this delta is
-     * zero for one client, which is what makes it evidence here. */
+    /* MECHANISM, not contention.  These two are the SAME observation counted
+     * twice -- the other client sits on slot 0, so each scan fails exactly one
+     * compare and lands on slot 1.  What they establish is that the scan walks
+     * past an occupied slot and the counter tracks it; the SOLO run's zero
+     * delta is the negative control that gives them meaning.  The gate itself
+     * is phase 2. */
     CHECK((coll1 - coll0) > 0u,
-          "CONTENTION (1/3): the claim scan hit slots that were NOT FREE --"
-          " `collisions` moved, which one sequential client cannot make happen");
-    /* WITNESS 2.  Independent of the counter: the scan takes the lowest FREE
-     * slot, so a solo client gets slot 0 forever (b3: 0/0/0/0). */
+          "MECHANISM: the claim scan stepped over slots that were NOT FREE and"
+          " `collisions` tracked it -- which one sequential client cannot do");
     CHECK(nonzero > 0u,
-          "CONTENTION (2/3): A was given a slot other than 0 -- the other"
-          " address space was occupying the lower ones");
+          "MECHANISM: A was given a slot other than 0 -- the same fact from the"
+          " other side, and NOT a second independent witness");
+    /* And the shape of the walk is evidence AGAINST a lost race here: a client
+     * that lost the compare on slot 1 would have gone on to slot 2. */
+    printf("  highest index reached: %u (a lost race for slot 1 would have"
+           " pushed a client to slot 2)\n", (unsigned)hi);
 
     /* ---- phase 2: exactly one slot free -------------------------------- */
     printf("\n  phase 2: pre-claiming slots %u..%u, leaving ONLY slot 0\n",
@@ -589,12 +592,14 @@ xc_run_a(void)
     CHECK(ok2 > 0u,
           "phase 2: A won the single free slot at least once -- the scan does"
           " not starve one address space outright");
-    /* WITNESS 3, and the strongest.  A holds no slot between its own requests,
-     * and slot 0 is the only slot a request can be given, so a refusal has
-     * exactly one possible cause. */
+    /* THE GATE, and the only part of this run that carries it.  A holds no
+     * slot between its own requests, and slot 0 is the only slot a request can
+     * be given, so a refusal has exactly one possible cause.  Together with
+     * the served count above, it is the two address spaces alternating on ONE
+     * slot word. */
     CHECK(nobuf2 > 0u,
-          "CONTENTION (3/3): A was REFUSED while slot 0 was the only free slot"
-          " -- so the OTHER ADDRESS SPACE was occupying it at that instant");
+          "THE GATE: A was REFUSED while slot 0 was the only free slot -- so"
+          " the OTHER ADDRESS SPACE was occupying it at that instant");
     CHECK((exh1 - exh0) >= nobuf2,
           "phase 2: the anchor's `exhausted` counter accounts for every"
           " refusal A saw (B's refusals count too, so it may be higher)");

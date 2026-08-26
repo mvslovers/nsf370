@@ -363,14 +363,32 @@ this sits inside the routine's one hot loop. Do not "fix" it into a `CS` loop.
 run is the **negative control** for the two-client run, and a negative control built out of
 different code proves less.
 
-| | Witness | Why a single client cannot produce it |
-|---|---|---|
-| 1 | `collisions` moved | SOLO asserts the delta is **zero**: one client releases before it asks again, so its scan finds slot 0 free every time |
-| 2 | A was given a slot **other than 0** | the scan takes the lowest FREE slot, so a solo client gets slot 0 forever (b3 measured 0/0/0/0) |
-| 3 | A was **refused** while exactly one slot was free | A holds no slot between its own requests, and slot 0 is the only slot a request can be given — so an `ENOBUFS` handed to A has exactly one cause: the other address space was occupying it at that instant |
+**The two phases do different jobs, and an earlier draft of this annotation got that wrong.** It
+presented phase 1's `collisions` delta and phase 2's served/refused split together, "because the
+shape of them is the evidence". They do not carry the same weight, and phase 1 carries none of it.
 
-Witness 3 is the strongest and the one that makes the gate fail honestly when the second client
-is absent: A never sees a refusal, and the gate reports that rather than passing quietly.
+**Phase 1 is a MECHANISM check.** With the other client sitting on slot 0, every one of A's scans
+fails exactly one compare and lands on slot 1 — so `collisions` **must** read one per request and
+A's index **must** be non-zero. Those are the *same observation counted twice*, not two
+independent witnesses, and neither is a lost race. What they establish is that the scan walks past
+an occupied slot and that the counter tracks it, with SOLO's zero delta as the negative control.
+
+Read the highest index the other way and phase 1 is positive evidence **against** a lost race:
+had the two clients ever raced for slot 1, the loser would have walked on to slot 2. None did —
+measured, A always slot 1 and B always slot 0, a stable disjoint assignment, which is consistent
+with service being serialised.
+
+**Phase 2 carries the gate, alone.** A holds slots 1..61 CLAIMED and the flag slots are taken, so
+slot 0 is the only slot a request can be given, and A holds no slot between its own requests. An
+`ENOBUFS` handed to A therefore has exactly one possible cause: **the other address space was
+occupying slot 0 at that instant.** Both clients being served *and* refused across the same run is
+the two of them genuinely alternating on one slot word. If B is not running, A is never refused
+and the gate **fails** rather than passing quietly.
+
+**So what is proven is that two address spaces share the pool and interleave correctly on one slot
+under saturation.** What is not — and what no test on this stand can isolate — is that two CPUs
+executed the compare on the same word at the same instant and the hardware arbitrated. That half
+stays construction.
 
 **No slot held by two clients** needs no counter. An unauthorised client cannot store into CSA,
 but every request carries a 64-byte `NSFRQE` image *through* the slot and back, and the STC
@@ -484,19 +502,34 @@ client unauthorised throughout.
 | Stage-0 `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH` | **444 PASS, CC 0 batch + TSO** (`TSTMVCD` excluded, #53) |
 | `TSTRQXM` | **batch CC 0, 32/32**, host peer verified **9353 bytes byte-exact** (TSO leg fails by design — one-shot listener) |
 | `TSTRQXF` | **53/53 CC 0 batch + TSO** |
-| `TSTRQXC` SOLO (the negative control) | **8/8 CC 0 batch + TSO**, `collisions 9888 → 9888` |
+| `TSTRQXC` SOLO (the negative control) | **8/8 CC 0 batch + TSO**, `collisions 0 → 0` on a fresh anchor |
 | `TSTRQXC` A (leader) | **CC 0000, 13/13** |
 | `TSTRQXC` B (follower) | **CC 0000, 8/8** |
 | `TSTRQXC` LEAK (induction) | **CC 0000, 8/8** — slot CLAIMED, `inflight` 0 → 1, S0C4 caught, no dump |
 | `TSTRQXC` V (after the stop) | **CC 0000, 5/5** |
 | Host suite | **2925 PASS / 0 FAIL** (TSTREQX 119 → 137) |
 
-The two-client numbers, because the shape of them is the evidence: phase 1, 150 requests,
-**all 150 landed on a slot other than 0** (highest 1) with `collisions` delta exactly 150; phase
-2, 3000 attempts with one slot free, **served 1375 / refused 1625 / wrong 0**, `exhausted`
-152 → 7927; B served 167, refused 6150, every reply carrying its own identity; pool 64/64 FREE at
-exit. The probe STC's own stats line independently reported **`COLL=0`** across the 126
-sequential requests of the Stage-0 four — a second negative control, from different code.
+The two-client numbers, with §2's division applied to them. These are from the **re-run on the
+corrected build**, on a **fresh anchor whose counters start at zero** — which removes the last
+ambiguity from the deltas:
+
+- **Mechanism (phase 1).** 150 requests, all 150 on slot 1, `collisions` **0 → 150** — one failed
+  compare per request, which is what the counter must read with the other client on slot 0. B's
+  mirror image confirms it: B's index was **never** anything but 0. A stable disjoint assignment,
+  so no lost race here, and the highest index of 1 says so positively.
+- **The gate (phase 2).** 3000 attempts with one slot free: **served 239 / refused 2761 /
+  wrong 0**. B, over the same window, was **served 194 and refused 154** — so *both* clients were
+  refused by the other and *both* won the slot. That is the interleaving, measured from both ends.
+- `exhausted` **0 → 2915**, and 2761 + 154 = **2915 exactly** — the counter accounts for every
+  refusal the two clients saw and nothing else contributed to it.
+- Pool 64/64 FREE at exit, every reply carrying its own identity.
+
+The SOLO negative control ran on the same STC instance minutes before, reading `collisions 0 → 0`.
+The probe STC's own stats line independently reported **`COLL=0`** across the 126 sequential
+requests of the Stage-0 four — a second negative control, from different code.
+
+(The first run of the gate, on the previous STC instance, gave the same verdict from a non-zero
+baseline: `9888 → 10038` against a SOLO `9888 → 9888`, phase 2 served 1375 / refused 1625.)
 
 The retain branch: `NSF043I SVC 239 RESTORED` at 15:43:52, **`NSF054W 1 CLIENT(S) STILL IN
 FLIGHT -- CSA AND SVC ROUTINE RETAINED (EXHAUSTED=2)`** at 15:44:02 — the 10 s drain ceiling
@@ -518,7 +551,9 @@ gate in the round, needed nothing.
 ### 8. What M5-2b4 still does not prove
 
 - **Concurrent service.** One dispatch at a time (Decision 10) is unchanged.
-- **Hardware arbitration of a simultaneous `CS`.** See §1.
+- **Hardware arbitration of a simultaneous `CS`.** See §1 and §2 — and note that phase 1 is
+  positive evidence that no lost race occurred *in that phase*, so on this stand it is not merely
+  unmeasured, it is unobserved.
 - **Reaping a second client's slot WHILE a request is in service.** This is the hole §5 exists to
   close, and the round did not exercise it: no `NSF050I` / `NSF051W` was issued by NSFS at any
   point, because no client died or became unclassifiable while another was being served. The
@@ -535,7 +570,21 @@ gate in the round, needed nothing.
 - **Fault recovery, address validation, the CLAIMED-slot leak.** Unchanged and still open.
 - **The transport's wake latency** (§6, issue #64).
 
-### 9. One acceptance item was superseded, not met
+### 9. Two things that must happen BEFORE (e), not after
+
+**Issue #64 is a prerequisite, not housekeeping.** An executive that does not wake without device
+traffic — one request unserved for eleven minutes while a `F NSFS,STATS` queued behind it was
+answered in the same second, and a gate run that needed a host `ping` as a wake floor — makes any
+*throughput* or *latency* number from a stress round meaningless while it goes unrecognised. (e)
+measures exactly those. So #64 comes first.
+
+**The induction's leak invalidates free-CSA readings on this stand.** ~137 KB plus the old router
+module are retained until IPL — the intended price — and the consequence is that b3's
+`LARGEST FREE BLOCK NOW 905216` no longer describes this system: this round measured 1073152
+before the induction and 933888 after. **IPL before (e)**, or the stress round sizes itself against
+an artificially small pool and reports a CSA ceiling that is an artefact of this round.
+
+### 10. One acceptance item was superseded, not met
 
 The step's acceptance list asked that "B's request must become visible to the WAIT gate **while**
 A is still being served". Under serialised service that is exactly the spin §5 describes, so the
