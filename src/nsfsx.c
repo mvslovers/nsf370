@@ -558,9 +558,11 @@ nsfsx_ecb(void)
  * remnant for what it is where a bare number would mislead.  It is also the
  * one value that must be read at the instant STATS runs.
  *
- * THE LINE IS ALSO THE DEPLOY-TOOK-EFFECT CHECK.  If NSF812I is absent from
- * the reply, the running module is the previous one -- CLAUDE.md 5's most
- * expensive failure class, caught here for free rather than reasoned about.
+ * THE LINES ARE ALSO THE DEPLOY-TOOK-EFFECT CHECK.  If NSF812I is absent from
+ * the reply, the running module predates 64-0; if NSF813I carries no `BUSY=`,
+ * it predates 64-0c.  CLAUDE.md 5's most expensive failure class, caught here
+ * for free rather than reasoned about -- and the check has to name the FIELD,
+ * not just the message id, because 64-0b's module already had both lines.
  *
  * Everything the 64-0 prediction weighs is on ONE line: the ECB word, its
  * POSTED bit decoded, wakeposts and served.  "wakeposts == 0 while served ==
@@ -590,41 +592,55 @@ nsfsx_stats_extra(void)
      * time this line is written at least one pass has completed and a healthy
      * counter is >= 1.  EVTPASSES=0 is therefore already a third state -- it
      * can only mean not registered or not incremented, never "no passes". */
-    /* BUSY / BUSYSLOT ARE NOT DECORATION EITHER, AND THEY BELONG ON THIS LINE
-     * (64-0b).  If a stall reproduces while EVTPASSES is CLIMBING, the loop is
-     * running and not taking the work -- and exactly one structure in the
-     * drain produces that: g_busy set with g_busy_slot pointing at a slot
-     * whose private ECB never gets posted.  Step 1 then waits on a completion
-     * that never comes, step 2 dispatches nothing, and nsfsx_any_pending_other
-     * skips the in-service slot BY DESIGN -- so the WAIT-gate pre-filter
-     * answers "nothing to do" while a request sits PENDING.
-     *
-     * Without these two fields that state is INDISTINGUISHABLE from a wake
-     * failure, which is the distinction the whole round turns on.  Reading
-     * them beside EVTPASSES and POSTED makes it one observation rather than a
-     * cross-reference -- the same reason SERVED sits here.
-     *
-     * BUSYSLOT is -1 for "none", never 0: slot 0 is a perfectly ordinary
-     * in-service slot and is what a single client gets every time. */
     wtof("NSF812I WAKEECB=%08X POSTED=%s EVTPASSES=%u WAKEPOSTS=%u WPREG=%s"
-         " SERVED=%u BUSY=%d BUSYSLOT=%d",
+         " SERVED=%u",
          ecb,
          ((g_wake_ecb & NSFECB_POSTED) != 0u) ? "Y" : "N",
          (unsigned)sts_value("NSFEVT", "evtpasses"),
          (g_wakeposts != NULL) ? (unsigned)g_wakeposts->value : 0u,
          (g_wakeposts != NULL) ? "Y" : "N",
-         (g_anchor != NULL) ? (unsigned)g_anchor->served : 0u,
-         g_busy, busyslot);
+         (g_anchor != NULL) ? (unsigned)g_anchor->served : 0u);
 
-    /* The context that says whether the numbers above are about a live
-     * transport, plus the timer-queue depth.  nsftmr_count() == 0 does NOT
-     * imply the STIMER is disarmed -- nsfsmain's nsftmr_plat_arm(1u) heartbeat
-     * sits outside g_armed's bookkeeping and g_armed has no accessor -- so
-     * this reports the queue, and EVTPASSES growth over an idle window is what
+    /* BUSY / BUSYSLOT ARE NOT DECORATION EITHER (64-0b).  If a stall
+     * reproduces while EVTPASSES is CLIMBING, the loop is running and not
+     * taking the work -- and exactly one structure in the drain produces that:
+     * g_busy set with g_busy_slot pointing at a slot whose private ECB never
+     * gets posted.  Step 1 then waits on a completion that never comes, step 2
+     * dispatches nothing, and nsfsx_any_pending_other skips the in-service slot
+     * BY DESIGN -- so the WAIT-gate pre-filter answers "nothing to do" while a
+     * request sits PENDING.  Without these two fields that state is
+     * INDISTINGUISHABLE from a wake failure.
+     *
+     * BUSYSLOT is -1 for "none", never 0: slot 0 is a perfectly ordinary
+     * in-service slot and is what a single client gets every time.
+     *
+     * WHY THEY MOVED HERE, AND WHY THEY ARE FIRST (64-0c).  The Hercules
+     * console log truncates a message at roughly 107 characters of text, and
+     * NSF812I is the longest line in the system: once the counters reach seven
+     * digits -- i.e. exactly during the investigation these fields were added
+     * for -- BUSYSLOT's value was cut off.  The truncation eats the TAIL, so
+     * the repair is not only a shorter line but a POSITION: the two fields the
+     * round turns on lead NSF813I, and what can be lost is the pure context
+     * behind them.  INFLIGHT follows for the same reason -- it is load-bearing
+     * in every stall reading so far -- and TMRQ, EXHAUSTED, COLLISIONS and
+     * REAPED bring up the rear because losing one costs nothing.
+     *
+     * The alternative was a `\n` in the NSF812I format: libc370's vwtof splits
+     * its text on newlines and issues one wto() per line (src/clib/vwtof.c), so
+     * it would have worked.  Rejected because the second line would carry no
+     * message id -- unreadable to a grep and odd on a console -- where NSF813I
+     * already exists, is short, and is where this context belongs anyway.
+     *
+     * The timer-queue depth rides along.  nsftmr_count() == 0 does NOT imply
+     * the STIMER is disarmed -- nsfsmain's nsftmr_plat_arm(1u) heartbeat sits
+     * outside g_armed's bookkeeping and g_armed has no accessor -- so this
+     * reports the queue, and EVTPASSES growth over an idle window is what
      * actually measures whether a periodic wake still exists. */
-    wtof("NSF813I TMRQ=%u INFLIGHT=%u EXHAUSTED=%u COLLISIONS=%u REAPED=%u",
-         (unsigned)nsftmr_count(),
+    wtof("NSF813I BUSY=%d BUSYSLOT=%d INFLIGHT=%u TMRQ=%u"
+         " EXHAUSTED=%u COLLISIONS=%u REAPED=%u",
+         g_busy, busyslot,
          (g_anchor != NULL) ? (unsigned)g_anchor->inflight   : 0u,
+         (unsigned)nsftmr_count(),
          (g_anchor != NULL) ? (unsigned)g_anchor->exhausted  : 0u,
          (g_anchor != NULL) ? (unsigned)g_anchor->collisions : 0u,
          (g_anchor != NULL) ? (unsigned)g_anchor->reaped     : 0u);
