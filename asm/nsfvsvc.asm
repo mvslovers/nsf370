@@ -602,33 +602,64 @@ PSTOK    DS    0H
          ST    R3,REQTOKN(,R8)
          B     REPLYC
 *----------------------------------------------------------------------
-*  XFER read-out: MVCK the transformed staging (source key 0) back out to
-*  the caller's ubuf (dst key 0), L = ANCXLEN bytes (reloaded from CSA --
-*  it survived POST/WAIT), <= 255 bytes/piece, offset recomputed.  Piece
-*  length saved in R0 to advance (MVCK not trusted to preserve R1).
+*  XFER read-out: move the transformed staging back out to the caller's ubuf,
+*  L = the staged xlen (reloaded from CSA -- it survived POST/WAIT), <= MVCMAX
+*  bytes per piece, offset recomputed.  The TRUE piece length is kept in R0 to
+*  advance the loop, because EX wants R1 = length-1 and R1 is decremented in
+*  place.  The SOURCE was never the hazard: the staging buffer IS key-0 CSA and
+*  reading it is correct.
 *
-*  THIS PATH KEEPS THE KEY-0 WRITE-OUT, deliberately.  M5-2b1 closed the
-*  window on RQEOUT -- the M5-2 transport -- and left XFER alone: XFER is
-*  Stage-0b PROBE scaffolding (TSTUBUF), it carries no NSFRQE and no
-*  application data, and it is already listed for removal with the rest of
-*  the probe verbs.  Do not read its key-0 store as the transport's.
+*  THE DESTINATION-KEY WINDOW APPLIES HERE TOO (M5-2c0, ADR-0039).  The move
+*  runs through MOVEOUT, exactly as RQEOUT's does, so the caller-supplied
+*  DESTINATION is checked by the hardware against the CALLER's key instead of
+*  being stored under this routine's own key 0.
+*
+*  IT DID NOT UNTIL M5-2c0, and the reason it does now is worth recording.
+*  M5-2b1 closed the window on RQEOUT -- the M5-2 transport -- and left XFER
+*  alone on the recorded assumption that M5-2c would DELETE the verb.  That
+*  assumption does not hold: removing XFER retires TSTUBUF, the only gate that
+*  proves the keyed ubuf bounce, so the verb survives to c3 at the earliest.
+*  Until then FNXFER is dispatchable by an UNAUTHORISED client (test/mvs/
+*  tstubuf.c drives it today), which makes a key-0 store into a caller-supplied
+*  address a LIVE path rather than scaffolding.
+*
+*  A plain MVC through MOVEOUT, not MVCK: the reasoning is MOVEOUT's own
+*  header and is deliberately not restated here.
 *----------------------------------------------------------------------
 XFEROUT  DS    0H
+*  Window setup, ONCE -- an inline COPY of the nine instructions at the top of
+*  RQEOUT, deliberately byte-identical to them.  RQEOUT is the countersigned
+*  production write-out path and is left untouched here, so the two setups can
+*  be diffed and seen to be the same; extracting them into a shared subroutine
+*  would move instructions in that path and drag its whole live round back in.
+*  THE COPY EXPIRES WITH THE VERB (c3).  What R9 and R12 come out holding, and
+*  why neither reads as a small integer, is explained ONCE at RQEOUT -- that
+*  block is the explanation of record.  R3 is free here: it holds the REQFUNC
+*  comparand the dispatch above tested and nothing reads it again.
+         LR    R9,R2              park the anchor base across IPK
+         IPK   0                  R2 = PSW key in bits 24-27
+         LR    R12,R2             R12 = SPKA operand (restore)
+         LR    R2,R9              anchor base back
+         SLR   R9,R9
+         L     R9,PSATOLD(,R9)    R9 = A(caller TCB)
+         SLR   R3,R3
+         IC    R3,TCBPKF(,R9)     caller's key, high nibble
+         LR    R9,R3              R9 = SPKA operand (borrow)
          L     R10,SLXLEN(,R7)    R10 = remaining = L
          SLR   R11,R11            R11 = offset
 RDOTLP   LTR   R10,R10            bytes left? (0 -> skip)
          BNP   REPLYC
          LR    R1,R10             R1 = piece length
-         C     R1,=A(MVCKMAX)
+         C     R1,=A(MVCMAX)
          BNH   RDOTSZ
-         LA    R1,MVCKMAX         cap at 255
-RDOTSZ   LR    R0,R1              save piece length
+         LA    R1,MVCMAX          cap at 256
+RDOTSZ   LR    R0,R1              save TRUE piece length
          L     R4,REQUBUF(,R8)    R4 = ubuf base (dst B1)
          ALR   R4,R11
          LA    R5,SLSTAGE(,R7)    R5 = &stage (source B2)
          ALR   R5,R11
-         SLR   R3,R3             R3 = source key 0
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         BCTR  R1,0               EX takes LENGTH-1
+         BAL   R15,MOVEOUT        move under the caller's key
          ALR   R11,R0             off += piece
          SLR   R10,R0             remaining -= piece
          B     RDOTLP
@@ -737,9 +768,11 @@ RQOTRQE  DS    0H
 *  they are not key integers and R12 is not an address).  Link R15.
 *
 *  THIS IS THE ONLY BLOCK IN THE ROUTINE THAT RUNS UNDER A KEY OTHER THAN 0,
-*  AND IT MUST STAY THAT WAY.  Four instructions, two call sites: that is
+*  AND IT MUST STAY THAT WAY.  Four instructions, THREE call sites: that is
 *  what makes "what executes under a borrowed key" a question with a short,
 *  checkable answer, and the property is easy to lose and hard to get back.
+*  M5-2c0 added the third (XFEROUT's read-out) -- a CALLER, not a second
+*  such block, which is the only way this stays one question.
 *  The window is per piece rather than around the loop for the same reason --
 *  the routine's own bookkeeping never executes under a key it does not
 *  control, and the ONLY instruction that can take a protection exception is
