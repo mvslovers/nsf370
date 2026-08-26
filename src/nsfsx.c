@@ -55,7 +55,14 @@ static NSFECB        g_wake_ecb;
  * 64 clients can have requests outstanding -- but SERVICE stays serialised:
  * one private NSFRQE, one busy flag, and a record of WHICH SLOT is being
  * served, because the drain can no longer assume there is only one.
- * Concurrent service is b4. */
+ *
+ * M5-2b4 does NOT change that, and the WAIT-gate probe below is written around
+ * it: the outcomes that need no private NSFRQE (reap / hold / reap-bad) are
+ * consumed whether or not one is in service, and a DISPATCHABLE second request
+ * stays invisible to the probe until this flag clears -- reporting it would
+ * make the executive skip its WAIT for work the drain then declines, which is
+ * a spin, not a latency fix (nsfreqx_actionable).  Concurrent SERVICE is still
+ * open. */
 static NSFRQE        g_priv;
 static int           g_busy;
 static NSFV_SLOT    *g_busy_slot;
@@ -83,8 +90,13 @@ nsfsx_anchor_alloc(void)
         ** scan by THIS field, never by its own EQU: the party that knows how
         ** much storage exists is the party that allocated it, and NSFVSVC is
         ** a separate load module that can be stale against this one. */
-        anchor->nslots    = NSFV_NSLOTS;
-        anchor->exhausted = 0;
+        anchor->nslots     = NSFV_NSLOTS;
+        anchor->exhausted  = 0;
+        /* M5-2b4: contended claims.  memset already zeroed both counters --
+        ** they are named here for the same reason `exhausted` was: a
+        ** diagnostic nobody initialises is a diagnostic nobody remembers to
+        ** read. */
+        anchor->collisions = 0;
         /* Stamp every slot's guard once, here, under the same key window as
         ** every other key-0 store.  Checked before every dispatch.  memset
         ** already left the states FREE, which is the value the claim CS
@@ -510,43 +522,127 @@ nsfsx_ecb(void)
     return (UINT *)&g_wake_ecb;
 }
 
-/* ==========================================================================
- * The WAIT gate's probe.  Side-effect-free.
+/* Is any slot carrying a published request OTHER THAN THE ONE IN SERVICE?
  *
- * TWO states, not one.  The second -- completed but not yet replied -- is
- * reachable whenever the executive parks a request and something later
- * completes it; without it here the loop can commit to a WAIT on top of that
- * state and the reply never goes out (ADR-0041 5; ADR-0025 defect (2)).
+ * Cheap and key-free: it reads only the CSA state words, which are not fetch
+ * protected, and a stale read costs one extra pass.  Kept separate from the
+ * selector below so the two cases that dominate -- nothing published, and
+ * nothing published but the request already in service -- answer without a key
+ * switch.
  *
- * Reads the CSA req_state from problem state: the anchor is not fetch
- * protected, and a stale read only costs one extra pass.
- * ========================================================================== */
-int
-nsfsx_pending(void)
+ * The in-service slot is excluded for the same reason the selector skips it:
+ * it stays PENDING until step 1 of the drain finishes it, and it is step 1's
+ * alone.  Counting it here would take the key window on every pass of a parked
+ * request to conclude there is nothing to do. */
+static int
+nsfsx_any_pending_other(void)
 {
     unsigned i;
 
-    if (g_anchor == NULL) return 0;
-    if (g_busy) return (g_priv.ecb & NSFECB_POSTED) ? 1 : 0;
     for (i = 0; i < g_anchor->nslots; i++) {
-        if (g_anchor->slots[i].req_state == NSFV_REQ_PENDING) return 1;
+        NSFV_SLOT *slot = &g_anchor->slots[i];
+
+        if (slot->req_state != NSFV_REQ_PENDING) continue;
+        if (g_busy && slot == g_busy_slot)       continue;
+        return 1;
     }
     return 0;
 }
 
-/* The first slot with a published request, or NULL.  Lowest index first, so
- * the order is defined rather than incidental -- a test that pre-claims slots
- * and predicts which one serves next needs this to be a rule. */
+/* The first slot THIS PASS CAN ACT ON, and what to do with it.  Lowest index
+ * first, so the order is defined rather than incidental -- a test that
+ * pre-claims slots and predicts which one serves next needs this to be a rule.
+ *
+ * The per-slot decision is still nsfreqx_slot_action's host-pinned truth
+ * table; what M5-2b4 adds is the second question, nsfreqx_actionable: can this
+ * pass CONSUME that outcome?  A slot whose outcome is reap / hold / reap-bad
+ * always can -- all three finish inside the CSA slot.  A DISPATCHABLE one can
+ * only when the single private NSFRQE is free.  Both the drain and the WAIT
+ * gate ask through here, so "what the drain will do" and "what the probe
+ * reports" cannot drift apart: that drift is the spin.
+ *
+ * Caller must already be in key 0 -- nsfsx_client_state chases control blocks.
+ */
 static NSFV_SLOT *
-nsfsx_next_pending(void)
+nsfsx_next_actionable(int *act_out, int *cl_out)
 {
     unsigned i;
 
     for (i = 0; i < g_anchor->nslots; i++) {
-        if (g_anchor->slots[i].req_state == NSFV_REQ_PENDING)
-            return &g_anchor->slots[i];
+        NSFV_SLOT *slot = &g_anchor->slots[i];
+        int        cl;
+        int        act;
+
+        if (slot->req_state != NSFV_REQ_PENDING) continue;
+
+        /* THE SLOT IN SERVICE IS STILL PENDING, and it is not ours to touch.
+        ** It stays PENDING until step 1 of the drain finishes it, so without
+        ** this line a client that died while its request was parked would be
+        ** REAPED from under the executive -- and reaping clears `stage`, which
+        ** is exactly what the parked request's ubuf points at.  A cross-address
+        ** -space use-after-free, and a slot handed to a new client while an
+        ** in-flight operation still writes into it.  Step 1 is the ONE place
+        ** that finishes the in-service slot, whatever its client is doing. */
+        if (g_busy && slot == g_busy_slot) continue;
+
+        cl  = nsfsx_client_state(slot);
+        act = nsfreqx_slot_action(slot->req_state, cl,
+                                  nsfreqx_guard_ok(slot->rqe_guard),
+                                  g_anchor->server_ecb_ptr ==
+                                      (void *)&g_wake_ecb);
+        if (!nsfreqx_actionable(act, g_busy)) continue;
+
+        *act_out = act;
+        *cl_out  = cl;
+        return slot;
     }
     return NULL;
+}
+
+/* ==========================================================================
+ * The WAIT gate's probe.  Side-effect-free (the key window it may take is
+ * restored before it returns).
+ *
+ * THREE states now, and the order of the checks is the cheap-first order.
+ *
+ *   1. completed but not yet replied -- reachable whenever the executive parks
+ *      a request and something later completes it; without it the loop can
+ *      commit to a WAIT on top of that state and the reply never goes out
+ *      (ADR-0041 5; ADR-0025 defect (2)).
+ *   2. nothing published other than the request already in service -- the idle
+ *      answer, and it must not cost a key switch.
+ *   3. something published.  With nothing in service that is consumable
+ *      whatever its outcome, so the answer is yes without classifying.  With a
+ *      request in service only the outcomes that need no private NSFRQE are
+ *      consumable, and deciding that means classifying the client -- which
+ *      chases control blocks and therefore takes the key window.
+ *
+ * M5-2b4 CHANGED (3).  Before it, this returned early on `g_busy` and never
+ * looked at another slot, so a second client that published and then DIED sat
+ * un-reaped for as long as an unrelated client's blocking operation ran.  What
+ * it did NOT do -- and must not -- is report a DISPATCHABLE second request:
+ * the executive skips its WAIT whenever a probe answers non-zero, and the
+ * drain would decline the work, so the pass would make no progress and repeat.
+ * That is a hot spin on the executive task, which is worse than the latency it
+ * would remove.  Curing THAT means concurrent service, not a louder probe.
+ * ========================================================================== */
+int
+nsfsx_pending(void)
+{
+    unsigned char savekey;
+    int           act = NSFREQX_ACT_NONE;
+    int           cl  = NSFREQX_CL_LIVE;
+    int           r;
+
+    if (g_anchor == NULL) return 0;
+    if (g_busy && (g_priv.ecb & NSFECB_POSTED)) return 1;
+    if (!nsfsx_any_pending_other())             return 0;
+    if (!g_busy)                                return 1;
+
+    if (__super(PSWKEY0, &savekey)) return 0;
+    r = (nsfsx_next_actionable(&act, &cl) != NULL);
+    __prob(savekey, NULL);
+    return r;
 }
 
 /* ==========================================================================
@@ -610,22 +706,30 @@ nsfsx_drain(void)
                  " -- REQUEST HELD", lascb, lasid);
     }
 
-    /* ---- 2. Take the next published request --------------------------------
-     * ONE at a time (ADR-0042 10): the pool makes the CLAIM concurrent, not
-     * the service.  A second PENDING slot simply waits for the next pass, with
-     * its client parked on its own reply ECB. */
-    if (!g_busy) {
-        NSFV_SLOT *slot = nsfsx_next_pending();
-        int        act;
+    /* ---- 2. Take the next request THIS PASS CAN CONSUME ---------------------
+     * ONE DISPATCH at a time (ADR-0042 10): the pool makes the CLAIM
+     * concurrent, not the service.  A dispatchable second request waits for
+     * the next pass, with its client parked on its own reply ECB.
+     *
+     * M5-2b4: the outcomes that need NO private NSFRQE -- reap a dead client,
+     * hold an unknown one, reap untrusted storage -- are consumed whether or
+     * not a request is in service, one per pass.  They finish inside the CSA
+     * slot and never POST, so nothing about them waits on the request the
+     * executive is working on; before b4 they did wait, for as long as an
+     * unrelated client's blocking operation ran.  nsfsx_next_actionable is the
+     * ONE place that decides, and the WAIT-gate probe asks the same question
+     * through it -- if the two ever disagreed, the disagreement would be a
+     * spin (nsfreqx_actionable). */
+    {
+        NSFV_SLOT *slot;
+        int        act     = NSFREQX_ACT_NONE;
         int        ok      = 0;
         int        corrupt = 0;
 
-        if (slot == NULL) return;
+        /* Cheap pre-filter, key-free: no published request at all is the
+        ** common case and must not cost a key switch. */
+        if (!nsfsx_any_pending_other()) return;
         if (__super(PSWKEY0, &savekey)) return;
-
-        cl    = nsfsx_client_state(slot);
-        lascb = (unsigned)slot->req_ascb;
-        lasid = slot->req_asid;
 
         /* THE DECISION IS THE HOST-PINNED TRUTH TABLE, not a chain of ifs
         ** re-derived per slot (TSTREQX sweeps all 60 rows and asserts exactly
@@ -633,10 +737,13 @@ nsfsx_drain(void)
         ** RQE move -- the guard sits between the slot's RQE and its staging --
         ** and the pointer check covers corruption OF the word we POST through,
         ** which we are the one party that knows the correct value for. */
-        act = nsfreqx_slot_action(slot->req_state, cl,
-                                  nsfreqx_guard_ok(slot->rqe_guard),
-                                  g_anchor->server_ecb_ptr ==
-                                      (void *)&g_wake_ecb);
+        slot = nsfsx_next_actionable(&act, &cl);
+        if (slot == NULL) {
+            __prob(savekey, NULL);
+            return;
+        }
+        lascb = (unsigned)slot->req_ascb;
+        lasid = slot->req_asid;
 
         switch (act) {
         case NSFREQX_ACT_REAP:

@@ -206,8 +206,9 @@
  * the IPL-class overrun ADR-0039 3 names.
  *
  * BUMP THIS WITH EVERY LAYOUT MOVE, or the check is decorative.  1 was the
- * single-slot anchor through M5-2b2; 2 is the pool. */
-#define NSFV_ANCHOR_VER   2U
+ * single-slot anchor through M5-2b2; 2 is the pool; 3 adds the M5-2b4 header
+ * words (`collisions` + one reserved), which moves the slot array by 8. */
+#define NSFV_ANCHOR_VER   3U
 
 /* ============================================================
  * NSFV_REQ -- the client's request block (R1 -> here at the SVC).
@@ -282,10 +283,11 @@ NSFV_OFF_ASSERT(NSFV_REQ, snew,   60);
  * (RCNOREQ); the fields are the same, the ownership is not.
  *
  * req_state IS THE CLAIM WORD, at offset 0.  CS requires a fullword-aligned
- * operand: the slot array starts at a multiple of 8 (the header is 48 bytes)
- * and the slot is 2144 bytes, also a multiple of 8, so every slot -- and hence
- * every claim word -- is doubleword aligned.  That is load-bearing, not
- * cosmetic.
+ * operand: the slot array starts at a multiple of 8 (the header is 56 bytes
+ * since M5-2b4, 48 before it) and the slot is 2144 bytes, also a multiple of
+ * 8, so every slot -- and hence every claim word -- is doubleword aligned.
+ * That is load-bearing, not cosmetic, and it is why the header grows by TWO
+ * words rather than one.
  *
  * 2144 BYTES, DELIBERATELY NOT PADDED TO A POWER OF TWO.  Padding to 2560 or
  * 4096 would cost 26 KB or 120 KB of CSA to enable an index multiply the scan
@@ -348,7 +350,7 @@ NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
  * in CSA against a newer NSFS is a real, documented divergence (see
  * NSFV_ANCHOR_VER).
  *
- * Target layout, 4-byte pointers: 48-byte header + 64 x 2144 = 137,264 bytes,
+ * Target layout, 4-byte pointers: 56-byte header + 64 x 2144 = 137,272 bytes,
  * one contiguous SP=241 GETMAIN.  Measured on MVSCE (b0): CSA total 2064 KB,
  * largest contiguous SP=241 GETMAIN >= 1 MB -- so the pool is 6.5 % of CSA.
  *
@@ -365,7 +367,9 @@ NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
  *   ANCSEPTR   EQU 36    A    A(STC private key-8 wake ECB)
  *   ANCNSLOT   EQU 40    F    nslots -- THE SCAN'S BOUND
  *   ANCEXH     EQU 44    F    exhausted (ENOBUFS count, diagnostic)
- *   ANCSLOTS   EQU 48         the slot array base
+ *   ANCCOLL    EQU 48    F    collisions (contended claims, M5-2b4)
+ *   ANCRSV0    EQU 52    F    reserved -- header slack, deliberately unused
+ *   ANCSLOTS   EQU 56         the slot array base
  *  per slot, off a slot-base register
  *   SLSTATE    EQU  0    F    req_state -- THE CS CLAIM WORD
  *   SLTOKEN    EQU  4    F    req_token
@@ -379,7 +383,7 @@ NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
  *   SLSTAGE    EQU 96    2048 stage
  *   SLOTLEN    EQU 2144       one slot, the scan's stride
  *  and the routine's own constant, which is NOT an offset:
- *   ANCVERNO   EQU 2          == NSFV_ANCHOR_VER; the routine rejects an
+ *   ANCVERNO   EQU 3          == NSFV_ANCHOR_VER; the routine rejects an
  *                                anchor whose ANCVER differs
  * ============================================================================ */
 typedef struct nsfv_anchor {
@@ -403,9 +407,22 @@ typedef struct nsfv_anchor {
                                   **     pool that is regularly full is a
                                   **     sizing fact and should not have to be
                                   **     inferred from client-side errnos.    */
-    NSFV_SLOT slots[NSFV_NSLOTS]; /* +30 the pool                             */
-} NSFV_ANCHOR;                    /* 48 + 64*2144 = 137264 bytes              */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 137264);
+    UINT      collisions;         /* +30 CONTENDED CLAIMS (M5-2b4, ADR-0042
+                                  **     annotation): one per CS that FAILED
+                                  **     during a claim scan.  See "COLLISIONS"
+                                  **     below for what that does and does not
+                                  **     distinguish, and why the increment is
+                                  **     deliberately not interlocked.        */
+    UINT      rsvd0;              /* +34 RESERVED -- header slack, on purpose.
+                                  **     b3 left the header with none, which
+                                  **     is the entire reason adding one
+                                  **     diagnostic word in b4 costs a full
+                                  **     Stage-0 round (every slot moves, the
+                                  **     version bumps, every gate re-runs).
+                                  **     M5-2c gets to spend this one instead. */
+    NSFV_SLOT slots[NSFV_NSLOTS]; /* +38 the pool                             */
+} NSFV_ANCHOR;                    /* 56 + 64*2144 = 137272 bytes              */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 137272);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, version,        8);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,         12);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb,    16);
@@ -416,6 +433,56 @@ NSFV_OFF_ASSERT(NSFV_ANCHOR, reaped,        32);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb_ptr, 36);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, nslots,        40);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, exhausted,     44);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, slots,         48);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, collisions,    48);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, rsvd0,         52);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, slots,         56);
+
+/* ============================================================
+ * COLLISIONS -- what the counter counts, and what it cannot tell you.
+ *
+ * M5-2b3 built the pool and could not prove contention: a FAILED `CS` on a
+ * slot word is invisible from outside the routine.  A client that scans, finds
+ * slot K taken and moves on to K+1 is externally indistinguishable from one
+ * that found K free, lost the compare and moved on -- and both are
+ * indistinguishable from a client that simply started at K+1.  No arrangement
+ * of clients and slots recovers that from the outside, so the only honest
+ * answer is instrumentation.
+ *
+ * `collisions` is incremented ONCE PER FAILED CS in the claim scan.  What it
+ * therefore means is precisely:
+ *
+ *     A CLAIM ATTEMPT FOUND A SLOT THAT WAS NOT FREE AT THE INSTANT OF THE
+ *     COMPARE.
+ *
+ * That is the statement the two-client gate needs -- with one client the scan
+ * finds slot 0 free every time and the counter never moves (TSTRQXC's no-PARM
+ * run asserts exactly that, as the negative control), while two address spaces
+ * hammering the pool step over each other's claims constantly.
+ *
+ * IT DOES NOT SEPARATE "the slot was already busy" FROM "I lost a simultaneous
+ * race", and it cannot: `CS` reports only the value it actually found, and the
+ * routine performs no load before the compare that a second value could be
+ * compared against.  Adding one would sharpen the counter into "a slot
+ * observed FREE was gone by the time I compared" -- the true lost-race count
+ * -- at the price of a second counter and a second word.  Recorded here as the
+ * refinement M5-2c may spend `rsvd0` on, NOT done here; the gate that needs
+ * proving is that two address spaces really share the pool, and that is what
+ * this counter answers.
+ *
+ * (Worth knowing when reading a number from this counter: the MVSCE stand runs
+ * Hercules with NUMCPU 2 and MVS dispatches on both, so a genuinely
+ * simultaneous compare is physically possible here and not merely defended
+ * against on paper.)
+ *
+ * THE INCREMENT IS DELIBERATELY NOT INTERLOCKED -- a plain L/LA/ST, not the
+ * CS loop `exhausted` next door uses.  Two address spaces can lose an update,
+ * so the counter UNDER-reports and never over-reports: "collisions >= 1" stays
+ * sound, "collisions == N" is not a number to build on.  Aligned fullword
+ * stores do not tear, so a reader never sees a half-written value.  The reason
+ * to accept that is the path: this sits inside the claim scan, which is the
+ * one hot loop in the routine, and paying an interlocked update there to make
+ * a DIAGNOSTIC exact would be the wrong trade.  `exhausted` can afford its CS
+ * loop because a full pool is a rare event.  DO NOT "fix" this into a CS loop.
+ * ============================================================ */
 
 #endif /* NSFVSVC_H */

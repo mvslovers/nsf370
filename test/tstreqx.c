@@ -497,6 +497,97 @@ int main(void)
                  " the predicate forbids)");
     }
 
+    /* ---- can this pass CONSUME that outcome? (M5-2b4) ----------------------
+     * nsfreqx_actionable is the second half of the drain's decision, and it
+     * exists because a WAIT-gate probe that reports work the drain then
+     * declines is not a latency fix -- the executive skips its WAIT whenever a
+     * probe answers non-zero, so the pass makes no progress and repeats.  A
+     * hot spin on the executive task.  These rows are what keeps that shape
+     * out of nsfsx.c, where it cannot be host-tested at all. */
+    {
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_DISPATCH, 0), 1L,
+                 "actionable: a dispatchable request is taken when nothing is"
+                 " in service");
+        /* THE ANTI-SPIN ROW.  Serialised service (ADR-0042 10) means the one
+         * private NSFRQE is held, so this outcome is NOT consumable -- and the
+         * probe must therefore not report it. */
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_DISPATCH, 1), 0L,
+                 "actionable: a dispatchable request is NOT consumable while"
+                 " one is in service (reporting it would spin the executive)");
+
+        /* All three finish inside the CSA slot -- no private NSFRQE, no
+         * executive dispatch -- so nothing about them waits on the request in
+         * service.  Before b4 they did, for as long as an unrelated client's
+         * blocking operation ran. */
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_REAP, 1), 1L,
+                 "actionable: a dead client's slot is reaped even while a"
+                 " request is in service");
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_HOLD, 1), 1L,
+                 "actionable: an unknown client's slot is held even so");
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_REAP_BAD, 1), 1L,
+                 "actionable: untrusted storage is reclaimed even so");
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_REAP, 0), 1L,
+                 "actionable: and equally when nothing is in service");
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_HOLD, 0), 1L,
+                 "actionable: and equally when nothing is in service (hold)");
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_REAP_BAD, 0), 1L,
+                 "actionable: and equally when nothing is in service (bad)");
+
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_NONE, 0), 0L,
+                 "actionable: NONE is not work, idle or busy (idle)");
+        CHECK_EQ((long)nsfreqx_actionable(NSFREQX_ACT_NONE, 1), 0L,
+                 "actionable: NONE is not work, idle or busy (busy)");
+        CHECK_EQ((long)nsfreqx_actionable(4242, 0), 0L,
+                 "actionable: an unrecognised action is never consumed");
+
+        /* THE PROPERTY, not the rows: nothing consumable while a request is in
+         * service may need the private NSFRQE.  That single sentence is the
+         * whole anti-spin argument, and it holds over every action code rather
+         * than over the four we happened to enumerate. */
+        {
+            int a, needs_priv = 0;
+
+            for (a = -1; a <= 8; a++) {
+                if (nsfreqx_actionable(a, 1) &&
+                    a == NSFREQX_ACT_DISPATCH) needs_priv++;
+            }
+            CHECK_EQ((long)needs_priv, 0L,
+                     "actionable: NO outcome consumable while busy needs the"
+                     " private NSFRQE");
+        }
+
+        /* And composed with the truth table it gates: with nothing in service
+         * every PENDING row is consumable (the drain declines none of them),
+         * and with a request in service exactly the dispatch rows drop out. */
+        {
+            UINT st[5];
+            int  v, g, pt, i;
+            int  idle_consumable = 0, busy_consumable = 0, pending_rows = 0;
+
+            st[0] = NSFREQX_ST_FREE;    st[1] = NSFREQX_ST_PENDING;
+            st[2] = NSFREQX_ST_DONE;    st[3] = NSFREQX_ST_HELD;
+            st[4] = NSFREQX_ST_CLAIMED;
+            for (i = 0; i < 5; i++) {
+                for (v = 0; v <= 2; v++) {
+                    for (g = 0; g <= 1; g++) {
+                        for (pt = 0; pt <= 1; pt++) {
+                            int act = nsfreqx_slot_action(st[i], v, g, pt);
+                            if (st[i] == NSFREQX_ST_PENDING) pending_rows++;
+                            if (nsfreqx_actionable(act, 0)) idle_consumable++;
+                            if (nsfreqx_actionable(act, 1)) busy_consumable++;
+                        }
+                    }
+                }
+            }
+            CHECK_EQ((long)idle_consumable, (long)pending_rows,
+                     "actionable: idle, every PENDING row is consumable and no"
+                     " other row is");
+            CHECK_EQ((long)(idle_consumable - busy_consumable), 1L,
+                     "actionable: busy, exactly the one dispatching row drops"
+                     " out -- no more and no less");
+        }
+    }
+
     /* ---- the rc -> errno mapping ------------------------------------------ */
     {
         CHECK_EQ((long)nsfreqx_rc_errno(NSFREQX_RC_OK), 0L,

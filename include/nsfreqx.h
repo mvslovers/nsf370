@@ -31,7 +31,7 @@
  *   nsfreqx_result_in   NSFRXRIN    nsfreqx_guard_ok   NSFRXGRD
  *   nsfreqx_classify    NSFRXCLS    nsfreqx_slot_action NSFRXACT
  *   nsfreqx_slot_legal  NSFRXLEG    nsfreqx_reap_ok    NSFRXRPO
- *   nsfreqx_rc_errno    NSFRXRCE
+ *   nsfreqx_rc_errno    NSFRXRCE    nsfreqx_actionable NSFRXABL
  * ========================================================================== */
 
 #ifndef NSFREQX_H
@@ -239,6 +239,38 @@ int nsfreqx_slot_action(UINT state, int verdict,
                         int guard_ok, int ptr_ok) asm("NSFRXACT");
 
 /* --------------------------------------------------------------------------
+ * nsfreqx_actionable -- can the drain CONSUME this action on a pass where a
+ * request is (or is not) already in service?  M5-2b4.
+ *
+ * A WAIT-gate probe must report work the drain will actually consume THIS
+ * PASS.  `nsfdev_work_pending` says so in as many words -- "mirroring
+ * service's consume conditions" -- and the reason is not tidiness: the
+ * executive skips its WAIT whenever a probe answers non-zero, so a probe that
+ * reports work the drain then declines to do is a HOT SPIN on the executive
+ * task, not a latency improvement.  That is the trap this predicate exists to
+ * keep out of two places at once.
+ *
+ * The split is not arbitrary.  REAP / HOLD / REAP_BAD all finish INSIDE the
+ * CSA slot -- reclaim it, mark it HELD, never POST -- and need no private
+ * NSFRQE and no executive dispatch, so the drain can do them whether or not
+ * something is already in service.  DISPATCH is the one outcome that needs
+ * the single private NSFRQE, so under serialised service (ADR-0042 10) it is
+ * consumable only when nothing holds it.
+ *
+ * What that buys, concretely: a second client that publishes a request and
+ * then DIES no longer waits for an unrelated client's blocking operation to
+ * finish before its slot is reclaimed.  What it deliberately does NOT buy:
+ * a dispatchable second request served sooner.  That needs concurrent
+ * service, which is a change to the service model and not this step -- and
+ * until it happens, a dispatchable PENDING slot MUST stay invisible to the
+ * WAIT gate, because reporting it is exactly the spin above.
+ *
+ * `busy` is the STC's in-service flag (non-zero = the private NSFRQE is
+ * held).  Returns 1 when this pass can consume the action, 0 otherwise.
+ * -------------------------------------------------------------------------- */
+int nsfreqx_actionable(int act, int busy) asm("NSFRXABL");
+
+/* --------------------------------------------------------------------------
  * nsfreqx_slot_legal -- is `from` -> `to` a transition this design allows?
  *
  * The pool has three writers and they do not overlap:
@@ -286,6 +318,23 @@ int nsfreqx_slot_legal(UINT from, UINT to) asm("NSFRXLEG");
  * nsfreqx_slot_action's REAP / REAP_BAD rows are asserted to agree with it row
  * for row (TSTREQX).  Two encodings of one rule is how they diverge, and this
  * is the rule that decides whether a live client's storage gets freed.
+ *
+ * UNKNOWN NEVER RECLAIMS, and the reason has to survive contact with the row
+ * next to it.  "HELD already prevents the POST" does NOT distinguish UNKNOWN
+ * from LIVE: HELD would prevent a LIVE client's POST just as well, and the
+ * adjacent row DELIBERATELY frees a live client's storage
+ * (reap_ok(PENDING, LIVE, 0) == 1, pinned).  What actually separates them is
+ * the standing of the evidence.  With LIVE the identity was CORROBORATED
+ * against the ASVT, so "this slot's storage is corrupt" is a judgement about
+ * a slot whose owner is known, and acting on it is a decision one can defend.
+ * With UNKNOWN the identity could not be corroborated at all -- possibly not
+ * even to the point of knowing whether the ASCB read means anything -- so the
+ * storage-trust judgement rests on the same unreadable ground and is not
+ * independent evidence of anything.  HELD then costs nothing and guarantees
+ * the only thing that must hold ("never POST through this slot"), so there is
+ * no case for spending an irreversible reclaim on a verdict that could not be
+ * established.  That is the whole reason UNKNOWN is a third state instead of
+ * a pessimistic DEAD.
  *
  * A CLAIMED slot is never reaped -- but NOT because it cannot be classified.
  * The identity (req_ascb / req_asid) is recorded at the CLAIM, immediately
