@@ -36,7 +36,14 @@ spin does not follow, **because the executive does spin**.
 
 ---
 
-## 2. The finding: the executive spins for the life of the STC after its first request
+## 2. A defect 64-0 FOUND — which is not the defect 64-0 was sent to measure
+
+Read this section and §3 together or it will mislead. **The spin below is a newly measured
+defect. It is not an explanation of issue #64**, and the evidence that it is not is in §3
+and §4. Anyone arriving here on the way to 64-1 should read §4.1 before touching the wake
+path.
+
+### The executive spins for the life of the STC after its first request
 
 The latch is permanent and the cost is a full host core. One controlled pair, one STC
 instance, the **first request as the only variable**:
@@ -107,17 +114,42 @@ swap-out is excluded** as a mechanism.
   growth over a known-idle window, which is what the 9.95/s vs 8 492/s rows above are.
 - **The 11-minute stall itself was not reproduced**, so its mechanism is not established
   and is not claimed here.
+### 4.1 What this means for 64-1 — the part that changes what it does
+
+Resetting `g_wake_ecb` in `nsfsx_drain` (Phase 1's `nsfreq_drain` contract, issue #64's
+asymmetry 1) will remove the spin. It is very likely the right change on its own merits.
+**But there is no evidence here that it addresses the stall, and one reason to expect it
+will not:** with the reset in place and `TMRQ=0`, the loop returns to blocking on the WAIT
+with only the `nsftmr_plat_arm(1u)` heartbeat underneath it — which is precisely the
+requestless configuration measured as state A above. On this stand state A is fast. It is
+also exactly the configuration issue #64 describes as slow. So 64-1 should expect to fix
+the spin and then still have to reproduce #64 to know whether anything was gained.
+
+### 4.2 Candidates
+
 - **The fresh-vs-stale asymmetry is reported, not resolved.** This round's own asymmetry
   runs on a different axis than issue #64's (first-request-yet vs prior-TCP-workload), and
   attributing #64's to whichever candidate a fix would address is exactly the move the
-  kickoff forbids. One observation that constrains it and is offered as such, not as a
-  diagnosis: #64's slow instance stood at `served = 0x18D` = 397, so on the code as it
-  stands its wake ECB should have latched long before and it should have been spinning, not
-  blocking. Something in that triangle is unaccounted for. Two candidates are visible from
-  the source and **neither was tested**: the POST target selection in `asm/nsfvsvc.asm`
-  (`ANCSEPTR` published → the STC-private key-8 ECB, else a fallback to the key-0 CSA
-  `server_ecb`, which is **not** in the executive's ECBLIST and would never wake it), and
-  whatever a two-client gate leaves behind that a single client does not.
+  kickoff forbids. One observation constrains it, offered as such and not as a diagnosis:
+  #64's slow instance stood at `served = 0x18D` = 397, so on the code as it stands its wake
+  ECB should have latched long before and it should have been **spinning, not blocking**.
+  Something in that triangle is unaccounted for.
+- **The POST-target fallback is EXCLUDED on this stand** — not by a further test but by the
+  reading already taken. `asm/nsfvsvc.asm` posts the STC-private key-8 ECB when `ANCSEPTR`
+  is published and otherwise falls back to the key-0 CSA `server_ecb`, which is **not** in
+  the executive's ECBLIST and would never wake it:
+
+  ```
+  L     R11,ANCSEPTR(,R2)   LTR R11,R11   BNZ PSTECBX   LA R11,ANCSECB(,R2)
+  ```
+
+  `NSF812I` reports `g_wake_ecb` — *the private ECB itself* — and it read `40000000`. A
+  POST completion code can only be in that word if the `BNZ` branch was taken. So the
+  publication is correct here and the fallback did not run. What that does **not** settle
+  is whether it ran on #64's instance, which was not observed.
+- **Still untested:** whatever a two-client gate leaves behind that a single client does
+  not. #64's slow instance had run both `TSTRQXM` and a full two-client gate; this round
+  ran `TSTRQXM` only. That is the most obvious untried arm and it is the one to try next.
 - **The `nsfsx_drain` reset asymmetry against Phase 1's `nsfreq_drain` is confirmed as
   real** (`g_wake_ecb` is assigned once, in `nsfsx_start`), and it is now measured to cause
   a permanent spin. Whether it also causes the stall is *not* shown.
@@ -130,7 +162,9 @@ it was believed. Deploy order was `P NSFS` → `make deploy` → `S NSFS`; no mi
 Both instances reported `NSF055I CSA POOL 137272 BYTES (64 SLOTS X 2144) -- LARGEST FREE
 BLOCK NOW 933888` — identical, so the round leaked no CSA. Every stop was clean: `NSF043I
 SVC 239 RESTORED`, `NSF044I`, `NSF011I`, **no `NSF054W` retain, no dump**. NSFS is left
-**stopped** rather than spinning at a core; `S NSFS` restores it.
+**stopped** rather than spinning at a core; `S NSFS` restores it. **TESTLIB holds
+`TSTRQXC` alone** — the last `--only` run replaced it — so the next round must re-deploy
+whatever it needs rather than assume the Stage-0 set is present (the b4 `S806`).
 
 ### A pre-existing reporting defect, found and not fixed
 
