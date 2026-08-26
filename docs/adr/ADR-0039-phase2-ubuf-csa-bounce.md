@@ -699,8 +699,10 @@ carries the open promise, and Stage-0b closes it.
   question with a short, checkable answer. M5-2c0 adds a third call site and no second
   block, and the `as370 -a=` listing is where that is checked rather than asserted:
   **`SPKA` (`B20A`) appears exactly twice in the whole module and both are inside
-  `MOVEOUT`**; `IPK` (`B20B`) appears exactly twice, one per read-out; **no `D9` byte
-  remains in the `XFEROUT` read-out** (three `MVCK` sites left, all write-in: `XFERIN`
+  `MOVEOUT`** (`X'3C8'` and `X'3D0'`); `IPK` (`B20B`) appears exactly twice, **`X'2EA'`
+  in `XFEROUT` and `X'362'` in `RQEOUT`** — one per read-out, named rather than counted,
+  because the claim is which block each is in; **no `D9` byte remains in the `XFEROUT`
+  read-out** (three `MVCK` sites left, all write-in: `XFERIN`
   and `RQEIN`'s two); and the `BAL` to `MOVEOUT` assembles `45F0 63C8` — base **R6**, not
   dropped to base 0, which is the S102 class this file has been bitten by before.
 
@@ -768,12 +770,20 @@ carries the open promise, and Stage-0b closes it.
 
   ### 5. The gate runs against NSFV, and that is a finding, not a preference
 
-  `XFEROUT` is **not reachable under the production STC**. `src/nsfsx.c` rejects any staged
-  `xfunc` other than `NSFV_REQ_RQE` by setting the slot to `NSFV_REQ_HELD`, and
-  `nsfsx_next_actionable` only ever examines `PENDING` slots — so a `HELD` slot is never
-  revisited. Only `src/nsfv.c` moves an `XFER` slot to `DONE`, and `DONE` is what the
-  client's post-`WAIT` path tests before it reaches `XFEROUT`. A gate written against NSFS
-  would park in `WAIT` forever and prove nothing.
+  `XFEROUT` is **not reachable under the production STC** — established by enumerating the
+  paths rather than by reading the one that obviously rejects it, since "no other path gets
+  there" is the shape of claim that made ADR-0041's sentence wrong in the first place.
+  `src/nsfsx.c` has **exactly one** `NSFV_REQ_DONE` assignment, guarded by
+  `g_busy && g_busy_slot && (g_priv.ecb & NSFECB_POSTED)`; `g_busy`/`g_busy_slot` are set at
+  exactly one place under `if (ok)`; and `ok` is set at exactly one place — the
+  `ACT_DISPATCH` arm's `xfunc == NSFV_REQ_RQE` branch, whose `else` sets the slot
+  `NSFV_REQ_HELD` and leaves `ok` zero. The other arms reach `nsfsx_reap` (→ `FREE`) or
+  `HELD`, and `nsfsx_next_actionable` skips anything that is not `PENDING`, so a `HELD` slot
+  is never revisited. The shutdown nudge is not a way in either: `nsfsx_stop` clears
+  `NSFV_ANCHOR_ACTIVE` before draining and `nsfsx_wake_parked` POSTs without touching
+  `req_state`, so a nudged `XFER` client wakes on a `HELD` slot, fails the routine's
+  `C R3,=A(STDONE)` and takes `WQUIES`. Only `src/nsfv.c` moves an `XFER` slot to `DONE`.
+  A gate written against NSFS would park in `WAIT` forever and prove nothing.
 
   Two consequences. The gate is a **new file** rather than a scenario inside `tstubuf.c` or
   `tstrqxf.c` — both are the standing regression for every step since 0a′ and their

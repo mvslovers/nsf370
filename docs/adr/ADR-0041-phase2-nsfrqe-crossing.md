@@ -531,10 +531,24 @@ its live evidence in full.
 **Not accurate as written**, and it was not accurate when written. The verb is
 **dispatchable** at the SVC boundary by any unauthorised caller — that half is right, and it
 is why the removal is a security item. But the **key-0 write-out only ever executed under
-the probe STC**: `src/nsfsx.c` sets any staged `xfunc` other than `NSFV_REQ_RQE` to
-`NSFV_REQ_HELD`, and `nsfsx_next_actionable` examines only `PENDING` slots, so a `HELD` slot
-is never revisited and never reaches `DONE`. `DONE` is what the client's post-`WAIT` path
-tests before it reaches `XFEROUT`. Only `src/nsfv.c` sets it for an `XFER`.
+the probe STC**, and that is an enumeration rather than an inference, because "no other path
+reaches it" is exactly the shape of claim this correction is replacing:
+
+- `src/nsfsx.c` contains **exactly one** assignment of `NSFV_REQ_DONE`, in step 1 of
+  `nsfsx_drain`, guarded by `g_busy && g_busy_slot && (g_priv.ecb & NSFECB_POSTED)`.
+- `g_busy` / `g_busy_slot` are set at **exactly one** place, under `if (ok)`, and `ok` is set
+  at **exactly one** place: the `ACT_DISPATCH` arm's `xfunc == NSFV_REQ_RQE` branch. A
+  non-RQE `xfunc` takes that arm's `else` and is set `NSFV_REQ_HELD`, leaving `ok` zero.
+- The other action arms reach `nsfsx_reap` (→ `FREE`) or `HELD`; neither reaches `DONE`.
+  `nsfsx_next_actionable` skips any slot that is not `PENDING`, so a `HELD` slot is never
+  revisited.
+- The shutdown nudge cannot substitute for it either: `nsfsx_stop` clears
+  `NSFV_ANCHOR_ACTIVE` **before** draining, and `nsfsx_wake_parked` POSTs `reply_ecb`
+  without touching `req_state` — so a nudged `XFER` client wakes on a `HELD` slot, fails the
+  routine's `C R3,=A(STDONE)`, and takes `WQUIES` rather than the read-out.
+
+`DONE` is what the client's post-`WAIT` path tests before it reaches `XFEROUT`, and only
+`src/nsfv.c` sets it for an `XFER`.
 
 The precise statement, now that the store is windowed either way: **the verb is dispatchable
 by an unauthorised caller against either STC; against NSFS it is rejected to `HELD` and the

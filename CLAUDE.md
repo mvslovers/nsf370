@@ -1073,9 +1073,14 @@ one thing that could have forced it: everything addressed off `R6` (`MOVEOUT`, `
 every probe handler and bail path, the whole literal pool) must stay inside the single
 `USING NSFVSVC,R6` range, and the module ends at **`X'56C'` = 1388 bytes against 4096**, so
 the ~36 added bytes are free. (3) **`XFEROUT` is not reachable under the production STC** —
-`nsfsx.c` sets any non-RQE `xfunc` to `HELD` and `nsfsx_next_actionable` looks only at
-`PENDING`, so a `HELD` slot is never revisited; only `nsfv.c` sets `DONE`, which the client's
-post-`WAIT` path tests before reaching `XFEROUT`. So the gate had to run against **NSFV, not
+established by ENUMERATION, not by reading the arm that obviously rejects it: `nsfsx.c` has
+**exactly one** `NSFV_REQ_DONE` assignment, guarded by `g_busy && g_busy_slot && POSTED`;
+`g_busy` is set at exactly one place under `if (ok)`; and `ok` is set at exactly one place —
+the `ACT_DISPATCH` arm's RQE branch, whose `else` sets `HELD`. Other arms reach `FREE` or
+`HELD`, `nsfsx_next_actionable` skips anything not `PENDING`, and the shutdown nudge
+(`nsfsx_wake_parked`) POSTs without touching `req_state` after `nsfsx_stop` has cleared
+`ACTIVE` — so a nudged XFER client wakes on `HELD` and takes `WQUIES`. Only `nsfv.c` sets
+`DONE`, which the client's post-`WAIT` path tests before reaching `XFEROUT`. So the gate had to run against **NSFV, not
 NSFS**, and **ADR-0041's "reachable by anyone who can issue the SVC" is corrected**: the verb
 is *dispatchable* by any unauthorised caller, but the key-0 write-out only ever executed under
 the probe STC. `XFERIN` is **untouched** (its source-key-8 `MVCK` is the mechanism `TSTUBUF`
