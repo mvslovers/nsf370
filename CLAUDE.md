@@ -834,8 +834,9 @@ gate" rule is about a *moved layout*, not about which branch a commit sits on. T
 checkable habit: read `baseRefName` (`gh pr list --json number,baseRefName`) before
 merging a stacked PR — a child PR's base still names the parent branch until it is
 retargeted.
-**M5-2b3 (the 64-slot pool) — DONE, live-green except two named gaps; pending countersign.**
-The structural step of M5-2b, and where the transport stops being safe by construction. The
+**M5-2b3 (the 64-slot pool) — DONE, live-green except two named gaps;
+maintainer-countersigned (PR #63).** The structural step of M5-2b, and where the
+transport stops being safe by construction. The
 single request area — which turned a second caller away with `RCNOREQ` — becomes **64
 independent slots**, each claimed by `CS` on its **own** state word (**ADR-0042**). ABA-free by
 construction because *the location being compared IS the resource*: no head pointer can go
@@ -922,7 +923,10 @@ are live-UNEXERCISED** — `inflight` reached 0 before every stop (the reaps and
 `UNSTAGE` give it back), so the drain returned immediately and freed. Two attempts to induce it
 were made and both self-cleaned; inducing it reliably needs a client that leaks `inflight` and
 does **not** clean up, which is a test change and a deploy cycle — a defensible b4 item, and
-exactly the branch the blocking fix above lives in. Also worth naming: **`nsfsx_pending()`
+exactly the branch the blocking fix above lives in. **BOTH GAPS ARE CLOSED BY b4**, which is
+what b4 was for: contention measured live from both ends, and the retain branch reached through
+the `PARM='LEAK'` induction. The qualifier above stands as written because the countersign
+signs the sentence that says what was open — it is not softened retrospectively. Also worth naming: **`nsfsx_pending()`
 early-returns on `g_busy`** and never scans for other PENDING slots, so a second client's
 published request is invisible to the WAIT gate while the first is in service — it rides the
 heartbeat instead of the probe. Latency, not corruption (ADR-0025 defect (2)'s shape), and a
@@ -947,8 +951,8 @@ invariant to be stated correctly as an **implication, not an equality** (the two
 different questions: per-pass dispatch vs. permission, and equality failed on 14 of 60 rows that
 are all correct). **#53, #54 and #56 deliberately untouched.**
 **M5-2b4 (contention, the retain branch, and the WAIT-gate probe) — DONE, live-green;
-pending countersign.** The last sub-step of M5-2b; **M5 stays in progress and no milestone
-flips.** Three things, and the first needed instrumentation before it could be tested at all.
+maintainer-countersigned (PR #65).** The last sub-step of M5-2b; **M5 stays in progress
+and no milestone flips.** Three things, and the first needed instrumentation before it could be tested at all.
 **(1) Contention.** A failed `CS` on a slot word is **invisible from outside the routine** — a
 client that finds slot K taken and moves to K+1 is externally identical to one that found K free,
 lost the compare, and moved on, and to one that simply started at K+1. So the anchor header gained
