@@ -43,13 +43,33 @@ against the 26 % the same instance draws while spinning).
 kickoff said becomes unaskable after 64-1, and the answer is **yes**.
 
 A posted ECB in the ECBLIST makes `WAIT` return immediately. So during these stalls the
-executive **cannot have been waiting on `g_wake_ecb`** — and it was not running either. It
-was not dispatched.
+executive **cannot have been waiting on `g_wake_ecb`** — and it was not running either.
+**What it *was* suspended in is untested.** "Zero passes" plus "not swapped" plus `BUSY=0`
+excludes running, swap-out and drain step 1, and nothing beyond that; it is not a
+measurement that the task was undispatchable.
 
-**Consequence for 64-1, stated plainly: resetting `g_wake_ecb` cannot be the fix for #64.**
-The stall occurs in precisely the state where that ECB provably is not what the loop is
-waiting for. 64-1 remains justified on its own footing — an ADR-0022 violation costing a
-permanent host core — and its gate is the CPU and pass-rate drop, never a #64 reproduction.
+**Consequence for 64-1 — an earlier draft of this section got this wrong, and the
+correction is the load-bearing part.** That draft said the reset "cannot be the fix for
+#64" because the stall happens where the ECB provably is not what the loop waits on. The
+middle step is sound; the conclusion does not follow. **The reset does not only deliver a
+wake — it removes the spin, and the spin is the state every stall has ever been seen in:**
+
+| | observed |
+|---|---|
+| stalls this round | **2, both `POSTED=Y`** (spinning) |
+| #64's own instance | `served = 397` — necessarily latched under facts (1) and (2) |
+| `POSTED=N` idle observed | 279 s + 250 s + 311 s ≈ **840 s across two rounds — zero stalls** |
+| `POSTED=Y` idle *without* a stall | 257 s, 300 s |
+
+The last row is why this is a candidate and not a conclusion: spinning is
+**necessary-but-not-sufficient** on the evidence available.
+
+So 64-1 is **not a wake fix** — the wake was never missing — but whether it fixes #64 is
+**untested, and it is the cheapest experiment left**, because it becomes untestable the
+moment the reset lands. **64-1 must attempt a #64 reproduction after the reset**, rather
+than being told in advance that its gate excludes one. Its independent justification is
+unchanged: an ADR-0022 violation costing a permanent host core, gated on the CPU and
+pass-rate drop.
 
 ## 3. Which of §0's three facts this bears on
 
@@ -65,8 +85,12 @@ permanent host core — and its gate is the CPU and pass-rate drop, never a #64 
    in `WAIT` for the wake ECB* is **false** — that ECB was posted.
 
 **Untested, and now the open question:** what the executive task actually *is* between passes
-during a stall. Not swapped (§4), not spinning (CPU), not stuck in the drain (`BUSY=0`).
-Establishing it needs a task-state read or a dump, which this round did not take.
+during a stall. Not swapped (§4), not spinning (CPU), not stuck in the drain (`BUSY=0`) —
+which narrows it without naming it. Establishing it needs a task-state read or a dump, and
+the cheapest unused instrument is Hercules itself (the command port on `mvsdev`): **if both
+CPs sit in the enabled-wait PSW during a stall, MVS had no ready work at all**, which would
+separate "the task is suspended in something" from "the task is ready but not being
+dispatched". This round did not take that reading.
 
 ## 4. What was excluded, by measurement
 
