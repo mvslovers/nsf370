@@ -1200,7 +1200,13 @@ isolated so M0–M4 already deliver a usable in-process stack.
 6. **Definition of Done** (§7) must hold, including the leak gate.
 7. **Keep docs honest:** when a decision changes, update the affected spec
    chapter and add/append an ADR in the same change. Update §7 status here.
-8. **English** for all code comments, commit messages, and docs.
+8. **Ask before changing an Issue's STATE, not just before creating one:**
+   `gh issue close` / `reopen` / `edit` join `create` under the root
+   CLAUDE.md's confirm-first rule, because the audit trail cannot tell us
+   apart — every action is `mgrossmann` — so a state change nobody intended
+   is unattributable afterwards and reads as a decision (issue #64 was
+   closed `COMPLETED` while three places in the tree carried it as open).
+9. **English** for all code comments, commit messages, and docs.
 
 ---
 
