@@ -173,7 +173,7 @@ sources = ["test/mvs/tsttmacc.c", "asm/nsftime.asm", "test/asm/tststmw.asm"]
 [[test]]
 name = "TSTEVT"
 startup = "crt1"
-sources = ["test/tstevt.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm"]
+sources = ["test/tstevt.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "src/nsfsts.c", "src/nsffmt.c", "asm/nsfstim.asm", "asm/nsfxq.asm"]
 
 # NSFEVT on-MVS validation (host = false): the loop WAITs on {timerECB, stopECB},
 # the async STIMER exit (asm/nsfstim.asm NSFTMEXP) POSTs timerECB and re-arms, the
@@ -183,7 +183,7 @@ sources = ["test/tstevt.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", 
 name = "TSTEVTM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "src/nsfsts.c", "src/nsffmt.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
 
 # NSFTMR/NSFEVT timer CADENCE on MVS (host = false): the issue #40 regression --
 # the exact live measurement that found it. Arm a delta-20 timer through the full
@@ -194,7 +194,7 @@ sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm
 name = "TSTTMCAD"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tsttmcad.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tsttmcad.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "src/nsfsts.c", "src/nsffmt.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
 
 # -- M0-7 configuration parser (NSFCFG) --------------------------------
 # NSFCFG: the PROFILE.TCPIP parser + immutable NSFCFG output struct, driven

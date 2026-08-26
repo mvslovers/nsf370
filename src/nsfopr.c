@@ -23,6 +23,12 @@
 
 #define OPR_CMDMAX  120         /* longest MODIFY text we act on (CIB is small) */
 
+/* Optional STATS supplement (issue #64, step 64-0).  NULL until a build
+ * registers one, so Phase 1's `F NSF,STATS` reply is unchanged; Phase 2 wires
+ * nsfsx_stats_extra here from nsfsmain.  Deliberately a seam and not an
+ * #ifdef: nsfopr.c is shared by both STCs and host-tested as pure C. */
+static void (*g_statsextra)(void);
+
 /* -- tiny tokenizer over the uppercased work buffer ------------------------ */
 
 static const char *skip_sep(const char *p)
@@ -85,6 +91,17 @@ static void op_stats(void)
         }
         line = nl + 1;
     }
+
+    /* After the rendered counters, so the supplement is the LAST thing on the
+     * reply and cannot be pushed out by sts_render's fixed buffer. */
+    if (g_statsextra != NULL) {
+        g_statsextra();
+    }
+}
+
+void nsfopr_set_stats_extra(void (*fn)(void))
+{
+    g_statsextra = fn;
 }
 
 static void op_trace(const char *rest)

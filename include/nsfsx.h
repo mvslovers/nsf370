@@ -30,6 +30,7 @@
  * asm() external-symbol aliases (CLAUDE.md 3): scheme NSFSX*, unique:
  *   nsfsx_start NSFSXSTA   nsfsx_stop  NSFSXSTO   nsfsx_ecb   NSFSXECB
  *   nsfsx_drain NSFSXDRN   nsfsx_pending NSFSXPND
+ *   nsfsx_stats_extra NSFSXSXT
  * ========================================================================== */
 
 #ifndef NSFSX_H
@@ -68,5 +69,12 @@ void  nsfsx_drain(void) asm("NSFSXDRN");
  * that second state is reachable, and without it the loop can commit to a WAIT
  * on top of it (ADR-0041 5; the ADR-0025 defect-(2) / #27 class).              */
 int   nsfsx_pending(void) asm("NSFSXPND");
+
+/* The Phase-2 supplement to the operator STATS reply (issue #64, step 64-0):
+ * the transport's raw wake-ECB word with its POSTED bit decoded, plus the
+ * counters that interpret it (evtpasses / wakeposts / served) and the anchor's
+ * diagnostic words. Registered with nsfopr_set_stats_extra by nsfsmain, so it
+ * runs only in the NSFS module; safe before nsfsx_start (it reports zeros). */
+void  nsfsx_stats_extra(void) asm("NSFSXSXT");
 
 #endif /* NSFSX_H */
