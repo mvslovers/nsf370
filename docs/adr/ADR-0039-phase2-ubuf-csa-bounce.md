@@ -655,3 +655,161 @@ carries the open promise, and Stage-0b closes it.
   out of `MOVEOUT`); gate skipped **CC 20** (a forced-skip build). The general rule — a
   gate that can skip its load-bearing case must not report success — is recorded in
   CLAUDE.md §8.4.
+
+- **2026-08-26 — M5-2c0: the window now covers `XFEROUT` too (live-green in all three
+  states; `TSTXFW` 20/20 CC 0 batch+TSO).** The b1 entry recorded that `XFEROUT`
+  deliberately keeps its key-0 store, and the follow-up entry corrected the scope: the
+  window was closed on the RQE path, **not at the SVC boundary**, because `FNXFER` is a
+  verb an unauthorised client can reach. M5-2c0 closes that last read-out. Nothing else
+  moved: the anchor layout is unchanged, `NSFV_ANCHOR_VER` stays 3, `NSFRQE` is still
+  frozen at 64 bytes, `include/nsfvsvc.h` is untouched, and applications relink only.
+
+  ### 1. Why the verb did not simply go away
+
+  b1 left `XFEROUT` alone on a stated assumption: that (c) would **delete** `XFER`, taking
+  the exposure with it. Checked against what (c) actually costs, the assumption does not
+  hold. Deleting `XFER` retires `TSTUBUF`, and `TSTUBUF` is the **only** gate that proves
+  the keyed `ubuf` bounce this ADR is about — so the verb survives to **c3 at the
+  earliest**, after (e). A deferral whose premise has expired is a decision, not a
+  deferral, so the window is closed now and the verb's removal keeps its own schedule.
+
+  ### 2. The move was `MVCK`; it is now the same `EX`'d `MVC` through `MOVEOUT`
+
+  The kickoff estimate for this step was "three lines". It is not, and the reason is worth
+  recording because it is the same class of surprise b1 and b2 each hit once. `XFEROUT`
+  did **not** move with `MVC`: it moved with the raw `D9` `MVCK` (`DC X'D9134000',X'5000'`,
+  source key 0 in `R3`, capped at `MVCKMAX` = 255), so the read-out loop is **rewritten**,
+  not redirected — cap `MVCMAX` (256), true piece length kept in `R0`, `BCTR R1,0` for the
+  `EX` length-1, `BAL R15,MOVEOUT`, and the `SLR R3,R3` source-key set-up dropped. A
+  2048-byte `XFER` therefore now crosses as **eight 256-byte pieces, not nine of 255**.
+
+  `MOVEOUT`'s own header already carries why `MVCK` inside a non-zero PSW key is the wrong
+  trade (its `R3` would go through the CR3 key-mask check that cost `tstmvck.c` an `S0C2`),
+  and b0 measured that under the caller's key **both** operands are reachable — the key-0
+  CSA staging is not fetch-protected, so it reads; the caller's storage is its own key, so
+  it writes. No landing area, no second mechanism.
+
+  `XFERIN` is **untouched**. Its source-key-8 `MVCK` is the keyed bounce `TSTUBUF` proves,
+  and its destination is key-0 CSA; there was never a hazard on that side.
+
+  ### 3. `MOVEOUT` gains a CALLER, not a second key-borrowing block
+
+  The constraint the b1 follow-up made explicit — *`MOVEOUT` is the only block in the
+  routine that leaves key 0* — is what makes "what executes under a borrowed key" a
+  question with a short, checkable answer. M5-2c0 adds a third call site and no second
+  block, and the `as370 -a=` listing is where that is checked rather than asserted:
+  **`SPKA` (`B20A`) appears exactly twice in the whole module and both are inside
+  `MOVEOUT`**; `IPK` (`B20B`) appears exactly twice, one per read-out; **no `D9` byte
+  remains in the `XFEROUT` read-out** (three `MVCK` sites left, all write-in: `XFERIN`
+  and `RQEIN`'s two); and the `BAL` to `MOVEOUT` assembles `45F0 63C8` — base **R6**, not
+  dropped to base 0, which is the S102 class this file has been bitten by before.
+
+  The nine-instruction `SPKA` operand set-up (`IPK` / `PSATOLD` / `TCBPKF` → `R9` borrow,
+  `R12` restore) is an **inline copy** of the one at the top of `RQEOUT`, deliberately
+  byte-identical to it. The alternative — extracting it into a shared `KEYWIN` subroutine —
+  is cleaner as code, and was rejected for a reason that is about review rather than about
+  code: `RQEOUT` is the countersigned production write-out path, and leaving its
+  instruction stream unchanged is a property the instruction-stream diff proves outright.
+  The copy has an expiry date (c3, with the verb), and the source says so.
+
+  **The end-of-module displacement was checked before any of this was written**, because it
+  is what would have made the copy infeasible: everything addressed off `R6` — `MOVEOUT`,
+  `SLOTADR`, every probe handler and bail path, and the whole literal pool — must stay
+  inside the single `USING NSFVSVC,R6` range. The module ends at **`X'56C'` = 1388 bytes**
+  against a 4096 limit, so the ~36 bytes the copy adds are free. Had it been near the
+  limit, `KEYWIN` would have been the only option that fits (it *saves* bytes), and that
+  would have been a design pin to take back rather than a judgement call.
+
+  ### 4. The gate, and the revert that makes it one
+
+  `test/mvs/tstxfw.c` (`TSTXFW`, `host = false`) is new. It runs against **NSFV, not
+  NSFS** — see §5 — and it has **two parts, because neither alone pins the window**:
+
+  - **The positive control**, run first: an ordinary `XFER` of 300 bytes into the client's
+    **own key-8 buffer**, verified `+1` byte-exact with the guard byte after `ulen`
+    untouched. It exists because the fault check below is satisfied by a window that faults
+    on *everything*: a misread `TCBPKF` borrowing some wrong non-zero key would pass the
+    gate while breaking every real client. The control is the only thing that fails in that
+    case. (300 is deliberately not a multiple of 256, so the short last piece exercises the
+    `EX` length-1 arithmetic alongside whole pieces.)
+  - **The gate**: the same verb with `ubuf` in **key-0, non-fetch-protected storage** — the
+    one pointer class that gets past the key-8 read-in and that the old key-0 write-out then
+    clobbered silently. Built safely the way b1's did, by pointing `ubuf` into the anchor's
+    **own** staging buffer at offset 1024, so the only storage at risk is NSF's scratch.
+    Self-validated by the same three independent facts (eyecatcher `"NSFVANCR"`; a key-8
+    READ that succeeds; a key-8 STORE that faults), which together pin the target as key-0
+    without fetch protection and make the fault a KEY fault rather than a bad address.
+
+  A fault alone is not evidence — b2's first attempt faulted after the POST and every gate
+  in the set went green over it — so `NSFV_REQ.rc` is pre-set to a sentinel that no bail
+  path leaves in place, and an **untouched sentinel** is asserted alongside the fault.
+
+  **Live on MVSCE**, unauthorised client (`TESTAUTH == 0`), anchor `00AAD7C8` chased
+  `CVT 0001D048 → SCVT 0001D510 → SVCTABLE 0000FA60 → svcentry[239].svcepa 00A8B248 →
+  +NSFV_ANCH_OFF`, all three states:
+
+  | state | `___try` rc | request | sentinel | target bytes changed | result |
+  |---|---|---|---|---|---|
+  | window IN | `000C4000` (`S0C4`) | did not return | `5AC0F001` untouched | 0 of 64 | **20/20 CC 0** batch+TSO |
+  | window OUT (`SPKA` pair commented out, verified gone from the listing — `MOVEOUT` reduced to `EX` + `BR`, zero `B20A` in the module) | `00000000` | **returned `rc=0`** | overwritten to 0 | **64 of 64** | **18/20 CC 1** |
+  | window RESTORED | `000C4000` (`S0C4`) | did not return | `5AC0F001` untouched | 0 of 64 | **20/20 CC 0** batch+TSO |
+
+  The restored listing is byte-identical to the window-in listing apart from the assembly
+  timestamp, and the object deck is byte-identical. **The positive control PASSED in all
+  three states**, which is what makes the middle row "the window is absent" rather than
+  "the borrowed key is wrong".
+
+  **The content observation discriminates here and is still not the verdict.** Unlike b1's
+  RQE case — where the in-move and out-move are exact reverses, so a content check is
+  vacuous — the `XFER` transform is a byte-wise `+1`, so the round trip is not idempotent:
+  0 of 64 bytes changed with the window, 64 of 64 without it. It is printed and never
+  asserted, because whether a protection exception on `MVC` suppresses or terminates is not
+  pinned on this target, so a **partial** store is not excluded.
+
+  ### 5. The gate runs against NSFV, and that is a finding, not a preference
+
+  `XFEROUT` is **not reachable under the production STC**. `src/nsfsx.c` rejects any staged
+  `xfunc` other than `NSFV_REQ_RQE` by setting the slot to `NSFV_REQ_HELD`, and
+  `nsfsx_next_actionable` only ever examines `PENDING` slots — so a `HELD` slot is never
+  revisited. Only `src/nsfv.c` moves an `XFER` slot to `DONE`, and `DONE` is what the
+  client's post-`WAIT` path tests before it reaches `XFEROUT`. A gate written against NSFS
+  would park in `WAIT` forever and prove nothing.
+
+  Two consequences. The gate is a **new file** rather than a scenario inside `tstubuf.c` or
+  `tstrqxf.c` — both are the standing regression for every step since 0a′ and their
+  return-code contracts are load-bearing — and it carries the same three-state return code
+  (0 ran and passed / 1 ran and failed / **20 could not run**), for the same reason: a skip
+  that reports CC 0 makes a run with no proof in it read as a run that proved the window.
+
+  The same fact also means an unauthorised caller can *dispatch* the verb at the SVC
+  boundary and have the production STC consume a slot with it — recorded separately, out of
+  this step's scope.
+
+  ### 6. It cleans up after itself, and asserts that it did
+
+  The fault is inside `XFEROUT`, **after** the STC serviced and replied, so it leaves the
+  slot at `DONE` with the in-flight count taken — measured, and exactly the OUT-direction
+  shape b1 predicted and the b1 follow-up confirmed: `slot0 state=2 inflight=1`. Left
+  alone, every run would cost a slot and force `P NSFV` to retain the whole CSA anchor to
+  IPL. `CLAIMOK` stores the claimed index into the caller's block before the fault (a key-0
+  store into key-8 storage, so it lands), so the test knows which slot to release: it
+  issues `UNSTAGE` on it and then **asserts** the slot reads `FREE` and the in-flight count
+  is back to its pre-request value (`state=0 inflight=0`). Asserted rather than printed —
+  a cleanup nobody checks is a cleanup that silently stops working.
+
+  The dangling state itself stays **reported, never asserted**: recovery from a write-out
+  fault is still the open M5-2 item this ADR names.
+
+  ### 7. Round and scope
+
+  Full NSFV round at the restored module: `TSTSVC` / `TSTMVCK` / `TSTUBUF` / `TSTDEATH` /
+  `TSTXFW` all **CC 0 batch+TSO, 484 PASS** (`TSTMVCD` excluded — it is b0's probe, not a
+  Stage-0 gate, and issue #53 makes it fail environmentally). `TSTUBUF` green is the
+  **positive-direction control at round scale**, not a regression datum: it proves an
+  ordinary key-8 destination still moves byte-exact over sizes 0/1/100/2048/5000/10.
+  NSFS-side confirmation (the RQE path's bytes are unchanged, so this confirms rather than
+  proves): `TSTRQXM` **batch CC 0 32/32** with the host peer verifying **9353 bytes
+  byte-exact**, and `TSTRQXF` **53/53 CC 0 batch+TSO**. Host **2925 PASS / 0 FAIL**,
+  unchanged — `asm/*.asm` never compiles on host and the new test is `host = false`, so the
+  host suite is a no-regression check here and evidence of nothing else.
+  No dumps anywhere in the round; `SVC 239` stolen and restored by both STCs.
