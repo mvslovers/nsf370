@@ -87,6 +87,57 @@ static void swap_report(const char *tag, const NSFSWAPVIEW *v, INT rc)
            tag, (unsigned)v->sfl, (unsigned)v->afl, (unsigned)v->qfl);
 }
 
+/* -- Stage B: the mitigation ----------------------------------------------- */
+
+/* Issue one SYSEVENT and judge it by the READ-BACK, never by R15.
+ * wantnsw = the OUCBNSW state that means the request took.
+ * Returns 0 when the read-back agrees, non-zero otherwise (including a failed
+ * key-0 window or a failed identity check -- a state we cannot read is a
+ * state we do not claim). */
+static INT swap_set(UINT code, int wantnsw, NSFSWAPVIEW *out)
+{
+    NSFSWAPVIEW   v;
+    unsigned char savekey;
+    INT           rc;
+    int           got;
+
+    /* Zero the caller's view BEFORE anything can fail.  The design pin
+     * (ADR-0044 2.1) is that a refusal warns and CONTINUES, and the warning
+     * names the condition -- so the failure path must not hand the caller an
+     * uninitialised struct to print.  The __super failure below returns
+     * early, and without this it would return with *out untouched. */
+    memset(&v, 0, sizeof(v));
+    if (out != NULL) {
+        *out = v;
+    }
+
+    if (__super(PSWKEY0, &savekey) != 0) {
+        return -1;
+    }
+    (void)nsf_sysevent(code);           /* R15 is UNSPECIFIED -- not consulted */
+    rc = nsfswap_read(&v);
+    __prob(savekey, NULL);
+
+    if (out != NULL) {
+        *out = v;
+    }
+    if (rc != 0) {
+        return -2;
+    }
+    got = (v.sfl & NSFSWAP_NSW) ? 1 : 0;
+    return (got == wantnsw) ? 0 : -3;
+}
+
+INT nsfswap_dontswap(NSFSWAPVIEW *out)
+{
+    return swap_set(NSFSWAP_DONTSWAP, 1, out);
+}
+
+INT nsfswap_okswap(NSFSWAPVIEW *out)
+{
+    return swap_set(NSFSWAP_OKSWAP, 0, out);
+}
+
 /* -- Stage A: the probe ---------------------------------------------------- */
 
 void nsfswap_probe(void)

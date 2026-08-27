@@ -80,6 +80,18 @@ INT nsfswap_read(NSFSWAPVIEW *v) asm("NSFSWRD");
  * space exactly as it found it. */
 void nsfswap_probe(void) asm("NSFSWPRB");
 
+/* Stage B (64-3-1): the mitigation.  Ask SRM not to swap this address space
+ * (DONTSWAP) / release it again (OKSWAP).  Both return 0 only when the
+ * READ-BACK agrees -- OUCBNSW set for dontswap, clear for okswap -- never on
+ * R15, which is unspecified for these codes.  *out (optional) receives the
+ * post-call reading so the caller can report NDS without reading twice.
+ *
+ * These are deliberately NOT nsfswap_probe: the probe WTOs eleven lines and
+ * is an operator diagnostic; init and shutdown want one line each, and the
+ * failure line has to name the condition.  Reporting is the caller's. */
+INT nsfswap_dontswap(NSFSWAPVIEW *out) asm("NSFSWDNT");
+INT nsfswap_okswap(NSFSWAPVIEW *out)   asm("NSFSWOKS");
+
 /* The operator verb handler registered with nsfopr_set_swap by the Phase-2
  * STC. Phase 1 registers nothing, so `F NSF,SWAP` stays NSF808E. */
 void nsfswap_op(const char *arg) asm("NSFSWOP");
