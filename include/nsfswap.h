@@ -88,7 +88,16 @@ void nsfswap_probe(void) asm("NSFSWPRB");
  *
  * These are deliberately NOT nsfswap_probe: the probe WTOs eleven lines and
  * is an operator diagnostic; init and shutdown want one line each, and the
- * failure line has to name the condition.  Reporting is the caller's. */
+ * failure line has to name the condition.  Reporting is the caller's.
+ *
+ * READ nsfswap_okswap's 0 CAREFULLY: it means "OUCBNSW is clear NOW", which
+ * is also true when nothing was ever pinned -- it is NOT proof that a pin was
+ * released.  That is the right semantic for the shutdown message (the operator
+ * wants to know the address space is swappable, not how it got that way), and
+ * it was observed live: the 64-3-1 revert build, which never issues DONTSWAP,
+ * still reported NSF853I at shutdown.  Do not cite that message as evidence of
+ * a release; the release evidence is nsfswap_probe's step 5, which compares
+ * OUCBNDS against a baseline VALUE it read first. */
 INT nsfswap_dontswap(NSFSWAPVIEW *out) asm("NSFSWDNT");
 INT nsfswap_okswap(NSFSWAPVIEW *out)   asm("NSFSWOKS");
 

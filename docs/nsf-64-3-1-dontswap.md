@@ -180,22 +180,167 @@ risk beats no stack. The message names the condition so an operator reads it in 
 than inferring it from a stall hours later. *This is the one judgement call in Stage B and it
 is a pin: it can be flipped to refuse-to-start without disturbing anything else.*
 
-### 3.2 The gate, and what it does and does not assert
 
-The gate is the **two-client contention round that reproduced the stall twice within 90 seconds
-of starting** (`docs/nsf-64-0c-measurements.md` §6) — `TSTRQXC PARM='A'` and `PARM='B'` run
-concurrently, repeatedly — with `OUCBQFL`, `OUCBSFL`, `OUCBNDS`, `ASCBSTOR`, `OUCBSWC` and
-`ASCBFMCT` sampled continuously throughout.
+### 3.2 The gate — and it did NOT discriminate
 
-**`OUCBQFL` alone cannot carry it.** `QFL = 00` before and after is equally consistent with "no
-transition began" and with "one began and completed between samples" — which is exactly how
-64-0e's null turned out unreadable, and why `ASCBSTOR` became the instrument in the first
-place. A **completed** cycle shows retrospectively in `ASCBSTOR` (and in `OUCBSWC`) even when
-`QFL = 80` is missed between samples. Both are sampled, and identity is asserted on every
-reading.
+**This is the round's most important negative result, and it is stated here rather than
+buried.** The gate was the two-client contention round that reproduced the stall twice within
+90 seconds (`docs/nsf-64-0c-measurements.md` §6): `TSTRQXC PARM='A'` and `PARM='B'` run
+concurrently and repeatedly, with `OUCBQFL`, `OUCBSFL`, `OUCBNDS`, `ASCBSTOR`, `OUCBSWC` and
+`ASCBFMCT` sampled continuously and identity asserted on every reading. The instrument design
+was right: `QFL` alone cannot carry it — `QFL = 00` before and after is equally consistent with
+"no transition began" and with "one began and completed between samples", which is exactly how
+64-0e's null turned out unreadable — so `ASCBSTOR` and `OUCBSWC`, which show a **completed**
+cycle retrospectively, were sampled beside it.
 
-**What the gate asserts is that no swap transition occurs at all** — not that no stall occurs.
-The stall is roughly a one-in-four event (64-0f) and its absence over one arm would prove
-little; a swap *transition* is the mechanism underneath it, is far more frequent, and is
-directly observable. **The control is already on record and is not re-run:** 64-0f's stall,
-same gate shape, `QFL=80[GOO] SRC=09`, `ASCBSTOR 0FAF3C00 → 0FC26C00`, `OUCBSWC 0 → 1`.
+**The revert arm produced no swap transitions either.** With `DONTSWAP` removed and NSFS
+verified swappable (`SFL = 00` on all 163 samples), nine minutes of heavy and demonstrably
+**non-vacuous** load — `SERVED = 12997`, `COLLISIONS = 33538`, `EXHAUSTED = 517` on a freshly
+started STC — gave **one** distinct `ASCBSTOR`, `OUCBSWC` never off zero, `QFL` never anything
+but `00`, and not one sample with `ASCBFMCT = 0`.
+
+**So the pinned arm's null is uninterpretable.** "No transitions while pinned" says nothing
+when the control, under the same load for the same duration, shows none either. **The gate has
+no discriminating power on this stand, and the mitigation is NOT demonstrated to work by it.**
+
+**A prior round had already refuted the premise, and that is the part worth keeping.** The gate
+assumed the two-client round produces swap transitions. 64-0e measured NSFS **resident on 54 of
+54 OUCB samples across 38 minutes** — including an unplanned 8-minute idle stretch — while
+NSFV, the same transport with no device, swapped out on 12 of 16. **NSFS does not swap on this
+stand under any load this round can produce**, which is also why #64's stalls are rare: the
+swap-out is itself the rare event, not merely its slowness. The gate was built on a premise the
+record already contradicted, and reading 64-0e more carefully first would have caught it.
+
+**What the mitigation therefore rests on**, with each standing named:
+
+1. **MEASURED.** `DONTSWAP` is accepted, takes effect, and releases — Stage A twice, at init
+   (`NSF851I … NDS=1`), at shutdown (`NSF853I`), and again on the restored build.
+2. **REASONED, NOT MEASURED HERE.** MVS does not swap a non-swappable address space, so the
+   transition underneath every recorded stall cannot begin. That follows from what `OUCBNSW`
+   *means* (`IRAOUCB` line 103, "NON-SWAPPABLE STATUS"). It is not a result of this round, and
+   this round could not confirm it.
+
+**The control for the pinned side remains 64-0f's stall** — same gate shape, `QFL=80[GOO]
+SRC=09`, `ASCBSTOR 0FAF3C00 → 0FC26C00`, `OUCBSWC 0 → 1` — on record and not re-run. One stall
+in four attempts is the base rate, and neither arm here ran long enough to expect one.
+
+### 3.2a Two instrument faults of mine, both in the record
+
+**Arm 1 was contaminated and is SUPERSEDED, not caveated.** A sampler started with `nohup`,
+which I had concluded was dead, was still writing to `gate-pinned.log` when a later run
+truncated the file underneath it: two producers, one file, 228 interleaved samples and a
+non-monotonic timestamp at index 223. Every *value* in it is a genuine reading of NSFS — both
+processes ran the same code against the same ASCB with identity asserted per sample — and all
+of them agree with the clean arm. But the window, the sample count and the `ASCBFMCT`
+change-points are untrustworthy, so the arm was re-run under a script that kills strays and
+**asserts none survive** before starting exactly one.
+
+**The sampler took the password on `argv`**, so it stood in `ps` output for the life of every
+run. Changed to read `MBT_MVS_USER` / `MBT_MVS_PASS` from the environment before the script was
+committed.
+
+### 3.3 Three deployed states, each proven positively
+
+No state is inferred from the absence of a message.
+
+| state | check | result |
+|---|---|---|
+| **pinned** (Stage B) | `NSF851I … NDS=1` at startup | present |
+| **reverted** | `NSF851I` absent — *ambiguous alone*, so: `F NSFS,SWAP` baseline on a fresh STC | **`NSW=N ASW=N NDS=0`** — a swappable baseline is impossible on the pinned build |
+| **restored** (shipping) | `NSF851I … NDS=1` at startup | present; source verified `git diff --quiet` identical to the committed Stage B |
+
+The revert itself was verified as **exactly one change** by a comment-stripped source diff
+against the pinned version: the `nsfswap_dontswap` call removed, nothing else.
+
+**One reading that must not be over-claimed.** `NSF853I` appeared at shutdown on the **revert**
+build too — which never pins anything. `nsfswap_okswap` returns 0 whenever `OUCBNSW` ends
+*clear*, and that is also true when nothing was ever set. It is the right semantic for an
+operator message ("this address space is swappable") but it is **not** evidence that a pin was
+released. The release evidence is the probe's step 5, which compares `OUCBNDS` against a
+baseline value it read first.
+
+---
+
+## 4. The cost, measured like-for-like
+
+Both clean arms ran **163 samples over 9 minutes** under the same rounds, one sampler each,
+timestamps monotonic — so the two columns differ in one variable.
+
+| | RESTORED (pinned) | REVERTED (swappable) |
+|---|---|---|
+| `OUCBSFL` | **`80`** — `OUCBNSW` set | `00` |
+| `OUCBNDS` | **1** | 0 |
+| distinct `ASCBSTOR` | 1 | 1 |
+| `OUCBQFL` | `00` only | `00` only |
+| `OUCBSWC` | 0 | 0 |
+| `ASCBFMCT` peak | **186** (744 KB) | **186** (744 KB) |
+| `ASCBFMCT` floor | **56** (224 KB) | **46** (184 KB) |
+| samples with `FMCT = 0` | 0 | 0 |
+
+**The only fields that differ are the two `DONTSWAP` sets.** Everything about swapping reads
+identically, which is §3.2's finding stated as a table.
+
+**Pinning does NOT prevent page stealing, and that is what makes the cost small.** `ASCBFMCT`
+fell from 186 to 56 frames *while pinned* — MVS trims a non-swappable address space perfectly
+well; only the **swap** is prevented. So the cost is not "744 KB held permanently", which is
+what a reading of `OUCBNSW` alone would suggest. Against the swappable control under the same
+load it is **10 frames — 40 KB — more resident at the floor**, on a machine with 4096 frames
+(`MAINSIZE 16`). Peak is identical.
+
+*This corrects a claim made earlier in this round's own working notes, that a pinned address
+space is not trimmed. It is trimmed; 64-3-0's 39-frame idle figure is therefore comparable
+with the 46-56 floors here rather than anomalous beside them.*
+
+---
+
+## 5. What this round establishes, and at what strength
+
+**Measured, live, repeatedly:**
+
+1. **`DONTSWAP` is accepted and takes effect on NSFS** — `OUCBNSW` `00 → 80`, `OUCBNDS`
+   `0 → 1` — in five separate observations: Stage A twice, at init on the Stage B build, at
+   init on the restored build, and once more via the probe on the pinned baseline
+   (`NDS 1 → 2 → 1`).
+2. **It releases cleanly**, proven against the baseline **value**, not against zero.
+3. **The `OKSWAP` shutdown path runs**, in the right order — after `NSF044I` (transport
+   stopped) and before `NSF011I` — which nothing before this round had exercised.
+4. **The PPT entry is not required** (§1.5), which resolves 64-3-0's open question and makes
+   the self-issued route cost an installation nothing.
+5. **Three deployed states, each proven positively** (§3.3), never by absence.
+
+**Reasoned, NOT measured here:** that pinning prevents the #64 stall. It follows from what
+`OUCBNSW` means, and **the gate built to confirm it could not** (§3.2).
+
+---
+
+## 6. What this round does NOT establish
+
+- **That the stall stops occurring.** The gate does not discriminate; the control produced no
+  swap transitions either.
+- **That swap transitions stop.** Same reason.
+- **That #64 is fixed.** It is **mitigated**, and the distinction is the point. **#64 stays
+  OPEN.**
+- **Anything about the cause.** The twelve minutes are still unexplained and the measured chain
+  still ends at `OUCBQFL = X'80'` inside MVS.
+- **That `OUCBASW` has no other consequence.** Only that it is not a precondition for the
+  request taking effect.
+- **That `NSF853I` proves a release** — it reports that `OUCBNSW` is clear, which is also true
+  when nothing was pinned (§3.3).
+
+---
+
+## 7. Regression
+
+| | |
+|---|---|
+| host suite | **2934 PASS / 0 FAIL**, 27 tests (TSTOPR 25 → 34; the new assertions **verified to discriminate**) |
+| cross-build | clean, 6 modules; alias scan **224 unique**, five new |
+| NSFV round | `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH`/`TSTXFW` **484 PASS / 0 FAIL**, all CC 0 batch **and** TSO |
+| NSFS round | `TSTRQXC`/`TSTRQXF` **122 PASS / 0 FAIL**, CC 0 batch **and** TSO |
+| `TSTRQXM` | **batch CC 0**, host peer verifying **9353 bytes byte-exact**; the batch run passes *"CONNECT across the boundary (the first PARKED request to complete)"*. The TSO re-run FAILs **by design** — `errno=61`, the one-shot listener consumed by the batch run (the TSTTCPW precedent); batch is the gate |
+| dumps | none |
+
+**A procedural note worth keeping:** the first NSFV attempt failed `ABEND SFEF` on four of five
+tests because **NSFV was never started** — the Stage-0 tests are clients of the probe STC, and
+`P NSFS` alone leaves no SVC router installed. The round order is `P NSFS` → **`S NSFV`** →
+run → `P NSFV` → `S NSFS`.

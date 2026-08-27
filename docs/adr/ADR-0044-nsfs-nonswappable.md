@@ -201,10 +201,23 @@ fix it, and detection without recovery is what the measurement rounds already pr
 
 ## 8. Consequences
 
-**Good.** The mechanism that produced every recorded #64 stall cannot occur: SRM does not
-swap a non-swappable address space, so there is no transition to get slow. The change is small,
-reversible at runtime by an operator (`F NSFS,SWAP` exercises both directions), and costs an
-installation nothing.
+**Good — and the standing of the claim matters more than the claim.** The mechanism that
+produced every recorded #64 stall should not be able to occur: SRM does not swap a
+non-swappable address space, so there is no transition to be slow about. **That is REASONED
+from what `OUCBNSW` means (`IRAOUCB` line 103), not measured on this stand**, and the gate
+built to confirm it **failed to discriminate**: with `DONTSWAP` reverted, nine minutes of heavy
+non-vacuous load produced no swap transitions either, so the pinned arm's null says nothing
+(64-3-1 §3.2). 64-0e had already measured NSFS resident on 54 of 54 samples over 38 minutes, so
+NSFS simply does not swap under any load this stand can produce — which is also why #64's
+stalls are rare. **What IS measured is that DONTSWAP is accepted, takes effect and releases**,
+in five separate observations. The change is small, reversible at runtime by an operator
+(`F NSFS,SWAP` exercises both directions), and costs an installation nothing.
+
+**`NSF853I` is not proof that a pin was released.** `nsfswap_okswap` returns success
+whenever `OUCBNSW` ends *clear*, which is also true when nothing was ever set — observed live,
+since the revert build (which never pins) still reported `NSF853I` at shutdown. That is the
+right semantic for an operator message and the wrong thing to cite as evidence; the release
+evidence is the probe's step 5, which compares `OUCBNDS` against a baseline value read first.
 
 **The cost is real and is storage.** A non-swappable address space holds its frames
 permanently — MVS cannot trim it under pressure, which is the point and the price. §9 of the
@@ -212,10 +225,14 @@ round record carries the measured peak. On a 16 MB machine that pressure does no
 moves onto every other address space, and the ones already pinned (`*MASTER*`, JES2, VTAM) are
 the ones that cannot absorb it.
 
-**It hides the defect from the only detector we have.** Every #64 instrument keys on the
-swap-out; with NSFS pinned, none of them can fire on NSFS. If the investigation resumes it
-needs either the revert build (which exists and is instruction-diff verified) or a different
-subject — **NSFV**, the probe STC, which runs the same transport and is not pinned.
+**It hides the defect from the only detector we have — though the detector was already
+close to blind.** Every #64 instrument keys on the swap-out, and with NSFS pinned none of them
+can fire on NSFS. The sharper statement is that they could barely fire before: NSFS was
+observed swapping exactly once across this entire investigation (64-0f), and never in 54
+samples in 64-0e or in 163 swappable samples under load here. If the investigation resumes it
+needs the revert build (which exists and is source-diff verified as exactly one change) or a
+different subject — **NSFV**, the probe STC, which runs the same transport with no device and
+*does* swap readily (12 of 16 samples in 64-0e).
 
 **It is not a precedent for the rest of the ecosystem.** HTTPD, UFSD and FTPD are swappable
 and measured healthy that way; FTPD swapped out and back on 11 of 12 samples while idle without
