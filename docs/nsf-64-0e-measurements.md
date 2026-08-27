@@ -390,6 +390,29 @@ while NSFV had gone to `QFL=0C[OFF,OUT]` within about a minute of going idle (§
 
 The obvious candidate is the difference the round was built around: **NSFS holds an outstanding
 CTCI read** — an EXCP that never completes on a silent link — and NSFV has no device at all.
+**The comparison this was meant to support is empty, and that is the answer to the question it
+raises.** Counting every OUCB sample of the round, on both STCs, through the same reader:
+
+| | samples | ever `QFL != 00` |
+|---|---|---|
+| **NSFS** (device up), 16:37:57 → 17:16:17 | **54** | **0** |
+| **NSFV** (no device) | 16 | **12** — swapped out on 75 % of samples |
+
+**NSFS was never observed swapped, at all, in 38 minutes** — including an *unplanned* 8-minute
+idle stretch inside the load arm (the spool exhaustion froze `served` from 16:53:16; 12 samples,
+all resident), which is the same condition under which NSFV swapped out within about a minute.
+So **NSFV showed only that swapping works normally on this stand**; nothing was learned about
+whether an address space holding an outstanding CTCI read swaps *cleanly*, because NSFS never
+entered the state. **The read is not exonerated by this round.**
+
+**And the null is soft in one specific way, which names the next instrument.** The cadence was
+45–60 s, so a transition falling entirely between two samples is invisible. For an *NSFV-like*
+swap that is a weak objection — NSFV's swapped state persisted for minutes — but a **fast
+out-and-back cycle cannot be excluded**, because the sampler **did not read `ASCBSTOR`**. That is
+the field which shows a *completed* cycle retrospectively: 64-0d measured the segment-table origin
+changing across a transition (`0F8BCC00` → `0F923C00`). Any future swap-axis sampler should carry
+it.
+
 **It is recorded as an observation, not a mechanism.** Nothing here shows *why* SRM treats them
 differently, and it does not sit comfortably beside 64-0d, where SRM demonstrably *did* try to
 swap NSFS out — with the device up and a read outstanding — and got stuck doing it. Those are
@@ -498,8 +521,16 @@ the corroborating instruments then identified as my spool exhaustion rather than
 
 *"The machine state differs"* survives. The one machine-state difference that is documented,
 deliberate and shared by both arms is that **the spin is gone** (64-1) — which makes it *a*
-surviving candidate, not the candidate by elimination, and it is **untestable without
-reintroducing it**: a code change and the maintainer's call.
+surviving candidate, not the candidate by elimination.
+
+**And it is testable.** An earlier draft of this section called it *"untestable without
+reintroducing it"*. That is wrong: the **64-1 revert build already exists**, was run four times,
+and was verified identical to `main` at instruction level (`docs/nsf-64-1-measurements.md` §3,
+state C). A run with the spin reactivated under exactly this round's continuous load is the
+**single-variable experiment the investigation has never had** — and this round's NSFS control arm
+(spin off, device up, 988 s continuous, no stall, same detector, same jobs) is already its paired
+control. Whether to deliberately run a defective module is the maintainer's decision; it is not a
+technical obstacle.
 
 *"Not enough of the right condition"* also survives, and §10 is where it is admitted rather than
 here, so it is stated here too. **The arms were not equally contended, and neither approached the
