@@ -1,0 +1,144 @@
+21:24:23  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103    99    76 0F337C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        187   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:24:53  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103   103    76 0F8F7C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        188   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:25:23  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103   103    76 0F781C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        188   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:25:53  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0          0   103    76 0F46CC00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        190   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:26:23  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0          0   103    76 0F3D1C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        192   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:26:53  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103   103    76 0F739C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        193   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:27:23  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0          0   103    76 0F598C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        194   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:27:53  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0          0   103    76 0F631C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        195   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         39     0     0 0F995C00  OK
+21:28:23  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103   103    76 0F4BAC00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        196   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         42     0     0 0F995C00  OK
+21:28:53  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103    99    76 0F324C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        197   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         42     0     0 0F995C00  OK
+21:29:23  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103   103    76 0F324C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        199   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         42     0     0 0F995C00  OK
+21:29:53  CVT=01D048 ASVT=FDAE08 ASVTMAXU=32
+1    *MASTER* 01C178 81 NSWP   84 NSW    ASW/2         10     0     0 0FFD7C00  OK
+2    JES2     FDE220 80 -      80 NSW    ASW/1         22    12    12 0FE8CC00  OK
+3    TSO      FE7D38 80 -      04 -      -  /0          0    31    12 0FBF5C00  OK
+4    UFSD     FD0B18 80 -      00 -      -  /0          0    39    12 0FAA5C00  OK
+5    NET      FE6820 80 -      80 NSW    ASW/1          7    18    18 0FDE9C00  OK
+6    INIT     FE7B58 80 -      04 -      -  /0          0    18    18 0F292C00  OK
+7    INIT     FE7980 80 -      04 -      -  /0          0    18    18 0F3A2C00  OK
+8    INIT     FD0F18 80 -      04 -      -  /0          0    18    15 0F312C00  OK
+9    FTPD     FF9C78 80 -      00 -      -  /0        103    96    75 0F594C00  OK
+A    HTTPD    FF9748 80 -      00 -      -  /0        200   279   224 0F6A8C00  OK
+B    NSFS     FF8B20 80 -      00 -      -  /0         42     0     0 0F995C00  OK

@@ -1,0 +1,63 @@
+SYS1.AMODGEN(SYSEVENT) -- every mnemonic this level accepts, read live
+from the stand 2026-08-27.  Spelled as the macro spells them.
+Entry: &ENTRY=SVC (default) -> SVC 95; &ENTRY=BRANCH -> CVTOPTE / CVTRV609.
+
+CODE  MNEMONIC   macro source line
+1     TIMEREXP   11
+2     TERMWAIT   13
+3     NIOWAIT    15
+4     USERRDY    17
+6     MEMCREAT   21
+7     MEMDEL     23
+8     JOBSELCT   25
+9     JOBTERM    27
+10    INITATT    29
+11    INITDET    31
+12    QSCEST     33
+13    QSCECMP    35
+14    TRANSWAP   37   <-- swappability
+15    SWOUTCMP   39
+16    SWINSTAT   41
+17    SWINFL     43
+18    QSCEFL     45
+19    RSTORCMP   47
+20    ENQHOLD    49
+21    ENQRLSE    51
+22    RSMCNSTS   53
+23    AVQLOW     55
+24    AVQOK      57
+25    SQALOW     59
+26    SQAOK      61
+28    DEVALLOC   65
+29    CONFIGCH   67
+30    VERIFYPG   69
+31    RESETPG    71
+32    NEWIPS     73
+33    ALTCPREC   75
+34    TGETTPUT   77
+35    SYQSCST    79
+36    SYQSCCMP   81
+37    SETDMN     83
+38    REQSERVC   85
+39    REQPGDAT   87
+40    COPYDMDT   89
+41    DONTSWAP   91   <-- swappability
+42    OKSWAP     93   <-- swappability
+43    REQSWAP    95   <-- swappability
+44    BRINGIN    97
+45    WKLDINIT   99
+46    WKLDCOLL   101
+47    WKLDTERM   103
+49    REQSVDAT   107
+53    EVENT53    115
+54    EVENT54    119
+55    EVENT55    123
+56    EVENT56    127
+57    EVENT57    131
+58    EVENT58    135
+59    EVENT59    139
+60    ICSCHK     143
+63    CMDSTART   149
+64    CMDEND     151
+
+total mnemonics: 56
