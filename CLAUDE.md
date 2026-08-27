@@ -1157,8 +1157,8 @@ the reachability finding's own consequence — that an unauthorised caller can d
 verb at NSFS and have it consume a slot that is never revisited, which is filed separately
 and belongs to (d)/c3.
 **64-1 (the wake-ECB reset, and the experiment it makes possible) — DONE,
-live-green in all three revert states. It does NOT fix issue #64 and does not
-close it; #64 stays OPEN.** Not a milestone step: `#64`'s investigation runs
+live-green in all four deployed states, **maintainer-countersigned (PR #72
+merged)**. It does NOT fix issue #64 and does not close it; #64 stays OPEN.** Not a milestone step: `#64`'s investigation runs
 alongside M5-2c, and c1, c2, (e) and c3 are still ahead. `nsfsx_drain` never
 cleared `g_wake_ecb` — assigned zero once in `nsfsx_start` and never again — so
 the first cross-AS POST **latched** the POSTED bit for the life of the STC, and a
@@ -1276,11 +1276,24 @@ through HTTPD *inside the guest* every 2 s; stopped, the same instance reads
 0.7–1.6 %, and the detector now pre-filters. `IGF991I`/`IGF995I` on device 500 —
 the familiar CTCI degradation, not a new symptom. **`#64` STAYS OPEN**; it was
 found CLOSED (COMPLETED) at round start, five hours after its own reopen, and was
-reopened with a comment saying plainly that nothing has fixed it. **The next
-question is the one 64-0d left:** what the swap-out transition is pending on —
-outside nsf370's code — and the cheap untried instrument is **NSFV**, the probe
-STC, which runs the same transport with **no device at all**. Whether NSF should
-mitigate an MVS condition, and in what form, is Mike's call.
+reopened with a comment saying plainly that nothing has fixed it. **It was also
+RETITLED at the countersign**, because both halves of its old name — *"NSFS
+executive can sleep through a published request: the transport's wake has no
+floor"* — are now false by measurement: no floor is needed (above), and the wake
+is not the defect (64-0c refuted a committed WAIT from one side, 64-1 confirms
+the POST from the other). It is now **"NSFS address space stalls mid-swap-out:
+tasks non-dispatchable while `OUCBQFL = 80`"** — 64-0d's finding, which is what
+the issue always described. A comment records why, so the rename is legible
+rather than mysterious. **64-2 — "the floor, if 64-0/64-1 show one is still
+needed" — is therefore CLOSED AS UNNECESSARY, not deferred:** the wake works with
+no floor at all, measured twice at two idle scales (one pass in 259 s, three in
+972 s, with eight cross-AS requests still served inside one console second). It
+is recorded here rather than left on the plan, so nobody reads the plan later and
+builds it; the reasoning is ADR-0043's, not this line's. **The next question is
+the one 64-0d left:** what the swap-out transition is pending on — outside
+nsf370's code — and the cheap untried instrument is **NSFV**, the probe STC, which
+runs the same transport with **no device at all**. Whether NSF should mitigate an
+MVS condition, and in what form, is Mike's call.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
