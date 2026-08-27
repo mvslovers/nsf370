@@ -128,7 +128,8 @@ executive's do not. From `stall1-passive.log`, one stall, three passes:
 | STALL-pass2 | 10:46:54 | **341** (frozen) | 1 | **16 792** | **1 074 838** |
 | AFTER | 10:51:19 | 1 418 | 0 | 44 107 | 2 822 998 |
 
-`served` frozen for 2 m 14 s while `collisions` rose by 833 408 and `exhausted` by 13 022. Those
+`served` frozen for 2 m 14 s while `collisions` rose by 833 408 and `exhausted` by 13 022 — a
+ratio of **exactly 64.0000**, i.e. ≈ 13 022 complete 64-slot scans, ≈ 97 per second (§7). Those
 increments happen inside the SVC routine, in the **client's** address space, on a stalled STC —
 so the client was hammering the claim scan and being refused throughout. `stall2-ladder.log` and
 `stall3-control.log` show the same shape (`inflight` 2 and 1 respectively, held across the whole
@@ -177,35 +178,52 @@ in the device.
 
 ---
 
-## 7. A defect in a preserved measurement, found on the way
+## 7. A "defect" I found, then refuted — the rows are real, and they prove something better
 
-**The per-slot rows in `docs/measurements/64-0d/stall1-passive.log` are not trustworthy, and the
-tool that produced them was not preserved.** Both stall passes print, identically:
+**A first draft of this section reported the per-slot rows of
+`docs/measurements/64-0d/stall1-passive.log` as untrustworthy. That was wrong, and the
+retraction is worth more than the claim was.** Both stall passes print:
 
 ```
   SLOT0  state=1 reply_ecb=809DE5F0[WAIT ] req_ascb=FE7980 req_asid=0007
   SLOT1  state=4 reply_ecb=40000000[POSTED] req_ascb=FE7980 req_asid=0007
   SLOT2  state=4 reply_ecb=00000000[] req_ascb=000000 req_asid=0000
-  …  SLOT2–SLOT62 state=4,  SLOT63 state=3
+  …  SLOT2–SLOT62 state=4 (CLAIMED),  SLOT63 state=3 (HELD),  all with a zero owner identity
 ```
 
-`state=4` is `CLAIMED` and `state=3` is `HELD` (`include/nsfvsvc.h`), and a claim records the
-owner's ASCB and ASID **at `CLAIMOK`, before publication** (`asm/nsfvsvc.asm`). So 61 slots
-reading CLAIMED with a **zero owner identity**, unchanged across two passes 2 m 14 s apart, is
-internally contradictory. It is also contradicted by the *validated* reader: 64-1's
-`slotdump.py`, on the same layout and the same offsets, censused live as
-`{FREE: 49, CLAIMED: 15}`, `{FREE: 64}`, `{FREE: 63, HELD: 1}` — untouched slots read **FREE**.
+CLAIMED with **no owner** looked contradictory, because a claim records the owner's ASCB and
+ASID at `CLAIMOK`. **It is not a claim.** `asm/nsfvsvc.asm`'s `DOSLOT` — the `FNSLOT` probe verb,
+one of the three that *"NAME a slot instead of claiming one"* and branch out ahead of the claim —
+is a bare `CS` of `REQSEXP`→`REQSNEW` on `SLSTATE` and **stores nothing into `SLRASCB`/`SLASID`**.
+A slot taken that way never reaches `CLAIMOK`. And that is exactly what the round's workload
+does: `test/mvs/tstrqxc.c` phase 2 *"pre-claims slots 1..61, leaving ONLY slot 0"* through
+`xc_slot_cas`, and uses slots `XC_FLAG_A = 63` and `XC_FLAG_B = 62` set to **`HELD`** as its
+two coordination flags. Slot 1 carries an identity because release is a plain `ST` of `FREE` that
+leaves the identity fields as residue from an earlier real request; slots 2–62 never held one.
 
-Only `watch2.py` (the header + OUCB probe) was preserved from that round; the slot dumper was
-not, so the offset it used cannot be checked. **Nothing in this document rests on those rows.**
-`SLOT0 PENDING` is independently corroborated — by the header's `inflight`, by 64-0b §4 reading
-slot 0 PENDING with the same `reply_ecb = 809DE5F0` through a different tool, and by 64-0c §6
-reading `SLOT1`/`SLOT2` PENDING with two distinct client ASIDs. The header rows (`inflight`,
-`served`, `exhausted`, `collisions`) come from `watch2.py`'s known offsets and are what §2 and §5
-above use.
+**The arithmetic confirms it outright, and this is the part worth keeping.** A claim scan that
+finds no FREE slot counts one `collision` per slot examined and one `exhausted` for the attempt.
+Across both intervals of stall 1:
 
-Recorded rather than quietly worked around: a preserved log is read later as evidence, and this
-one has a coherent-looking half and an implausible half with nothing marking the boundary.
+| interval | Δ `collisions` | Δ `exhausted` | ratio |
+|---|---|---|---|
+| pass1 → pass2 | 833 408 | 13 022 | **64.0000** |
+| pass2 → after | 1 748 160 | 27 315 | **64.0000** |
+
+**Exactly 64 collisions per exhausted attempt, twice, to four decimal places.** That is only
+possible if **all 64 slots were non-FREE on every scan** — slot 0 `PENDING` with the parked
+request, slots 1–61 pre-claimed, slots 62 and 63 the two `HELD` flags — and it independently
+dates ≈ 13 022 full scans inside the 2 m 14 s between the stall passes, ≈ 97 per second. The
+log is coherent, the tool was fine, and the census is the gate's own design read back.
+
+**What survives, and it belongs to §6:** the pool saturation in the arm that reproduces is
+**manufactured by the test**, not organic contention. That does not weaken §6's gap — NSFV still
+has no client that produces it — but it changes the cost of closing it, because `FNSLOT` is
+served by the same shared SVC routine and an NSFV pre-claimer would work the same way.
+
+**And §5 is unaffected**, which is why the retraction costs nothing: §5 rests on `collisions` and
+`exhausted` moving while `served` is frozen, and those are header fields read through
+`watch2.py`'s known offsets. The 64.0000 ratio makes them stronger, not weaker.
 
 ---
 
@@ -222,12 +240,20 @@ Every stall on record occurred on a **spinning** instance, at cumulative `served
 | **64-1** | **reset — no spin** | **164 570** | **0** |
 
 By request count that is a three-orders-of-magnitude difference in exposure with the outcome
-reversed. **It is not a controlled comparison and is not counted as evidence**, for the reason
-64-1 gave itself: its rounds each ran ~10 s where every stall fired 40–90 s into a round, so the
-axis that matters may be round *duration* rather than request count — and round duration is
-itself downstream of the spin, since a spinning executive made everything on that stand slow.
-The two readings cannot be separated from the data that exists. §6(c) is the arm that would
-separate them.
+reversed. **It is not a controlled comparison and is not counted as evidence**, and one check
+settles why rather than leaving it as an impression.
+
+It is tempting to argue that 45 rounds run *back to back* must have reached the 40–90 s window
+that every stall on record fired inside, whatever a single round's length. **They did not, and
+the round-log dates it.** The detector was armed at 14:17:06 and idle window 1 began at 14:32:10,
+so the campaign occupied **904 s for 45 rounds = 20.1 s per round slot** — ~10 s of load followed
+by ~10 s of gap, a **50 % duty cycle with no continuous stretch of load longer than ~10 s**. The
+window in which stalls occur was never entered.
+
+So the axis that matters may be sustained-load *duration* rather than cumulative request count,
+and round duration is itself downstream of the spin — a spinning executive made everything on
+that stand slow. The two readings cannot be separated from the data that exists, and **§6(c) is
+live**: it is the arm that separates them, and it needs no new instrument.
 
 ---
 
