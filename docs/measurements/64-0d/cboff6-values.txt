@@ -1,0 +1,6 @@
+CASVT    = 022C
+VMAXU    = 0204
+VENTY    = 0210
+VAVAI    = 0080
+AJBNI    = 00AC
+AJBNS    = 00B0
