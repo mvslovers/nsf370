@@ -32,6 +32,12 @@ instant as the control:
 | every TCB except the RCT | `TCBFLGS5=01`, `TCBSCNDY=00001000` (**`TCBNDTS`**) | `00`, `00000000` |
 | `ASCBCPUS` | `0` | `1` |
 
+It ends in **two** ways, both measured: real inbound data on CUU 0500 releases it within
+seconds, and left entirely alone it also resolves by itself after several minutes with
+`tun0` carrying not one packet. Four different non-device interrupts released it from
+neither. `OUCBQFL` goes to zero at the moment it ends; **`TCBNDTS` does not**, which is
+what closes 64-0c's open question about that bit (§5).
+
 The swap-out **starts and does not finish**. The address space stays resident — its LSQA
 is readable throughout, `D A,L` shows no `S` — while every one of its tasks is marked
 non-dispatchable *because it is being swapped out*. That is the state 64-0c measured from
@@ -42,7 +48,7 @@ the task side and could not explain; the OUCB names it from the address-space si
 | role | what it is | where it lives |
 |---|---|---|
 | **suspension** | the stuck swap-out (`OUCBGOO` + `TCBNDTS`) | **MVS/SRM — outside nsf370** |
-| **terminator** | completion of the outstanding CTCI read | the device path |
+| **terminator** | *either* completion of the outstanding CTCI read (immediate) *or* the swap-out finishing by itself after 7–14 min | the device path / SRM |
 | **provocation** | what makes SRM choose this address space | **untested** — possibly the spin, inside nsf370 |
 
 ---
@@ -155,7 +161,7 @@ here is 64-0c's own words — **EJST bit-identical** — which discriminates in 
 |---|---|---|---|---|
 | 1 | 10:44:10 | 10:51:19 | **7 m 09 s** | **spontaneously, untouched** |
 | 2 | 11:08:40 | 11:27:18 | **18 m 38 s** | **host ping**, after four other interventions did nothing |
-| 3 | 11:28:44 | (control) | — | untouched, `tun0` captured |
+| 3 | 11:28:29 | 11:42:52 | **14 m 23 s** | **spontaneously, untouched — with `tun0` provably silent** |
 
 All three read the identical signature: `QFL=80[GOO]`, `SRC=09`, `RCTF=00`, `DSP1=00`,
 `0500 busy`, `0501 not busy`.
@@ -176,7 +182,44 @@ Fired into stall 2. Weakest first; each judged by whether `ASCBEJST` moved.
 Rung 5's rejection is independent, hypervisor-side confirmation that the CTCI **read
 EXCP was outstanding** for the whole stall. Rung 6's first RTT was **866 ms** against a
 normal 0.6 ms — the stack coming back to life — and at that instant **`QFL` and `SRC`
-both went to `00`**.
+both went to `00`**. The end followed the ping within **4 seconds**, in a stall that had
+by then already run **longer than both untreated stalls**.
+
+### The control, and what it costs the simple reading
+
+Stall 3 was left completely alone with `tcpdump -ni tun0` running for its whole life. It
+ended by itself after **863 s**, and the capture is **0 bytes** — not one packet crossed
+`tun0` in either direction. So **inbound traffic is not the only way out**: the condition
+also resolves on its own, on a several-minute scale, with no device activity whatever.
+That is P(iii), now observed **twice** (429 s and 863 s), and it is the reason §6 does not
+simply award the round to P(ii).
+
+Between the stall-1 reading and the stall-3 exit reading, **`ASCBSTOR` changed**
+(`0FA4AC00` → `0F8BCC00`): the address space acquired a different segment-table origin, so
+at least one swap-out *did* complete and swap back in during the round. That is the
+obvious candidate for the spontaneous terminator — the stuck swap-out eventually
+finishing — but it is not tied here to a particular stall, because `ASCBSTOR` was not
+sampled at each transition.
+
+### `TCBNDTS` — 64-0c's open question, closed
+
+64-0c recorded `TCBNDTS` as *"correlated with the stall and absent in three controls, but
+not established as the blocking cause"*, because the bit was still set at a sample taken
+after the executive had demonstrably run. This round caught the exit instant itself
+(`catch.py`, polling at 2 s and reading the task chain on the transition):
+
+```
+=== 11:42:52  [NSFS-AT-EXIT]  ASCB=FF9200 ===
+  ASID=000B CPUS=1 ...            <- the address space is executing again
+  OUCB QFL=00[-]  SRC=00          <- the transition is OVER
+   TCB1..TCB5  FLGS5=01  SCNDY=00001000   <- TCBNDTS STILL SET
+```
+
+So the per-task marking **outlives the address-space transition**. 64-0c's anomaly was not
+a sampling artifact and not a finer-grained window: the bit simply is not cleared when the
+condition ends. **`OUCBQFL` is the field that tracks the live condition; `TCBNDTS` is
+not** — which is exactly why 64-0c was right to refuse to promote it to a cause, and why
+no conclusion here rests on it.
 
 ### The machine was never short of interrupts
 
@@ -222,28 +265,38 @@ stall ran a further **17 m 52 s**. And the premise was already false: the machin
 > specific to the device path, and the CTCI/inbound path becomes the subject rather than
 > the dispatcher.
 
-**Its ladder prediction is SUPPORTED; its consequence is REFUTED.** Four different
-non-device interrupts — including one on NSFS's *own* device pair — did nothing, and
-real inbound data ended it at once. But the condition is **not** in the CTCI path: it is
-an SRM/dispatcher state (`OUCBGOO` + `TCBNDTS`, both cleared at the exit), and the
-inbound read is only what *releases* it. The dispatcher does not stop being the subject.
+**Its ladder prediction is SUPPORTED; its consequence is REFUTED; and the control
+weakens "specifically".** Four different non-device interrupts — including one on NSFS's
+*own* device pair — did nothing, and real inbound data ended it within 4 s. But the
+condition is **not** in the CTCI path: it is an SRM state (`OUCBGOO`, cleared at the
+exit), and the inbound read is only one of two ways it is *released*. The dispatcher does
+not stop being the subject. And the untouched control ended with `tun0` at zero bytes, so
+device traffic is **not** necessary for the stall to end.
 
 > **P(iii)** — neither ends it and it resolves on its own; a timer or SRM interval exists
 > and the stall is bounded.
 
-**Observed once (stall 1, 7 m 09 s), and its explanation does not hold.** The obvious
-terminator — MIH restarting the device I/O — is ruled out: MIH fired inside stall 2 three
-times without effect. What ended stall 1 is **unidentified**, and stall 2 shows the
-condition surviving ≥ 18 m 38 s, so "bounded" is not established.
+**SUPPORTED, and it is the finding the ladder alone would have missed.** Two untouched
+stalls ended by themselves — 429 s and 863 s — and the second is decisive, because
+`tcpdump` proves `tun0` carried **nothing at all** across its whole life. So the stall is
+self-limiting on a several-minute scale. Its terminator is *not* MIH (which fired inside
+stall 2 three times without effect); the `ASCBSTOR` change above makes the swap-out
+finally completing the leading candidate, unconfirmed.
 
 **None of the three fits as written** — the third round running that this is the answer,
 and again it is the most useful outcome. The measured shape is a fourth:
 
-> **The address space is stuck part-way through an MVS swap-out that started and cannot
-> finish. No interrupt as such releases it — not a console attention, not a foreign
-> device, not the external interrupt key, not an attention on its own device pair. What
-> releases it is the completion of the outstanding CTCI read, and when that happens the
-> swap-out state clears to zero in the same instant.**
+> **The address space is stuck part-way through an MVS swap-out that started and has not
+> finished. No interrupt as such releases it — not a console attention, not a foreign
+> device, not the external interrupt key, not an attention on its own device pair, and
+> not MIH restarting the device. It ends in one of two ways: the completion of the
+> outstanding CTCI read releases it within seconds, and left entirely alone it also
+> resolves by itself after several minutes with no device traffic at all. In both cases
+> `OUCBQFL` goes to zero at the moment it ends — while `TCBNDTS` does not.**
+
+So the round's title question has a two-part answer. **Not any interrupt** — four kinds
+were fired and none mattered. **Not device traffic specifically either** — the control
+ended without a single packet. What the device traffic does is *release it early*.
 
 ---
 
@@ -292,14 +345,25 @@ minutes. Neither is shown to provoke the swap-out.
   instant, and a ping has now ended a stall in every round that tried one) but it is not
   excluded by this round's design. The clean form for any further stall is one rung, then
   the ping as a closing positive control in the same stall.
-- **The untreated durations are durations-until-something-arrived**, not a property of
-  the stall. Stall 1's terminator is unidentified; ambient inbound traffic cannot be
-  excluded for it, because `tun0` was not captured until stall 3.
+- **The ping's effect is n=1.** It was followed by the end within 4 s, in a stall that had
+  already outlasted both untreated ones (1118 s against 429 s and 863 s) — suggestive, and
+  consistent with every earlier round, but a single trial. The clean design for a further
+  stall is the project's own c0 discipline: **one rung, then the ping as a closing positive
+  control in the same stall**, so a stall where the ping *also* failed would be visible.
+- **Rungs 2–5 were fired late** (T+16m53s to T+17m). Only rung 1, the console attention at
+  T+45 s, is an early negative — and it is the strongest of them, having been injected
+  **twice** by the standing `hao cmd /` rule while the stall ran a further 17 m 52 s.
+- **The spontaneous terminator is not identified**, only narrowed: not MIH, not inbound
+  traffic. `ASCBSTOR` moving across the round points at the swap-out completing, but it was
+  not sampled per transition.
 - **`OUCBSRC` 09 / 06 are undecoded** (§4). Nothing is inferred from them.
 - It did not test whether removing the spin removes the stall — that is 64-1's, and it
   becomes untestable the moment the reset lands.
 - It did not read the OUCB's swap chain (`OUCBFWD`/`OUCBBCK`/`OUCBACT` were captured but
   not interpreted), so *which* SRM queue the address space is parked on is unread.
+- It did not sample `ASCBSTOR` at each transition, which is the cheap instrument that would
+  turn "a swap completed somewhere in the round" into "this stall ended by the swap
+  completing".
 
 ---
 
