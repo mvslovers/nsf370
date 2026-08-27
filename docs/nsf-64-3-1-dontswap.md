@@ -25,6 +25,7 @@ The red line for this step was that nothing comes from memory. Re-read live off 
 | entry | **`SVC 95`** | same member, line 209 (`.SVC SVC 95  SYSTEM RESOURCES MANAGER SVC`) |
 | `OUCBQFL/SFL/AFL/ASCB/NDS` | `X'10'/X'11'/X'13'/X'28'/X'84'` | `(IRAOUCB)` through the DSECT gate |
 | `ASCBOUCB` / `ASCBFMCT` | `X'90'` / `X'98'` | `(IHAASCB)` through the same gate |
+| `OUCBNSW` / `OUCBASW` / `OUCBGOO` bit positions | BIT0 / BIT7 / BIT0 | **read directly as `EQU`s** (`IRAOUCB` lines 103 / 127 / 96) — the gate proves *computed offsets*, and a bit position inside a named byte is not one |
 
 **The gate is the survey's, and it was re-run on fresh captures: `IRAOUCB` 17/17 and `IHAASCB`
 13/13 reproduce every offset a prior IFOX00 `CBOFF` job proved.** Only then were the two

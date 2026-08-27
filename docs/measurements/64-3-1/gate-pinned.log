@@ -1,3 +1,10 @@
+*** SUPERSEDED -- DO NOT CITE AS EVIDENCE ***
+*** Contaminated: TWO sampler processes wrote this one file, so the samples are
+*** interleaved (228 rows, non-monotonic at index 223) and the window, the sample
+*** count and the ASCBFMCT change-points are untrustworthy. The values themselves
+*** are genuine readings of NSFS and agree with gate-restored.log, which supersedes
+*** this arm. See docs/nsf-64-3-1-dontswap.md 3.2a and README.md in this directory.
+
 watching NSFS ascb=FF8B20 for 780s
 time     ASCBSTOR QFL  SFL  NDS  SWC  FMCT  note
 22:32:00 0F2E3C00 00   80   1    0    186   
