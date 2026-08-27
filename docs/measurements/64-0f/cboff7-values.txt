@@ -1,0 +1,6 @@
+ASTOR    = 002C
+AEJST    = 0040
+ASWCT    = 0070
+AASID    = 0024
+AASXB    = 006C
+ACPUS    = 0020
