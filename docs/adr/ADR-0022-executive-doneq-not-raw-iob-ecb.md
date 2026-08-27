@@ -270,3 +270,19 @@ a reproduction *after* the reset rather than reporting the CPU drop alone.
 Whether NSF should mitigate an MVS condition at all, and in what form, is a
 contract-level decision for the maintainer and is not taken here. **No floor was
 added; whether one is needed is deliberately left open.**
+
+---
+
+## Annotation (2026-08-27) — pointer: the wake contract is now ADR-0043
+
+**Append-only, and it changes nothing above.** The 64-1 annotation ends *"No floor was added;
+whether one is needed is deliberately left open."* That sentence is the one **ADR-0043** closes,
+with the measurement that was not available when it was written: on a post-TCP-workload instance
+the executive makes **one pass in 259 s** and still serves eight cross-address-space requests
+inside a single console second, so no floor is needed for the healthy case
+(`docs/nsf-64-1-measurements.md` §4). ADR-0043 records the contract in full — who POSTs, what
+resets, that the POST wakes a committed WAIT, and the gaps it does **not** guarantee — and
+retires step 64-2 as unnecessary rather than deferred.
+
+The **reset itself remains this ADR's subject**, and the annotation above remains its record.
+Issue #64 is unaffected by either and stays open.
