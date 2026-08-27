@@ -170,6 +170,13 @@ TSTSVC: SVC PROBE CLIENT DONE (base_seq=542983)
                                                         -- CC 0001
 ```
 
+**And the arithmetic corroborates it across the whole arm, which one `SYSPRINT` probe cannot.**
+With `SYSPRINT DD DUMMY` on the load steps, that probe is a single sample; but every step issues
+exactly 53 requests, and **10 253 steps × 53 = 543 409**, which is *exactly* what the anchor's
+`served` read at 16:20:48. **Every request of every step was serviced and counted** — a transport
+failing on `rc` or `token` would have fallen short. So the one probe identifies *which* assertion
+fails, and the counter proves it was only that one, for all 9 925 of them.
+
 **The transport is fine under concurrency; only the non-interleaving assertion fails.** The same
 shape exists on the NSFS side: `TSTRQXC` SOLO asserts that `collisions` does **not** move, so it
 too fails if a second initiator runs it concurrently. Worth knowing before either is used as
@@ -337,7 +344,8 @@ rather than stopping at the ~375 s the first 40 would have given. STEPLIB matche
 | steps | **17 403** |
 | requests | anchor `served` 16 → **139 240** |
 | **continuity** | **max inter-step gap = 1 second** |
-| contention | `collisions` 0 → 1 575; `exhausted` **0** |
+| concurrency | **2 client address spaces for 940 of 989 console-seconds**, 3 for 46 s (measured the same way as §3) |
+| contention | `collisions` 0 → 1 575; `exhausted` **0** — **1.1 % of requests**, against the NSFV arm's 10.5 % (§9) |
 | **detector** | **zero slow steps.** Max elapsed **`00:00:00.41`** (baseline 0.09) |
 | NSFS `OUCB` under load | `QFL=00[-] SRC=00 RCTF=00[-] DSP1=00` — resident, no transition bit, matching HTTPD read at the same instant |
 | `D A,L` under load | `NSFS NSFS NSFS V=V` — no `S` |
@@ -468,7 +476,7 @@ instrumentation, so it is written down.
 |---|---|---|
 | continuous load | **1 134 s**, max gap **1 s** | **988 s**, max gap **1 s** |
 | requests | **543 356** | **139 240** |
-| client address spaces | 2 | 2–3 |
+| client address spaces | 2 (778 of 831 s) | **2 (940 of 989 s)**, 3 for 46 s |
 | slow steps | **0** of 10 004 | **0** of 17 403 |
 | `QFL=80[GOO]` | never | never |
 | stalls | **none** | **none** |
@@ -486,11 +494,28 @@ merely able to speak: **it is proven to fire on the phenomenon** (§2 — 64-0d'
 `TSTRQXC` step of elapsed `00:07:17.57`), and it **did** fire in-round on a real slowdown, which
 the corroborating instruments then identified as my spool exhaustion rather than a stall (§7).
 
-**So what remains of N(iii) is "the machine state differs".** The one machine-state difference
-that is documented, deliberate, and **shared by both arms** is that **the spin is gone** (64-1).
-That does not make the spin the provocation — it makes it the candidate the evidence now points
-at by elimination, and it is **untestable without reintroducing it**, which is a code change and
-the maintainer's call.
+**Two explanations survive, not one, and the second is this round's own limitation.**
+
+*"The machine state differs"* survives. The one machine-state difference that is documented,
+deliberate and shared by both arms is that **the spin is gone** (64-1) — which makes it *a*
+surviving candidate, not the candidate by elimination, and it is **untestable without
+reintroducing it**: a code change and the maintainer's call.
+
+*"Not enough of the right condition"* also survives, and §10 is where it is admitted rather than
+here, so it is stated here too. **The arms were not equally contended, and neither approached the
+arm that reproduces:**
+
+| | collisions / request | requests/s |
+|---|---|---|
+| NSFV arm | **10.5 %** (57 078 / 543 356) | 479 |
+| NSFS control arm | **1.1 %** (1 575 / 139 240) | 141 |
+| the arm that reproduces (64-0d, mid-stall) | pool **saturated** — 241 430 → 2 822 998 | — |
+
+The control arm is ~9× less contended than the NSFV arm and orders of magnitude below the
+stalling arm, because `TSTRQXC` SOLO issues 8 requests per step where `TSTSVC` issues 53. So
+"both arms were quiet under the same treatment" would be **wrong**: they were quiet under two
+different treatments, neither of which reached pool saturation. What the round retires is the
+*window*, and only the window.
 
 ### The asymmetry, restated — what a stall would have proved and what this quiet run does not
 
