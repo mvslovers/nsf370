@@ -295,9 +295,12 @@ is a real null.
 **Not "45 rounds and no stall".** Every stall on record — #64's own, 64-0b's
 two, 64-0c's two, 64-0d's four — shared exactly one condition: **a client parked
 with a published request.** The sampling above measures how much of this arm had
-it: `PENDING` in **3 of 360 samples ≈ 0.8 %** of wall-clock, *during the heaviest
-workload the stand can produce*. In 64-0d a **single** gate round held a client
-parked for **minutes**, because those rounds were themselves slow.
+it: `PENDING` in **3 of 360 reads ≈ 0.8 %** — sampled over roughly 90 s of the
+campaign, on slots 0–3 (where a small client set lands), *during the heaviest
+workload the stand can produce*. That is a duty cycle for that burst rather than
+a campaign-wide average, and it is the right order of magnitude either way. In
+64-0d a **single** gate round held a client parked for **minutes**, because
+those rounds were themselves slow.
 
 So the correct statement is: **the condition every stall shares was present for a
 few seconds in total across this whole arm.** That is a nameable weakness, not a
@@ -323,7 +326,7 @@ below.
 | floor | 259 s | post-TCP-workload, no floor at all | quiet |
 | C | 189 s | reset out, spinning | quiet |
 | A′ | 159 s | restored | quiet |
-| idle 1 | **920 s** | post-campaign, 164 570 requests behind it | quiet — `EVTPASSES` 320 733 → **320 736**, three passes in 920 s, `SERVED` frozen |
+| idle 1 | **972 s** | post-campaign, 164 570 requests behind it | quiet — `EVTPASSES` 320 733 → **320 736**, three passes in 972 s, `SERVED` frozen |
 
 **The idle arm is known low-yield and is not offered as a fair test.** 64-0c
 recorded four non-reproductions in the idle configuration across three rounds
@@ -358,7 +361,8 @@ No floor was added. Where one would live remains not the fix author's to choose.
 it has been fixed.** #64 remains open.
 
 The stall did not reappear across 45 gate rounds, 164 570 requests and seven
-idle windows totalling ~2 400 s. That is a null result and it is weak, for a
+idle windows totalling **2 356 s** (259 + 259 + 259 + 259 + 189 + 159 + 972,
+the seven tabulated in §6). That is a null result and it is weak, for a
 reason that can be named precisely: **the condition every stall on record shares
 — a client parked with a published request — was present for well under 1 % of
 this arm's wall-clock**, where 64-0d's single slow gate round held it for

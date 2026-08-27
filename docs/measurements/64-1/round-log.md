@@ -176,3 +176,19 @@ round held a client parked for MINUTES.
 So the correct statement of the null is not "45 rounds, no stall" but "the
 condition every stall shares was present for a few seconds in total across the
 whole arm". That is a NAMEABLE weakness, not a generic one.
+
+## An ordering nobody else can see, recorded rather than let pass
+
+The CLAUDE.md 7 row was written at ~14:33 and already asserted the NSFV round
+green. The NSFV round actually RAN at 14:49 and returned 484 PASS / 0 FAIL, so
+the sentence is true -- but it was written before the evidence existed, which is
+exactly the shape 8.5 warns about (a claim indistinguishable from a verified
+one). Recorded here because the ordering is invisible in the diff.
+
+## Arithmetic correction, made before the record was read
+
+An earlier draft published the idle-window total as 2 445 s in CLAUDE.md and in
+the PR body. Summing the seven tabulated windows gives
+259 + 259 + 259 + 259 + 189 + 159 + 972 = 2 356 s. Corrected in all three
+places. Idle window 1 is 972 s measured between the two EVTPASSES readings
+(MVS 7.32.10 -> 7.48.22), not the 920 s of the wall-clock start/stop markers.

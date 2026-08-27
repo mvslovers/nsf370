@@ -1231,8 +1231,8 @@ The arm ran at scale: one instance, `TSTRQXM` then the two-client contention gat
 gate-INTERNAL "A was given a slot other than 0" timing assertion, which the gate
 itself calls the weaker witness; its decisive refusal assertion passed every
 time), 45 B CC 0000, `SERVED` 69 → **164 570**, `EVTPASSES` → 320 733 (**≈ 1.95
-passes per request**), plus seven idle windows totalling **2 445 s** (the
-longest 920 s, over which `EVTPASSES` moved **320 733 → 320 736** — three
+passes per request**), plus seven idle windows totalling **2 356 s** (the
+longest 972 s, over which `EVTPASSES` moved **320 733 → 320 736** — three
 passes — with `SERVED` frozen). **No stall; the detector, armed 31 m 16 s,
 emitted nothing — and no false positive either**, which matters because a naive
 EJST-flat detector would have fired almost continuously against the floorless
@@ -1248,8 +1248,9 @@ was then proven live rather than trusted — a census during the campaign return
 wrong stride (CLAUDE.md §8.5, closed rather than argued). **The honest statement
 of the null is not "45 rounds and no stall":** every stall on record shares ONE
 condition, a client **parked with a published request**, and that same sampling
-measures how much of this arm had it — **~0.8 % of wall-clock, during the heaviest
-workload the stand can produce** — where a single 64-0d gate round held it for
+measures how much of this arm had it — **`PENDING` in 3 of 360 reads ≈ 0.8 %**, sampled over
+~90 s of the campaign on slots 0–3, during the heaviest workload the stand can
+produce — where a single 64-0d gate round held it for
 MINUTES, because those rounds were themselves slow. The condition was present for
 a few seconds in total. **The idle arm cannot fire this detector at all** (no
 parked client ⇒ never `PENDING`) and 64-0c already called idle non-reproduction a
