@@ -53,20 +53,37 @@ static NSFECB        g_wake_ecb;
 
 /* DID THE TRANSPORT'S WAKE EVER LAND? (issue #64, step 64-0.)
  *
- * COUNTS OBSERVATIONS, NOT POSTS.  It is incremented on every drain that finds
- * the POSTED bit set, and NOTHING CLEARS g_wake_ecb -- it is assigned zero
- * exactly once, in nsfsx_start (verified against the wait seam too:
- * nsfevt_plat_wait copies the list into a local array and libc370's
- * ecb_waitlist is a bare WAIT ECBLIST, so neither writes the ECB).  The
- * counter is therefore MONOTONE AND LATCHING BY CONSTRUCTION: once the first
- * POST lands it goes non-zero and thereafter tracks evtpasses.  A reader
- * seeing "wakeposts 5000" must not read that as 5000 wakes; the whole weight
- * of the measurement is on the zero / non-zero distinction.
+ * THIS COUNTER CHANGED MEANING AT 64-1, AND A READER COMPARING IT ACROSS THAT
+ * CHANGE IS COMPARING TWO DIFFERENT THINGS.  It has always been incremented on
+ * every drain that finds the POSTED bit set.  What changed is underneath it:
+ * the drain now RESETS g_wake_ecb (see nsfsx_drain step 0), where before 64-1
+ * nothing ever cleared it.
  *
- * A ZERO READING ALONGSIDE A NON-ZERO `served` IS THE FINDING: it says every
- * request that instance ever completed was picked up by the WAIT-gate probe on
- * a pass that happened for some other reason, i.e. the transport's wake did
- * not merely lack a floor -- it never arrived. */
+ *   BEFORE 64-1 -- MONOTONE AND LATCHING BY CONSTRUCTION.  The word was
+ *   assigned zero exactly once, in nsfsx_start (verified against the wait seam
+ *   too: nsfevt_plat_wait copies the list into a local array and libc370's
+ *   ecb_waitlist is a bare WAIT ECBLIST, so neither writes the ECB).  Once the
+ *   first POST landed the counter went non-zero and thereafter tracked
+ *   evtpasses at a constant offset -- measured at exactly 3 361 across four
+ *   readings of one instance.  "wakeposts 5000" did NOT mean 5000 wakes; the
+ *   whole weight of the measurement was on the zero / non-zero distinction.
+ *
+ *   FROM 64-1 -- IT COUNTS WAKE EVENTS.  Each observation consumes the bit, so
+ *   a reading is the number of passes that found a wake outstanding.  That is
+ *   the more useful counter, and it still is not a count of POSTs: two posts
+ *   arriving between one observation and the next COALESCE into one, exactly
+ *   as they do for any ECB.  It is a lower bound on posts, not a tally.
+ *
+ * EVERY FIGURE IN docs/nsf-64-0*.md WAS TAKEN UNDER THE OLD SEMANTICS, so the
+ * ~8 500/s WAKEPOSTS rates recorded there are the latch tracking evtpasses,
+ * not wakes, and nothing in this counter's post-64-1 readings is comparable to
+ * them.
+ *
+ * A ZERO READING ALONGSIDE A NON-ZERO `served` IS STILL THE 64-0 FINDING: it
+ * would say every request that instance ever completed was picked up by the
+ * WAIT-gate probe on a pass that happened for some other reason, i.e. the
+ * transport's wake did not merely lack a floor -- it never arrived.  64-0
+ * REFUTED that: the POST lands. */
 static STSCTR       *g_wakeposts;
 
 /* The request the executive is working on, and whether one is in flight.
@@ -564,6 +581,15 @@ nsfsx_ecb(void)
  * for free rather than reasoned about -- and the check has to name the FIELD,
  * not just the message id, because 64-0b's module already had both lines.
  *
+ * 64-1 ADDS NO FIELD, so it has no check of that shape and needs a different
+ * one: `POSTED=N` ON AN INSTANCE WHOSE `SERVED` IS NON-ZERO IS ITSELF THE
+ * PROOF.  Before 64-1 nothing cleared the word, so that combination was
+ * impossible.  ITS COMPLEMENT IS AMBIGUOUS AND MUST NOT BE READ AS A CHECK:
+ * `POSTED=Y` means either the reset is absent from the source or the deploy
+ * silently did not take, which is exactly the failure 5 warns about -- so a
+ * revert arm has to be corroborated independently (the deploy output read for
+ * the mid-chain HTTP 500, and the load module on MVS).
+ *
  * Everything the 64-0 prediction weighs is on ONE line: the ECB word, its
  * POSTED bit decoded, wakeposts and served.  "wakeposts == 0 while served ==
  * N" is then a single observation, not a cross-reference between two.
@@ -796,12 +822,60 @@ nsfsx_drain(void)
      * moment the loop has waited once.  A non-zero test would report POSTED
      * for an ECB that never was, and confirm the exact opposite of the truth.
      *
-     * READ-ONLY.  This does not reset the ECB.  Resetting it is the candidate
-     * fix (64-1) and is deliberately NOT done here: the measurement is only
-     * worth anything taken before any fix. */
+     * It reads the bit; step 0 below consumes it.  The counter therefore counts
+     * WAKE EVENTS from 64-1 onward, where before it latched -- see the
+     * g_wakeposts declaration, which is where a reader comparing a post-64-1
+     * number against docs/nsf-64-0*.md will look. */
     if ((g_wake_ecb & NSFECB_POSTED) != 0u && g_wakeposts != NULL) {
         STS_INC(g_wakeposts);
     }
+
+    /* ---- 0. RESET THE WAKE ECB, AHEAD OF BOTH SCANS BELOW (issue #64, 64-1)
+     * ADR-0022's reset-before-WAIT discipline, which Phase 2 never honoured.
+     * g_wake_ecb was assigned zero once, in nsfsx_start, and never again, so
+     * the first cross-address-space POST latched it for the life of the STC and
+     * evt_mainloop's WAIT could never block again.  Phase 1 has always done
+     * this -- nsfreq_drain resets g_reqecb before it takes the queue -- and so
+     * does the probe STC (nsfv.c, nsfv_server_ecb_reset).  Phase 2 was the one
+     * that diverged.  Measured cost of the divergence: ~8 500 passes per second
+     * and 26 % of a host core, permanently, on every instance that had ever
+     * served one request (docs/nsf-64-0-measurements.md 2).
+     *
+     * WHY THIS POSITION CLOSES THE WINDOW COMPLETELY.  A client publishes its
+     * request (req_state = PENDING) and only THEN POSTs, so relative to this
+     * reset there are exactly two orderings, and both are safe:
+     *
+     *   POST before the reset -> the publish was before it too, and both scans
+     *                            below run after it, so the slot is seen on
+     *                            this very pass.
+     *   POST after the reset  -> the bit stands, and the WAIT returns on it
+     *                            (nsfsx_ecb() puts this word in the ECBLIST).
+     *
+     * There is no third ordering, so no wake can be lost.
+     *
+     * WHY NOT PHASE 1's do/while RECHECK LOOP.  The recheck half of the
+     * discipline is already present here, one level up: it is the WAIT gate,
+     * and it asks its question through the same nsfsx_next_actionable this
+     * drain does (nsfsx_pending; ADR-0025 defect (2)).  What Phase 2 lacked was
+     * the reset half alone.  Wrapping this function in a loop instead would be
+     * three regressions, not one improvement:
+     *
+     *   - the __super failures below are NO-PROGRESS returns, so the loop would
+     *     spin on a condition its own failure path cannot clear;
+     *   - a client may republish the instant it is replied to, so the loop has
+     *     no finiteness argument in Phase 2 (Phase 1's rests on its bounded
+     *     fan-in, which does not transfer) -- an unbounded drain is exactly
+     *     what the run-to-completion rule forbids, because it starves the
+     *     timers and devices that share this pass;
+     *   - it would quietly turn ADR-0042 10's ONE unit of work per pass into
+     *     "serve every inline-completing request per pass", which is a
+     *     behaviour change and not part of this step.
+     *
+     * NOTHING ELSE IN THE WAKE PATH CHANGES.  The other three readers of this
+     * word are unaffected: nsfsx_ecb() hands out its ADDRESS, the corruption
+     * check compares server_ecb_ptr against that ADDRESS, and nsfsx_stats_extra
+     * reads the value for the operator.  Only the value is consumed here. */
+    g_wake_ecb = 0u;
 
     /* ---- 1. Finish the completed request ----------------------------------
      * The executive has run soc_complete on the private copy, so retcode /

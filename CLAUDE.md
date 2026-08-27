@@ -1156,8 +1156,133 @@ scattered `SPKA` windows. **c0 does NOT prove:** suppressed-vs-terminated on the
 the reachability finding's own consequence — that an unauthorised caller can dispatch a probe
 verb at NSFS and have it consume a slot that is never revisited, which is filed separately
 and belongs to (d)/c3.
+**64-1 (the wake-ECB reset, and the experiment it makes possible) — DONE,
+live-green in all three revert states. It does NOT fix issue #64 and does not
+close it; #64 stays OPEN.** Not a milestone step: `#64`'s investigation runs
+alongside M5-2c, and c1, c2, (e) and c3 are still ahead. `nsfsx_drain` never
+cleared `g_wake_ecb` — assigned zero once in `nsfsx_start` and never again — so
+the first cross-AS POST **latched** the POSTED bit for the life of the STC, and a
+posted ECB in the ECBLIST makes `WAIT` return immediately: `evt_mainloop` could
+not block afterwards. Phase 1's `nsfreq_drain` has always reset `g_reqecb`
+before taking its queue and so does the probe STC; **Phase 2 was the one that
+diverged** from the discipline `src/nsfevt.c` step 2b states in so many words
+(ADR-0022 annotation). **The diff is ONE statement** — a comment-stripped diff
+of `src/nsfsx.c` against `main` is exactly `+ g_wake_ecb = 0u;`, checked
+mechanically rather than by reading. The reset sits **ahead of both scans**, and
+that position closes the window completely: a client publishes (`req_state =
+PENDING`) and only THEN POSTs, so a POST before the reset implies the publish was
+too and both scans run after it, while a POST after it leaves the bit standing
+for the WAIT — **there is no third ordering**. **Phase 1's `do/while` recheck loop
+is deliberately NOT replicated**: the recheck half already exists one level up in
+the WAIT gate, asking through the same `nsfsx_next_actionable`, and a loop here
+would spin on the **no-progress `__super` return**, would have **no finiteness
+argument** (a client may republish the instant it is replied to — Phase 1's rests
+on its bounded fan-in and does not transfer, and an unbounded drain starves the
+timers and devices sharing the pass), and would turn ADR-0042 §10's one unit of
+work per pass into "serve every inline-completing request per pass".
+**Gate 1, three deployed states, one assertion moving** (STC 1480/1481/1482/1483;
+the "before" arm cost **zero deploys** — 64-0d left 64-0c's binary in
+`NSF.LINKLIB`, confirmed by *field*): reset ABSENT after 8 requests →
+`POSTED=Y`, **7 482 passes/s, 25.9–30.5 % of a host core**; reset PRESENT →
+`POSTED=N`, **9.98/s, 0.7–1.6 %**; reset commented OUT and redeployed (source
+verified **identical to `main` at instruction level**) → `POSTED=Y`, **8 532/s,
+26.0–26.9 %**; RESTORED → `POSTED=N`, **9.99/s, 0.5–0.7 %**. Every SOLO run CC
+0000 8/8 **inside one console second** in every state — the reset costs no
+service. **This round's deploy-took-effect check had to be a new shape**, because
+64-1 adds no field: **`POSTED=N` with `SERVED` non-zero IS the proof** (before the
+reset that combination was impossible); its complement is **ambiguous** and is not
+used as a check, so the revert arm is corroborated by the deploy output read for
+the mid-chain `HTTP 500` and by the instruction-level diff. **A SHA-256 of the
+load module is NOT usable as evidence and the check relying on it was dropped:**
+two builds of byte-identical source differ in **exactly two bytes** (a build
+timestamp at offset 10560), measured by building twice. **`WAKEPOSTS` changed
+meaning** — it counted a latch (tracking `EVTPASSES` at a constant offset of
+3 755), it now counts **wake events**: `WAKEPOSTS == SERVED` exactly at 8/8,
+28/28, 36/36, and at scale it falls **below** `SERVED` (164 257 vs 164 570), which
+is the documented coalescing that makes it a lower bound on posts, not a tally.
+**Every figure in `docs/nsf-64-0*.md` was taken under the old semantics** and is
+not comparable — noted at the declaration, where such a reader looks.
+**THE FLOOR IS MEASURED, ON PURPOSE, AND WAS NOT BUILT.** After `TSTRQXM` (TCP:
+connect, 9 353 bytes of short writes, close) the TCP timers cancel and ADR-0034's
+*queue empty ⟺ STIMER disarmed* takes the heartbeat away: **`EVTPASSES` 5854 →
+5855 across 259 s — one pass in 259 seconds**, host CPU 0.2–0.7 %, against 9.98/s
+on the same instance minutes earlier. **Paired with service in the same breath**,
+because `EVTPASSES ≈ 0` alone reads as a dead executive: on that same floorless
+instance 8 cross-AS requests were submitted and **served and returned inside one
+console second**. So **the wake works with no floor** — "no floor is needed" is a
+measurement for the HEALTHY case, and says nothing about #64. **Functional
+regression** on the final restored module (MBTTEST JOB02334): `TSTRQXC` **CC 0
+batch+TSO 8/8**, `TSTRQXF` **CC 0 batch+TSO 53/53**, `TSTRQXM` **batch CC 0
+32/32** with the host peer verifying **9 353 bytes byte-exact** (log mtime checked
+fresh, listener confirmed in `LISTEN` first) — its TSO re-run FAILs **by design**,
+the two failures being `CONNECT` and its dependent `CLOSE` after the one-shot
+listener was consumed by the batch run (the TSTTCPW precedent; batch is the gate).
+`TSTRQXM`'s `CONNECT` is the first **parked** request to complete, so the parked
+path — the one a lost wake would break — is exercised on the reset build. NSFV
+round (`P NSFS` first — both STCs steal SVC 239) `TSTSVC`/`TSTMVCK`/`TSTUBUF`/
+`TSTDEATH`/`TSTXFW` **all CC 0 batch+TSO, 484 PASS / 0 FAIL** (`TSTMVCD` excluded,
+#53). Host **2925 PASS / 0 FAIL**, unchanged — and that is a **no-regression check
+only**, evidence of nothing else, since `src/nsfsx.c` is MVS-only.
+**GATE 2 — the #64 reproduction attempt — did NOT reproduce, and that is WEAK
+evidence, for a reason that can be named.** 64-0b's standing instruction was that
+64-1 must attempt one, because it becomes untestable the moment the reset lands.
+The arm ran at scale: one instance, `TSTRQXM` then the two-client contention gate
+**45 times back to back**, no `PARM='LEAK'` — 42 A CC 0000 (3 CC 0001, all the
+gate-INTERNAL "A was given a slot other than 0" timing assertion, which the gate
+itself calls the weaker witness; its decisive refusal assertion passed every
+time), 45 B CC 0000, `SERVED` 69 → **164 570**, `EVTPASSES` → 320 733 (**≈ 1.95
+passes per request**), plus seven idle windows totalling **2 356 s** (the
+longest 972 s, over which `EVTPASSES` moved **320 733 → 320 736** — three
+passes — with `SERVED` frozen). **No stall; the detector, armed 31 m 16 s,
+emitted nothing — and no false positive either**, which matters because a naive
+EJST-flat detector would have fired almost continuously against the floorless
+executive. **The detector had to be REBUILT and then VALIDATED before its
+silence could be quoted:** the reset destroys 64-0c/0d's `ASCBEJST`-flat detector,
+because a correctly idle executive with no floor is *exactly as flat as a stalled
+one* — so the criterion became the conjunction **EJST bit-identical AND a slot
+`req_state == PENDING` AND `served` frozen**, all CSA/SQA through `/.dm`, never a
+MODIFY (which POSTs the cib ECB in the executive's own ECBLIST). Its read path
+was then proven live rather than trusted — a census during the campaign returned
+`CLAIMED` 15 and 18, a `HELD`, and all-FREE, and fast-sampling slots 0–3 caught
+**`PENDING` in 3 of 360 reads** — so a silent detector is a real null and not a
+wrong stride (CLAUDE.md §8.5, closed rather than argued). **The honest statement
+of the null is not "45 rounds and no stall":** every stall on record shares ONE
+condition, a client **parked with a published request**, and that same sampling
+measures how much of this arm had it — **`PENDING` in 3 of 360 reads ≈ 0.8 %**, sampled over
+~90 s of the campaign on slots 0–3, during the heaviest workload the stand can
+produce — where a single 64-0d gate round held it for
+MINUTES, because those rounds were themselves slow. The condition was present for
+a few seconds in total. **The idle arm cannot fire this detector at all** (no
+parked client ⇒ never `PENDING`) and 64-0c already called idle non-reproduction a
+property of the configuration; it is reported for its `EVTPASSES`/CPU content, not
+as a fair test. **What is NOT weakened is the prior finding:** 64-0c measured the
+executive **not waiting** during a stall and 64-0d measured its address space
+**stuck part-way through an MVS swap-out** (`OUCBQFL = X'80'`, `OUCBGOO`), in
+fields NSF does not write and cannot see — **the suspension is outside nsf370**,
+the reset was never a candidate fix for it, and this round neither confirms nor
+refutes it as a candidate *provocation*. **An uncontrolled observation, offered as
+exactly that:** M5-2b4's gate "crawled at ~3 requests/min until a continuous host
+ping was started"; these 45 rounds needed no external floor and each ran 3 000
+attempts in ~10 s — months and many changes apart, nothing held constant, **not
+counted as evidence**. **Round hygiene:** the stand's master console was dead on
+arrival, stuck in `*IEA420A NO FULL CAPABILITY CONSOLES, REASON=EXT` — 64-0d's own
+`ext` residue, which needs a SECOND press — and the symptom is worth knowing
+because it is not the obvious one: commands were **accepted and queued and never
+executed** (mvsMF returned a response key for each) and the 1403 hardcopy simply
+stopped; a second `ext` gave `IEE143I CONSOLE SWITCH` and **flushed ten minutes of
+queued commands at once**. An IPL was offered and **not needed**. A first CPU
+sample read 17–20 % and was **my own instrument** — a detector reading 64 slots
+through HTTPD *inside the guest* every 2 s; stopped, the same instance reads
+0.7–1.6 %, and the detector now pre-filters. `IGF991I`/`IGF995I` on device 500 —
+the familiar CTCI degradation, not a new symptom. **`#64` STAYS OPEN**; it was
+found CLOSED (COMPLETED) at round start, five hours after its own reopen, and was
+reopened with a comment saying plainly that nothing has fixed it. **The next
+question is the one 64-0d left:** what the swap-out transition is pending on —
+outside nsf370's code — and the cheap untried instrument is **NSFV**, the probe
+STC, which runs the same transport with **no device at all**. Whether NSF should
+mitigate an MVS condition, and in what form, is Mike's call.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
-[[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] |
+[[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 
 Critical path: **M0-1** (MBT project + build) and **M0-2** (NSFQUE/NSFMM);
