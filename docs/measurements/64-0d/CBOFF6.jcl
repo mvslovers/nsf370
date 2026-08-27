@@ -1,0 +1,28 @@
+//CBOFF6   JOB (A),'CB OFFSETS 5',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),NOTIFY=&SYSUID
+//*
+//* 64-0d: the SRM per-address-space state.  ASCBOUCB was computed in
+//* CBOFF4 (X'90'); this job adds ASCBOUXB, the whole OUCB swap-state
+//* set, and re-emits the ASCB flag bits as COMPUTED constants so the
+//* values are not merely read out of the macro source.
+//*
+//ASM     EXEC PGM=IFOX00,PARM='NODECK,NOLOAD,NORLD,NOXREF',REGION=4M
+//SYSLIB   DD DSN=SYS1.AMODGEN,DISP=SHR
+//         DD DSN=SYS1.MACLIB,DISP=SHR
+//SYSUT1   DD UNIT=SYSDA,SPACE=(1700,(900,200))
+//SYSUT2   DD UNIT=SYSDA,SPACE=(1700,(600,100))
+//SYSUT3   DD UNIT=SYSDA,SPACE=(1700,(600,100))
+//SYSPRINT DD SYSOUT=*
+//SYSPUNCH DD DUMMY
+CBOFF6   CSECT
+CASVT    DC    AL2(CVTASVT-CVTMAP)
+VMAXU    DC    AL2(ASVTMAXU-ASVT)
+VENTY    DC    AL2(ASVTENTY-ASVT)
+VAVAI    DC    X'00',AL1(ASVTAVAI)
+AJBNI    DC    AL2(ASCBJBNI-ASCB)
+AJBNS    DC    AL2(ASCBJBNS-ASCB)
+         CVT   DSECT=YES,LIST=YES
+         IHAASVT
+         IHAASCB
+         END
+/*

@@ -1,0 +1,17 @@
+10:54:34 EXPERIMENT: rung=/ at T+45s ; anchor=A8B7C8 server_ascb=FF9200
+11:08:55 *** STALL detected (flat 15s) ***
+11:08:58 PROBE[during] inflight=2 served=5602 | ASCB RCTF=00[-] DSP1=00 | OUCB(OK) QFL=80[GOO] SRC=09
+11:08:58 PROBE[during]   0:0500 CTCI CTCI 192.168.200.1/192.168.200.2 (tun0) IO[19] open busy
+11:08:58 PROBE[during]   0:0501 CTCI CTCI 192.168.200.1/192.168.200.2 (tun0) IO[30] open
+11:09:26 >>> INTERVENTION: '/' <<<
+11:09:26 HHC00013I '/' input entered for console 0:0009: ""
+11:09:26 
+11:09:26 HHC00010A Enter '/' input for console 0:0009
+11:09:26 HHC00081I Match at index 00, executing command /
+11:09:26 HHC00013I '/' input entered for console 0:0009: ""
+11:09:26 
+
+11:27:18 *** ENDED after 1118s (rung=/ fired at T+45s) ***
+11:27:21 PROBE[after] inflight=2 served=6018 | ASCB RCTF=00[-] DSP1=00 | OUCB(OK) QFL=00[-] SRC=00
+11:27:21 PROBE[after]   0:0500 CTCI CTCI 192.168.200.1/192.168.200.2 (tun0) IO[25] open busy
+11:27:21 PROBE[after]   0:0501 CTCI CTCI 192.168.200.1/192.168.200.2 (tun0) IO[33] open
