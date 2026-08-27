@@ -1,0 +1,11 @@
+19:52:14 anchor A8B7C8 eye=NSFVANCR ver=3 nslots=64 flags=80000000 served=33 inflight=1
+19:52:14 armed on ASCB FF8B20: EJST flat AND a slot PENDING AND served frozen for >= 20s
+19:52:45 *** STALL: EJST flat, served=33 frozen, 1 slot(s) PENDING for 23s ***
+19:52:45       SLOT0  PENDING reply_ecb=809DE5F0 ascb=FD0F18 asid=0008 xfunc=6
+19:52:45       inflight=1 exhausted=0 collisions=0
+19:52:52     still stalled, 30s (served=33)
+19:53:23     still stalled, 61s (served=33)
+19:55:52     still stalled, 210s (served=33)
+19:56:23     still stalled, 241s (served=33)
+19:57:22 *** ENDED after 299s -- served=49 (was 33) EJST moved=True ***
+20:04:32 read failed: timed out

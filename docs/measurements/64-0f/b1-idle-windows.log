@@ -1,0 +1,9 @@
+B1-W1 START host 19:30:32
+eye=NSFVANCR ver=3 flags=80000000 served=33 inflight=0 reaped=0 nslots=64 exhausted=0 collisions=0
+B1-W1 END   host 19:37:12
+eye=NSFVANCR ver=3 flags=80000000 served=33 inflight=0 reaped=0 nslots=64 exhausted=0 collisions=0
+B1-W2 START host 19:37:43
+eye=NSFVANCR ver=3 flags=80000000 served=33 inflight=0 reaped=0 nslots=64 exhausted=0 collisions=0
+B1-W2 END   host 19:44:23
+eye=NSFVANCR ver=3 flags=80000000 served=33 inflight=0 reaped=0 nslots=64 exhausted=0 collisions=0
+B1 COMPLETE

@@ -1,0 +1,3 @@
+pendwatch: 180 slot reads over 120s -> {'PENDING': 3, 'FREE': 148, 'DONE': 29}
+pendwatch: served 3329 -> 15534 (delta 12205)
+VALIDATION: PENDING observed = YES
