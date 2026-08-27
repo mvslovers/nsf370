@@ -323,7 +323,7 @@ below.
 | floor | 259 s | post-TCP-workload, no floor at all | quiet |
 | C | 189 s | reset out, spinning | quiet |
 | A′ | 159 s | restored | quiet |
-| idle 1 | 900 s | post-campaign, 164 570 requests behind it | quiet |
+| idle 1 | **920 s** | post-campaign, 164 570 requests behind it | quiet — `EVTPASSES` 320 733 → **320 736**, three passes in 920 s, `SERVED` frozen |
 
 **The idle arm is known low-yield and is not offered as a fair test.** 64-0c
 recorded four non-reproductions in the idle configuration across three rounds
@@ -385,3 +385,79 @@ outside nsf370.** The reset was never a candidate fix for it; it is a candidate
 - Whether NSF should mitigate an MVS condition at all, and in what form
   (`SYSEVENT DONTSWAP` being the obvious candidate, and a privileged,
   contract-level change). That is the maintainer's decision.
+
+---
+
+## 8. The NSFV round, and round hygiene
+
+### NSFV (the Stage-0 regression)
+
+`P NSFS` first — both STCs steal SVC 239 — then `S NSFV` and
+`make test-mvs --only TSTSVC --only TSTMVCK --only TSTUBUF --only TSTDEATH
+--only TSTXFW`, job MBTTEST JOB02426:
+
+| test | batch | TSO |
+|---|---|---|
+| TSTSVC | **CC 0** | **CC 0** |
+| TSTMVCK | **CC 0** | **CC 0** |
+| TSTUBUF | **CC 0** | **CC 0** |
+| TSTDEATH | **CC 0** | **CC 0** |
+| TSTXFW | **CC 0** | **CC 0** |
+
+**484 PASS / 0 FAIL** — the same figure M5-2c0 recorded. `TSTMVCD` deliberately
+excluded (issue #53: it is b0's probe, not a Stage-0 gate, and fails for
+environmental reasons, which in a full-green round costs a re-run and erodes
+confidence — the b3/c0 precedent).
+
+`NSFV000I`→`NSFV001I` clean start, `NSFV095I SVC 239 RESTORED` +
+`NSFV036I SVC ROUTINE UNLOADED` clean stop.
+
+### Hygiene
+
+- **The console repair is in §2** and is the round's largest piece of friction.
+  An IPL was offered by the maintainer and turned out not to be needed.
+- **`NSF.LINKLIB` deploys: three** (reset in, reset out, restored). Every
+  deploy's output was read for the mid-chain `HTTP 500` `DELETE` signature and
+  none occurred. Every `make deploy` was preceded by `P NSFS`.
+- **CSA gave nothing away.** `NSF055I` read **1 044 480** at every one of the
+  four `S NSFS` starts (STC 1480/1481/1482/1483) — constant across the round.
+  Every `P NSFS` and the `P NSFV` was clean: `NSF043I SVC 239 RESTORED`,
+  `NSF044I`, `NSF011I`, **no `NSF054W` retain branch**. `PARM='LEAK'` was **not**
+  run — it was not part of the arm (four 64-0d reproductions without it) and its
+  ~137 KB would be retained to IPL for no measurement.
+- **Zero dumps.** `IEA995I` / `SYS1.DUMP` count is 0 for the whole log.
+- **`IGF991I` / `IGF995I` on device 500** at 6.49.09 — the familiar CTCI-pair
+  degradation after sustained use, not a new symptom.
+- **FTPD (STC 1476) logged recovered `S0C1`/`S0C6`/`S0C4` worker abends** at
+  7.26–7.27 on `CMD=QUIT`. Unrelated to NSF, in another address space, recovered
+  by FTPD itself; recorded as stand background rather than passed over.
+- **Host suite `make test-host`: 2925 PASS / 0 FAIL, 27 tests**, before and
+  after — a **no-regression check only**, and evidence of nothing else, since
+  `src/nsfsx.c` is MVS-only and never compiles on host.
+- **Stand left with NSFS and NSFV both stopped**, and **TESTLIB holding
+  `TSTDEATH` / `TSTMVCK` / `TSTSVC` / `TSTUBUF` / `TSTXFW`** — the last `--only`
+  run replaced it, so the next round must re-deploy `TSTRQXM` / `TSTRQXC` /
+  `TSTRQXF` rather than assume they are there (the b4 `S806`).
+- **The detector was armed 14:17:06 → 14:48:22 (31 m 16 s)** across the campaign
+  and idle window 1, and emitted **nothing** — no stall, and no false positive
+  either, which matters because a naive EJST-flat detector would have fired
+  almost continuously against the floorless executive.
+
+---
+
+## 9. What this round did not do
+
+- **No floor**, of any kind, and no `nsftmr` change.
+- **No ADR-0043.** The wake contract — who posts, what resets, what the floor is,
+  and what happens when the executive's liveness depends on something outside
+  nsf370 — is Decision 2 and remains Mike's, to be taken once #64's mechanism is
+  established. ADR-0022 carries an annotation, append-only, because the *reset*
+  is unambiguously that ADR's subject.
+- **It did not close, or claim to have fixed, issue #64.** The issue was found
+  `CLOSED (COMPLETED)` at round start — closed again five hours after its own
+  reopen — and was **reopened** with a comment saying plainly that nothing has
+  fixed it.
+- It did not test the second candidate provocation (the indefinitely-outstanding
+  CTCI read). **NSFV** — the probe STC, same transport, no device at all — is the
+  cheap instrument for it and needs no code change.
+- It did not read the OUCB or any SRM state: no stall occurred to read one from.

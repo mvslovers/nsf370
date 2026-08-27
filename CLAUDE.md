@@ -1219,7 +1219,8 @@ the two failures being `CONNECT` and its dependent `CLOSE` after the one-shot
 listener was consumed by the batch run (the TSTTCPW precedent; batch is the gate).
 `TSTRQXM`'s `CONNECT` is the first **parked** request to complete, so the parked
 path — the one a lost wake would break — is exercised on the reset build. NSFV
-round `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH`/`TSTXFW` green (`TSTMVCD` excluded,
+round (`P NSFS` first — both STCs steal SVC 239) `TSTSVC`/`TSTMVCK`/`TSTUBUF`/
+`TSTDEATH`/`TSTXFW` **all CC 0 batch+TSO, 484 PASS / 0 FAIL** (`TSTMVCD` excluded,
 #53). Host **2925 PASS / 0 FAIL**, unchanged — and that is a **no-regression check
 only**, evidence of nothing else, since `src/nsfsx.c` is MVS-only.
 **GATE 2 — the #64 reproduction attempt — did NOT reproduce, and that is WEAK
@@ -1230,8 +1231,12 @@ The arm ran at scale: one instance, `TSTRQXM` then the two-client contention gat
 gate-INTERNAL "A was given a slot other than 0" timing assertion, which the gate
 itself calls the weaker witness; its decisive refusal assertion passed every
 time), 45 B CC 0000, `SERVED` 69 → **164 570**, `EVTPASSES` → 320 733 (**≈ 1.95
-passes per request**), plus seven idle windows totalling ~2 400 s. **No stall,
-detector silent.** **The detector had to be REBUILT and then VALIDATED before its
+passes per request**), plus seven idle windows totalling **2 445 s** (the
+longest 920 s, over which `EVTPASSES` moved **320 733 → 320 736** — three
+passes — with `SERVED` frozen). **No stall; the detector, armed 31 m 16 s,
+emitted nothing — and no false positive either**, which matters because a naive
+EJST-flat detector would have fired almost continuously against the floorless
+executive. **The detector had to be REBUILT and then VALIDATED before its
 silence could be quoted:** the reset destroys 64-0c/0d's `ASCBEJST`-flat detector,
 because a correctly idle executive with no floor is *exactly as flat as a stalled
 one* — so the criterion became the conjunction **EJST bit-identical AND a slot
