@@ -1395,6 +1395,83 @@ So **c1 is RELEASED** — a sweep on an idle stack is not affected by a defect t
 occur on an idle stack — and **(e) stays BLOCKED, more firmly than before**: the stalls fire
 under exactly the load (e) measures, and a twelve-minute event inside a throughput round
 makes every number in it worthless. [[nsf370-64-0f-spin-arm]]
+**64-3-0 — the no-swap survey — DONE, docs-only, read-only, maintainer-countersigned
+(PR #76 merged). It builds nothing and #64 stays OPEN.** Not a milestone step. The question
+64-0f left: 64-0f measured the stall as a **completed** swap cycle (`ASCBSTOR 0FAF3C00 →
+0FC26C00`, `OUCBSWC 0 → 1`, ~12 minutes non-dispatchable), so should NSFS be non-swappable at
+all — the way essential subsystems are normally run. **Nothing was issued, changed, started or
+stopped**: no `SYSEVENT`, no deploy, no PPT edit, no STC recycle, no job submitted; NSFS was
+sampled as found (STC01493, the module 64-0f restored). **THE MECHANISM EXISTS.** `SYSEVENT`
+is **not** in `SYS1.MACLIB` — it is in **`SYS1.AMODGEN(SYSEVENT)`**, and so are `IHAASCB`,
+`IRAOUCB`, `IEFZB610` and the PPT generator `SGIEF0PT` (positive control: `WTO` reads in
+MACLIB; `SYSEVENT` and `IHAASCB` both return `PDS member not found` there). 56 mnemonics;
+**`DONTSWAP` = 41, `OKSWAP` = 42** (also `TRANSWAP` 14, `REQSWAP` 43); `&ENTRY=SVC` (default)
+→ **`SVC 95`**, `ENTRY=BRANCH` → a `CVTOPTE` branch entry. **The macro documents no state
+requirement in its 247 lines** — a fact about the macro, NOT an unestablished requirement: the
+ancestor states it outright (`mvsevent.asm:89`, `SPKA 0  SYSEVENT requires key 0`) inside a
+`testauth()` → `SUPERVISOR` → key-0 sequence, **and NSFS already holds all three**. SVC 95's
+live `SVCTABLE` entry reads **type 1 with `svcapf` OFF**, so the FLIH turns nobody away and
+any check lives **inside SRM**. **`ASCBNSWP` IS NOT THE LIVE INDICATOR — `OUCBNSW` IS**, and
+this is the trap the round nearly fell into: `ASCBNSWP` reads *"PROGRAM IS NON SWAPPABLE OR
+WILL RUN IN V=R REGION"* — a program attribute — while SRM's live status is `OUCBNSW` (BIT0 of
+`OUCBSFL`). Only `*MASTER*` carries `ASCBNSWP`, but **JES2 and VTAM are non-swappable and show
+it only in `OUCBNSW`**; a survey reading the ASCB bit alone reports them swappable and is
+wrong. **On the stand: exactly three address spaces are non-swappable** — `*MASTER*`, `JES2`,
+`NET` (VTAM) — **stable 12/12 across a 5.5-minute window**, all three also `OUCBASW` with
+`OUCBNDS > 0`. **HTTPD is swappable**, and so are UFSD, FTPD and NSFS: **no project in this
+ecosystem runs pinned**. **FTPD swapped out and back on 11 of 12 samples while idle** —
+swapping is the normal condition here, not an exception, which is the counterweight to pinning
+anything. **THE ECOSYSTEM'S ANSWER IS THIS PROJECT'S OWN ANCESTOR, and what transfers is the
+MECHANISM ONLY:** `mvs38j-ip` issues `SYSEVENT DONTSWAP` at sysinit (`sysinit.c:67`) and
+`OKSWAP` at termination (`xdone.c:51-54`) because SRM left it unavailable for ~25 minutes —
+SRM making a long-running server unavailable for minutes, cured by DONTSWAP, is the precedent
+and the whole of it. **His DIAGNOSIS does not transfer:** his trigger is `STIMER WAIT` from
+**MVSDOZE, a governor against WTO buffer exhaustion**, not a device condition; he discounts the
+CTCI MIH line himself (*"perhaps it's related, perhaps not (probably not)"*) and calls his SRM
+conclusion *"merely my best guess"* — so "same device" carries no weight and inheriting a
+disclaimed diagnosis would repeat a mistake already paid for. **Precedent cited, no code
+copied** (ADR-0005); `libc370` has no SYSEVENT service, only the `cvtopte` field comment, so a
+seam is new HLASM written fresh. **PHASE-1/PHASE-2 ASYMMETRY:** NSFS is `ac = 1`, calls
+`clib_apf_setup` (SVC 244, `nsfsmain.c:237`) and enters `__super(PSWKEY0, …)` at **twelve**
+sites in `nsfsx.c`; the Phase-1 `NSF` module has **no `ac`, no `clib_apf_setup`, no
+`__super`** — **the mitigation is free exactly where the defect lives and not free anywhere
+else.** **THE COST, WITH ITS FIELD:** `ASCBFMCT` ("ALLOCATED PAGE FRAME COUNT",
+`IHAASCB` line 171, offset `X'98'`) = **39 frames / 156 KB for NSFS** against a **4096-frame**
+machine (`MAINSIZE 16`, read from `conf/local.cnf` — the file the running `hercules -f`
+actually names, checked against the process, not `custom.cnf`); idle and resident, so a
+**floor**, not a working set (HTTPD's 180 resident vs 279 `OUCBWSS` is the gap). **PPT COST:**
+no `SCHEDxx` in PARMLIB, `IEFSDPPT` is **not a member** of LPALIB/LINKLIB/NUCLEUS/SVCLIB (a
+CSECT link-edited elsewhere), and the sysgen `&PGM` input adds CPU-affinity entries with
+`DC X'00' SLOT FOR PROPERTIES` — **no attribute bits** — so a PPT change is a **USERMOD + IPL
+for every installation**. **NONE OF THE THREE PREDICTIONS FIRES AS WRITTEN:** S1's first half
+confirmed (mechanism exists, NSFS has more state than predicted) and its second half NOT
+established; S2 not refuted, only unconfirmed; S3 partly fires, in the strongest form, but as
+**precedent rather than an alternative** — it sharpens S1-vs-S2 instead of bypassing it.
+**THE OPEN QUESTION IS THE WHOLE TRADE-OFF:** `PPTNSWP` reads *"to be **AUTHORIZED** to be
+non-swappable"* and `OUCBASW` reads *"AUTHORIZED FOR DONTSWAP"*, so an authorization concept
+exists — but the three ASes with `ASW` are **also exactly** the three with `NDS > 0`, so the
+correlation cannot separate "granted at ATTACH from the PPT" from "set when the first DONTSWAP
+was accepted", and **no discriminating case runs on this stand** (TCAM/GTF/IMS/JES3 absent).
+The ancestor cannot settle it either — no `IEFSDPPT` appears in that repo, but a Turnkey
+system's PPT would not be in that repo either way, so the absence is evidence about the tree
+and not the machine. **One measurement settles it: issue `DONTSWAP` from NSFS and read
+`OUCBNSW`/`OUCBNDS`/`OUCBASW` back** — a change, therefore not the probe's to make.
+**RECOMMENDED: the self-issued route, gated on that measurement** — it costs an installation
+nothing, where a PPT entry would turn a stack installable by copying a PROC and a load library
+into one that requires modifying the operating system. **A CONTROL CAUGHT A REAL FAILURE:**
+two offsets (`ASCBFMCT`, `OUCBWSS`) were in no prior round's proved set, so rather than submit
+an IFOX00 job (64-0e exhausted the spool) the DSECT layouts were computed from the macro
+sources and **gated on reproducing every offset a prior `CBOFF` job had proved** — `IRAOUCB`
+17/17, `IHAASCB` **0/13 on first use**, because that member marks continued operands with a
+trailing ` -` the parser did not strip. Without the gate the survey would have read a wrong
+offset and reported a confident number. **INSTRUMENT TRAP: HTTPD is the instrument** (`/.dm`
+runs inside it), so its own `ASCBFMCT` climbed 187 → 200 while being read — its frame count is
+an upper bound, never a measurement; same shape as 64-0f's false CPU reading. **Does NOT
+establish:** whether the PPT authorisation is required; that the running `IEFSDPPT` matches
+`SGIEF0PT` (11/11 correspondence is consistent with it — the live table was **not** read);
+that `DONTSWAP` would fix #64; NSFS's working set under load; anything about how SRM decides
+to swap; or that pinning has no cost beyond storage. Host **2925 PASS / 0 FAIL** — a
+no-regression check only. [[nsf370-64-3-0-noswap-survey]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
