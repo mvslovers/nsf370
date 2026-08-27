@@ -56,6 +56,13 @@ void nsfopr_drain(void) asm("NSFOPDRN");
  * an NSFSTS counter -- alongside the counters that interpret it. */
 void nsfopr_set_stats_extra(void (*fn)(void)) asm("NSFOPSXT");
 
+/* Register an optional SWAP verb (issue #64, step 64-3-1).  NULL (the default)
+ * leaves the dispatcher exactly as it was: `F NSF,SWAP` draws NSF808E and the
+ * NSF880I help text is unchanged, so the Phase-1 STC is byte-for-byte
+ * unaffected.  The Phase-2 STC registers nsfswap_op, which probes and controls
+ * SRM swappability -- a privileged path the Phase-1 module cannot take. */
+void nsfopr_set_swap(void (*fn)(const char *)) asm("NSFOPSWP");
+
 #if NSF_DEBUG
 /* Host-only injection so a test can drive the operator path through the real
  * loop (src/nsfopr_plat_host.c): queue a MODIFY command / a STOP, then POST the

@@ -29,6 +29,28 @@
 
 #if NSF_DEBUG
 /* True if any captured nsfmsg line contains `needle` (host capture ring). */
+/* SWAP verb hook stub (issue #64, step 64-3-1).  Counts calls and records the
+ * operand, so the test can prove the verb reaches the handler AND that it is
+ * inert when unregistered -- the Phase-1 red line, since only Phase 2 may
+ * issue SYSEVENT. */
+static int  g_swapcalls;
+static char g_swaparg[32];
+
+static void swap_stub(const char *arg)
+{
+    size_t n;
+    g_swapcalls++;
+    g_swaparg[0] = '\0';
+    if (arg != NULL) {
+        n = strlen(arg);
+        if (n >= sizeof(g_swaparg)) {
+            n = sizeof(g_swaparg) - 1u;
+        }
+        memcpy(g_swaparg, arg, n);
+        g_swaparg[n] = '\0';
+    }
+}
+
 static int cap_has(const char *needle)
 {
     UINT n = nsfmsg_cap_count();
@@ -108,6 +130,42 @@ int main(void)
         nsfmsg_cap_reset();
         nsfopr_dispatch("FROBNICATE");
         CHECK(cap_has("NSF808E"), "unknown command -> NSF808E");
+
+        /* -- SWAP verb: unregistered is INERT (the Phase-1 guarantee) ---- */
+        g_swapcalls = 0;
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("SWAP");
+        CHECK(g_swapcalls == 0, "SWAP unregistered: handler not called");
+        CHECK(cap_has("NSF808E"),
+              "SWAP unregistered: falls through to NSF808E like any unknown verb");
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("HELP");
+        CHECK(!cap_has("SRM swappability"),
+              "SWAP unregistered: help text does not grow");
+
+        /* -- registered: the verb reaches the handler, with its operand ---- */
+        nsfopr_set_swap(swap_stub);
+        g_swapcalls = 0;
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("SWAP");
+        CHECK(g_swapcalls == 1, "SWAP registered: handler called exactly once");
+        CHECK(!cap_has("NSF808E"), "SWAP registered: not an unknown command");
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("swap probe");
+        CHECK(g_swapcalls == 2, "SWAP is case-folded like every other verb");
+        CHECK(strcmp(g_swaparg, "PROBE") == 0,
+              "SWAP passes the rest of the line as the operand");
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("HELP");
+        CHECK(cap_has("SRM swappability"),
+              "SWAP registered: help text gains the verb");
+
+        /* Deregister, so the rest of the suite sees the Phase-1 shape. */
+        nsfopr_set_swap(NULL);
+        g_swapcalls = 0;
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("SWAP");
+        CHECK(g_swapcalls == 0, "SWAP deregistered: inert again");
 
         nsfmsg_cap_reset();
         nsfopr_dispatch("STOP");

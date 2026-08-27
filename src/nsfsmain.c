@@ -40,6 +40,7 @@
 #include "nsfcfg.h"
 #include "nsfstc.h"
 #include "nsfopr.h"
+#include "nsfswap.h"    /* nsfswap_op -- the SWAP verb (Phase 2 only) */
 #include "nsfevt.h"
 #include "nsfmsg.h"
 #include "nsfmm.h"
@@ -359,6 +360,12 @@ int main(int argc, char **argv)
      * Phase-1 STATS reply is unchanged. Registered AFTER nsfsx_start so the
      * first STATS already reports a live anchor. */
     nsfopr_set_stats_extra(nsfsx_stats_extra);
+    /* The SRM swappability verb (issue #64, step 64-3-1).  Phase 2 only:
+     * SYSEVENT needs the APF authorisation, supervisor state and key 0 this
+     * STC already holds and the Phase-1 module does not.  Registering it here
+     * -- rather than on the startup path -- means a wrong answer cannot break
+     * a normal `S NSFS`, and the action is operator-gated and reversible. */
+    nsfopr_set_swap(nsfswap_op);
 
     /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
     __estae(ESTAE_CREATE, (void *)nsf_recover, NULL);
