@@ -1338,6 +1338,63 @@ and reported a clean null; and I asserted NSFS's concurrency from one `D A,L` in
 it (2 address spaces for 940 of 989 s). Stand left clean — both STCs stopped, no `NSF054W`, zero
 dumps, no CSA debt, TESTLIB holding `TSTRQXC` alone. Host **2925 PASS / 0 FAIL**.
 [[nsf370-64-0e-nsfv-arm]]
+**64-0f — the spin arm — DONE, docs-only, maintainer-countersigned (PR #75 merged). It
+fixes nothing and #64 stays OPEN.** Not a milestone step. **A stall was reproduced and
+FULLY MEASURED — once in four deliberate attempts**, which is the whole of what the round
+claims. The only step in this investigation that deliberately deployed a module known to be
+wrong (the 64-1 reset reverted, authorised for this round; **wall clock live: 1 h 14 min
+49 s**, `main`'s module back and verified before the document was finished — `POSTED=N …
+SERVED=16`, `EVTPASSES=345` against the spin build's 529 481, and `WAKEPOSTS == SERVED`
+exactly, which is 64-1's wake-event semantics rather than the latch). **The kickoff's
+premise was refuted from primary source before any machine time:** it rested on "the nine
+stalls all occurred in **idle** windows", and `docs/nsf-64-0c-measurements.md` says the
+reverse in so many words — *"An idle stack does not stall"* — with **five** idle
+non-reproductions on record and every stall firing 40–90 s into a round. Run as written,
+the round could not have fired, for two independent reasons: the arm never reproduces
+there, **and the detector is structurally blind there** (no parked client ⇒ never
+`PENDING`). Both shapes were run, labelled, idle first. **The reproduction, read before any
+intervention and identity-proven** (`OUCBASCB` matched, never inferred): 64-0d's signature
+field for field — `QFL=80[GOO] SRC=09 RCTF=00 DSP1=00`, `CPUS=0`, EJST bit-identical, the
+client `MBTTEST` parked on `reply_ecb` with its wait bit set. **And then the reading the
+round was built to take: it CLEARED BY ITSELF after ~12 minutes.** `ASCBSTOR` `0FAF3C00 →
+0FC26C00` — the segment-table origin reassigned, the retrospective signature of a
+**completed** cycle, which is exactly the field 64-0e identified as the instrument and could
+not see — corroborated independently by **`OUCBSWC` 0 → 1** (`0000` on all 38 prior samples,
+`0001` on this one: **exactly one** cycle, not a fast out-and-back series). `served` 33 → 49
+and the client job ended **CC 0000** — it was never failing, it was parked. **So #64's
+"stuck" is better read as "very slow, and observed to finish"**, and 64-0d's wording is
+revised rather than contradicted: "stuck" means "not yet observed to complete", and this
+round supplies one that did. **Had the STC been stopped to "recover" the stall, the answer
+would have been destroyed.** **The detector fired on the live phenomenon** — the full
+conjunction (EJST bit-identical **and** a slot `PENDING` **and** `served` frozen), which is
+a stronger validation than any census: proven to fire on the thing whose absence it would
+otherwise report. **What the round does NOT establish, and the list is not hedging:** it
+does **not identify the provocation at all** — the onset coincided with a `make test-mvs`
+deploy burst, and all three attempts to reproduce that were clean (sustained load **28 000
+requests, no stall**; the identical burst after load; the identical burst after a matched
+840 s idle), so **request rate is excluded (33 vs 28 000)** and nothing else is established;
+it does **not make 64-1 the fix** (one positive against priors collected under different
+conditions, and 64-1's own arm is dated); it does **not show the spin causes** the stuck
+swap-out (the chain ends at `QFL=80[GOO]`, inside MVS, in fields NSF does not write and
+cannot see); and it does not rule out that the stall was always reachable and simply rare —
+**one success does not measure a rate**. **B1 (idle, spin) was completely healthy** across
+2 × 400 s with `CPUS=1` on 17/17 and **no swap-out even attempted**, which is itself a
+mechanism for why idle has never reproduced: SRM does not attempt to swap a **spinning**
+address space. **An unexplained discrepancy is reported rather than explained away:** the
+same defective source cost **112.7 %** of a host core here against 64-1's **25.9–30.5 %**,
+and the instrument load runs the *wrong* way to explain it — a caution about every
+cross-round comparison in this investigation, including this one's. **None of the three
+predictions fired as written** (the closest, F(i), placed the stall in an idle window, which
+B1 refutes). **Two decisions were brought back rather than taken, and both are ratified:**
+arm 2 was skipped (its purpose is unattainable against a phenomenon firing one time in four,
+and it is confounded) and the spool purge was left to the maintainer.
+**A CORRECTION TO THE #64 PRECONDITION, recorded here: it SPLITS.** The blocking was
+justified with "the sweep exists for an idle stack, which is the situation the defect
+occupies", and `docs/nsf-64-0c-measurements.md:189` states the opposite in so many words.
+So **c1 is RELEASED** — a sweep on an idle stack is not affected by a defect that does not
+occur on an idle stack — and **(e) stays BLOCKED, more firmly than before**: the stalls fire
+under exactly the load (e) measures, and a twelve-minute event inside a throughput round
+makes every number in it worthless. [[nsf370-64-0f-spin-arm]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
