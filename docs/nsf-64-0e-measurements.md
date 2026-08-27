@@ -390,28 +390,40 @@ while NSFV had gone to `QFL=0C[OFF,OUT]` within about a minute of going idle (§
 
 The obvious candidate is the difference the round was built around: **NSFS holds an outstanding
 CTCI read** — an EXCP that never completes on a silent link — and NSFV has no device at all.
-**The comparison this was meant to support is empty, and that is the answer to the question it
-raises.** Counting every OUCB sample of the round, on both STCs, through the same reader:
+**"Empty comparison" understates it — the round produced a matched comparison with a result.** Counting every OUCB sample of the round, on both STCs, through the same reader:
 
 | | samples | ever `QFL != 00` |
 |---|---|---|
 | **NSFS** (device up), 16:37:57 → 17:16:17 | **54** | **0** |
 | **NSFV** (no device) | 16 | **12** — swapped out on 75 % of samples |
 
-**NSFS was never observed swapped, at all, in 38 minutes** — including an *unplanned* 8-minute
-idle stretch inside the load arm (the spool exhaustion froze `served` from 16:53:16; 12 samples,
-all resident), which is the same condition under which NSFV swapped out within about a minute.
-So **NSFV showed only that swapping works normally on this stand**; nothing was learned about
-whether an address space holding an outstanding CTCI read swaps *cleanly*, because NSFS never
-entered the state. **The read is not exonerated by this round.**
+**NSFS was never observed swapped, at all, in 38 minutes.** And the spool exhaustion handed the
+round the one thing it had not designed for: an **unplanned 8-minute idle stretch inside the load
+arm** (`served` frozen from 16:53:16; 12 samples, all resident). That is not an empty cell — it is
+**a matched comparison with a result**: the same stand, the same instrument, the same *idle*
+condition, **NSFS resident 12/12 against NSFV swapped out within about a minute.**
 
-**And the null is soft in one specific way, which names the next instrument.** The cadence was
-45–60 s, so a transition falling entirely between two samples is invisible. For an *NSFV-like*
-swap that is a weak objection — NSFV's swapped state persisted for minutes — but a **fast
-out-and-back cycle cannot be excluded**, because the sampler **did not read `ASCBSTOR`**. That is
-the field which shows a *completed* cycle retrospectively: 64-0d measured the segment-table origin
-changing across a transition (`0F8BCC00` → `0F923C00`). Any future swap-axis sampler should carry
-it.
+**So the leading candidate is still the outstanding CTCI read — with the sign reversed.** Not
+*"the read makes a swap-out get stuck"* but ***"the read makes NSFS swap-resistant."*** An
+address space with an EXCP outstanding on a silent link is one SRM is reluctant to take, and on
+this evidence it did not take it at all. If that holds, then the rare event in issue #64 is not
+*"the swap-out got stuck"* — it is ***"SRM began a swap-out at all,"*** and the question turns
+from why a transition hangs to what made SRM start one against a resistant address space.
+
+**What this does NOT do is exonerate the read.** It relocates it: from a candidate for the hang
+to a candidate for the resistance.
+
+**And the whole reading stands or falls on one sampling limitation, which makes `ASCBSTOR`
+load-bearing rather than optional.** The cadence was 45–60 s, so a transition falling entirely
+between two samples is invisible. For an *NSFV-like* swap that is a weak objection — NSFV's
+swapped state persisted for minutes — but a **fast out-and-back cycle cannot be excluded**,
+because the sampler **did not read `ASCBSTOR`**: the field that shows a *completed* cycle
+retrospectively, which 64-0d measured going `0F8BCC00` → `0F923C00` across a transition.
+
+If NSFS was in fact swapping out and straight back in between samples, then it is **not**
+swap-resistant, the paragraph above collapses, and "empty comparison" was the right reading after
+all. **One field decides which of the two it is**, so any next round on this axis carries
+`ASCBSTOR` — it is not an improvement to the instrument, it is the instrument.
 
 **It is recorded as an observation, not a mechanism.** Nothing here shows *why* SRM treats them
 differently, and it does not sit comfortably beside 64-0d, where SRM demonstrably *did* try to

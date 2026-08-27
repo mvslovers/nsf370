@@ -1294,6 +1294,50 @@ the one 64-0d left:** what the swap-out transition is pending on — outside
 nsf370's code — and the cheap untried instrument is **NSFV**, the probe STC, which
 runs the same transport with **no device at all**. Whether NSF should mitigate an
 MVS condition, and in what form, is Mike's call.
+**64-0e — NSFV, the same transport with no device — DONE, docs-only, maintainer-countersigned
+(PR #73 merged). It fixes nothing and #64 stays OPEN.** **Step §0 was answered from the logs
+before any machine time and is the more useful half:** the parked client **PRECEDES** every one of
+the nine recorded stalls — `served` is non-zero at every onset (it only advances on a completed
+request and is frozen through a stall) and the client keeps publishing *during* each stall
+(64-0d stall 1: `collisions` 241 430 → 2 822 998 while `served` is frozen, a ratio of **exactly
+64.0000** twice over, i.e. all 64 slots non-FREE and ≈ 13 022 full scans). The EJST trace dates
+that stall to the second — idle at 0.3 % of a CPU until the first request ≈ 10:43:37, a full core
+to ≈ 10:44:06 while 341 requests complete — so the stream begins ≈ 29 s **before** the stall.
+**But three things ran under one name and only two precede:** submitting **at rate** (precedes), a
+request outstanding at onset (continuously true, not created by the stall), and a client **parked
+for minutes** (the stall's own effect). **An arm built to hold one parked would have rebuilt the
+consequence and passed as a reproduction** — which is why §0 was worth more than the round.
+Also RETRACTED here: 64-0d's "impossible" slot rows are real (`FNSLOT`/`DOSLOT` stores no owner
+identity; `tstrqxc.c` pre-claims slots 1..61 through it), and 64-1's campaign is DATED —
+904 s / 45 rounds = 20.1 s per slot, ~10 s load then ~10 s gap, so it **never entered** the
+40–90 s window every stall fires inside. **The live arms:** NSFV 543 356 requests / 1 134 s /
+max inter-step gap **1 s** / 0 slow steps of 10 004; NSFS (device up, post-reset, `POSTED=N` with
+non-zero `SERVED` confirming the build) 139 240 / 988 s / max gap **1 s** / 0 of 17 403. **N(iii),
+and what it earns is the WINDOW and only the window** — TWO explanations survive, since the arms
+were not equally contended (10.5 % vs 1.1 % collisions per request) and neither reached the
+saturation of the arm that reproduces. **The detector is PROVEN to fire on the phenomenon**, which
+is what makes the nulls worth anything: 64-0d's stall 1 sits in the same cumulative console log as
+one `TSTRQXC` step of elapsed `00:07:17.57` (start CEST 10:44:02 vs its recorded 10:44:10 →
+10:51:19). **THE SWAP READING IS THE ROUND'S REAL OUTPUT, and it points at the read with the sign
+REVERSED.** NSFS: **54 OUCB samples over 38 min, never once swapped**, including an *unplanned*
+8-minute idle stretch the spool exhaustion handed over (12/12 resident); NSFV: 16 samples, **12
+swapped out**, every transition COMPLETING (`0C` → `00` → `0C`, never a bit standing, and the
+0.12 s probe INCLUDES the swap-in). That is a **matched** comparison, not an empty one — so the
+candidate is not *"the read makes a swap-out get stuck"* but *"**the read makes NSFS
+swap-resistant**"*, and the rare event in #64 is then not *"the swap got stuck"* but *"**SRM began
+a swap-out at all**"*. **It stands or falls on one field:** the 45–60 s cadence cannot exclude a
+fast out-and-back cycle, and the sampler did **not** read **`ASCBSTOR`** (which 64-0d measured
+going `0F8BCC00` → `0F923C00` across a transition). Any next round on this axis carries it — it is
+not an improvement to the instrument, it is the instrument. **"Untestable without reintroducing
+it" was WRONG and is corrected:** the 64-1 revert build exists, was run four times and is
+instruction-diff-verified against `main`, and this round's NSFS arm is already its paired control,
+so the spin arm is a decision and not a technical obstacle. **Three faults of mine are in the
+record**: I filled the JES2 spool (`$HASP355`, cleared by the maintainer); my first detector query
+used a **string** compare on the MVS clock so `"10.01.26" < "9.36"` dropped everything after 10:00
+and reported a clean null; and I asserted NSFS's concurrency from one `D A,L` instead of counting
+it (2 address spaces for 940 of 989 s). Stand left clean — both STCs stopped, no `NSF054W`, zero
+dumps, no CSA debt, TESTLIB holding `TSTRQXC` alone. Host **2925 PASS / 0 FAIL**.
+[[nsf370-64-0e-nsfv-arm]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
