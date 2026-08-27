@@ -162,7 +162,7 @@ This is the decision one can disagree with, so it is stated as one.
 time with no timer armed, no device traffic and no poll, and a single cross-address-space POST
 is **sufficient** to bring it back. It is not *necessary* in the strict sense — the same ECBLIST
 carries the timer, handoff, generic, device, cib and stop ECBs, and the drain runs on every pass
-however that pass was caused, which is exactly what **Named gaps** (b) leans on. What the POST
+however that pass was caused — which is exactly what **Named gaps** (b)'s middle row leans on. What the POST
 is, is **the only wake source the client controls**. NSF does not maintain a periodic wake to
 hedge it, and this ADR declines to add one.
 
@@ -396,16 +396,41 @@ reaching more than one is not proven). Reasoned, not measured, and stated as suc
 **(b) A dispatchable second request while one is in service is deferred, and its wake is
 consumed.** `nsfsx_pending` reports **not-pending** for it — `nsfreqx_actionable(DISPATCH, busy)`
 returns 0 — so the executive commits to the WAIT with that request outstanding and its POSTED bit
-already cleared by §3's reset. It then waits for an unrelated wake. This is **deliberate**: the
-alternative is a probe that answers yes to work the drain will decline, which is a hot spin on
-the executive task (the anti-spin rule at `nsfsx_pending`'s header and in
-`src/nsfreqx.c`). It is also **pre-existing and known** — b3 named it, and it is what the stall
-issue's original title described, before that title was measured to be wrong and changed.
-Before 64-1 the ~10 Hz heartbeat covered it; on a post-TCP-workload instance §4 measures that
-there is no heartbeat at all. Curing it means concurrent service. The
-delay case is **reasoned from the code path, not measured**: the 64-1 campaign's refusals were
-pool exhaustion (`EXHAUSTED` 10 364) rather than this, and its verbs were largely
-inline-completing.
+already cleared by §3's reset. This is **deliberate**: the alternative is a probe that answers yes
+to work the drain will decline, which is a hot spin on the executive task (the anti-spin rule at
+`nsfsx_pending`'s header and in `src/nsfreqx.c`). It is also **pre-existing and known** — b3 named
+it, and it is what the stall issue's original title described, before that title was measured to
+be wrong and changed.
+
+**Nothing has ever covered it, and no wake ever could.** An earlier draft of this gap said *"before
+64-1 the ~10 Hz heartbeat covered it"*. That is wrong twice. What ran before 64-1 was the **latched
+ECB** — the loop did not block at all — not the heartbeat. And neither covered *this*: `g_busy` is
+set at the dispatch (`src/nsfsx.c:1021`) and cleared only in step 1 of a later pass
+(`src/nsfsx.c:912`), and while it stands `nsfreqx_actionable(DISPATCH, busy)` returns 0 **on every
+pass** — including each of the ~8 500 per second the spin produced. **The spin delivered passes,
+not dispatches.** A floor, or a spin, shortens only the latency between `g_busy` *clearing* and the
+dispatch that follows; neither shortens the wait for it to clear. This gap is not in the wake path
+and cannot be closed there.
+
+**The bound, named — because a gap without one gets repaired in the wake path, which is the
+movement this ADR exists to prevent.** `g_priv.ecb` is **not** in the ECBLIST, so the loop is never
+woken by the in-service request's own completion. What bounds the deferral is whatever clears
+`g_busy`, and that splits three ways:
+
+| the in-service op | what clears `g_busy` | bound |
+|---|---|---|
+| **completed inline** (`soc_complete` posts `g_priv.ecb` during the dispatch, on the executive task) | `nsfsx_pending`'s **first** clause — `g_busy && (g_priv.ecb & NSFECB_POSTED)`, `src/nsfsx.c:788` — makes the loop **skip its WAIT**, and the next pass's step 1 reaps | **one pass**, with no wake needed at all |
+| **parked, and something completes it** | the event that completes it is a device completion or a timer expiry, and **both post an ECB that IS in the ECBLIST**: `dev->ecb`, posted by the CTCI subtasks (`src/nsfctcib.c:276/287/334`) and collected by `nsfdev_collect_ecbs`; or `timerecb` (`ecblist[0]`), posted by `NSFTMEXP` in `asm/nsfstim.asm` | the in-service op's own completion, **plus one pass** — the same event does both |
+| **parked on something that never completes** — a `recv` on a socket that receives nothing | nothing | **none.** `g_busy` stands indefinitely and the second request waits indefinitely |
+
+The third row is the honest answer and it is not a defect of this contract: it is ADR-0042 §10's
+**serialised service**, working as specified. No wake, floor or louder probe touches it; the cure
+is concurrent service, and that is out of scope (see *What this ADR deliberately does not decide*).
+
+**Reasoned, not measured.** The three rows are read off `src/nsfsx.c`, `src/nsfevt.c`,
+`src/nsfctcib.c` and `asm/nsfstim.asm`; **no round has measured a two-client deferral or its
+latency.** The 64-1 campaign's refusals were pool exhaustion (`EXHAUSTED` 10 364) rather than this,
+and its verbs were largely inline-completing — the first row, the cheap one.
 
 **(c) Client death in the window between the ADR-0040 guard and the reply POST is not closed.**
 What is proven is the guard itself: the ASVT classifier runs immediately before every reply POST,
