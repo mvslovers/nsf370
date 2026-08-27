@@ -167,3 +167,106 @@ throughput ever demand it.
   `cthread_detach` / `CTHDTASK.termecb` / `cthread_pop(CTHDPOP_ESTAE)`.
 - ADR-0019 (superseded WAIT premise; EXCP recipe retained), ADR-0018 (seam-reuse
   discipline), M1-2 / NSFHOST (the `doneq` model this restores).
+
+---
+
+## Annotation (2026-08-27, issue #64 step 64-1) — Phase 2 diverged from the reset half, and what it cost
+
+**Append-only. The decision above is unchanged.** What follows records a place
+where this ADR's discipline was not honoured, the measured cost, and the
+correction. It is not a fix for issue #64, and it must not be read as one — see
+"What this annotation does not claim" below.
+
+### The divergence
+
+This ADR's loop shape has two halves: **reset the ECB before taking the work**,
+and **double-check after**. Three drains in the tree implement it.
+
+| drain | resets its ECB | double-check |
+|---|---|---|
+| `nsfreq_drain` (Phase 1, `src/nsfreq.c`) | `g_reqecb = 0u` before `xq_drain` | its own `do { … } while (g_reqxq.head != NULL)` |
+| `nsfv.c`'s loop (the probe STC) | `nsfv_server_ecb_reset` after servicing | `while (nsfv_any_pending(anchor))` |
+| `nsfsx_drain` (Phase 2, `src/nsfsx.c`) | **never** — until this step | the WAIT gate (`nsfsx_pending`) |
+
+`g_wake_ecb` was assigned zero exactly once, in `nsfsx_start`, and never again.
+`src/nsfevt.c`'s step 2b states the contract Phase 2 did not meet in so many
+words: *"The drain resets its own request ECB before taking the queue and
+double-checks (ADR-0022), so it owns the reset-before-WAIT discipline."*
+
+### The cost, measured rather than reasoned about
+
+The first cross-address-space POST latched the POSTED bit for the life of the
+STC, and a posted ECB in the ECBLIST makes `WAIT` return immediately — so
+`evt_mainloop` could never block again. One controlled pair, one instance, the
+first request as the only variable (`docs/nsf-64-0-measurements.md` §2):
+
+| state | POSTED | pass rate | host CPU (user) |
+|---|---|---|---|
+| fresh, before any request | N | **9.95 /s** (the heartbeat, blocking correctly) | **0.9 %** |
+| same STC, after one request | Y | **8 492 /s** | **26.0 %** |
+
+Control with NSFS stopped: 0.5–0.7 % user. The 26 % is a full quarter of a host
+core, burnt permanently, by every NSFS instance that has ever served a request.
+
+### The correction, and why it is the reset alone
+
+`nsfsx_drain` now resets `g_wake_ecb` immediately after the `wakeposts`
+observation and **ahead of both of its scans**. A client publishes its request
+(`req_state = PENDING`) and only then POSTs, so relative to that reset there are
+exactly two orderings and both are safe: a POST *before* it implies the publish
+was before it too, and both scans run after it, so the slot is seen on that very
+pass; a POST *after* it leaves the bit standing, and the WAIT returns on it.
+There is no third ordering, so no wake is lost.
+
+**Phase 1's `do/while` recheck loop is deliberately NOT replicated**, and the
+reason is that Phase 2 already has the recheck — one level up, in the WAIT gate,
+which asks its question through the same `nsfsx_next_actionable` the drain does
+(ADR-0025 defect (2)). Only the reset half was missing. Wrapping `nsfsx_drain`
+in a loop would have been three regressions:
+
+- its `__super` failures are **no-progress returns**, so the loop would spin on
+  a condition its own failure path cannot clear;
+- a client may republish the instant it is replied to, so the loop has **no
+  finiteness argument** in Phase 2 — Phase 1's rests on its bounded fan-in
+  (each blocking app subtask has ≤ 1 outstanding request) and does not transfer
+  — and an unbounded drain is what §3's run-to-completion rule forbids, because
+  it starves the timers and devices sharing the pass;
+- it would quietly turn ADR-0042 §10's **one unit of work per pass** into "serve
+  every inline-completing request per pass".
+
+The change is **one statement**. A comment-stripped diff of `src/nsfsx.c`
+against `main` is exactly `+ g_wake_ecb = 0u;` and nothing else.
+
+### `wakeposts` changed meaning, and prior measurements are not comparable
+
+Before this step the counter was **monotone and latching by construction**:
+nothing cleared the ECB, so once the first POST landed it tracked `evtpasses` at
+a constant offset (measured at exactly 3 361 across four readings of one
+instance). From this step it counts **wake events** — each observation consumes
+the bit. That is the more useful counter, but every `WAKEPOSTS` figure in
+`docs/nsf-64-0*.md`, `-64-0b-`, `-64-0c-` was taken under the old semantics, so
+a reader comparing across the change is comparing two different things. It is
+still not a tally of POSTs: two posts between one observation and the next
+coalesce into one, as they do for any ECB. The note lives at the declaration in
+`src/nsfsx.c`, which is where such a reader will look.
+
+### What this annotation does not claim
+
+**It does not claim issue #64 is fixed, and #64 is not closed by it.** Four
+measurement rounds establish that the stall is not in the WAIT/POST path at all:
+the executive is not waiting during a stall (`WCF=0`, `RBXWAIT` and `RBECBWT`
+clear, an ordinary PRB — `docs/nsf-64-0c-measurements.md` §6), and its address
+space is stuck part-way through an MVS swap-out (`OUCBQFL = X'80'`, `OUCBGOO`
+— `docs/nsf-64-0d-measurements.md` §1), which is a state NSF does not write and
+cannot see. The **suspension is outside nsf370**.
+
+What the reset *is*, besides an overdue correction, is the one **single-variable
+experiment** available: every stall on record occurred on a spinning instance,
+and 64-0d names the spin as one of two candidate **provocations** for SRM's
+choice of this address space. Removing it changes nothing else, and it becomes
+untestable the moment this lands — which is why the accompanying round attempts
+a reproduction *after* the reset rather than reporting the CPU drop alone.
+
+Whether NSF should mitigate an MVS condition at all, and in what form, is a
+contract-level decision for the maintainer and is not taken here. **No floor was
+added; whether one is needed is deliberately left open.**
