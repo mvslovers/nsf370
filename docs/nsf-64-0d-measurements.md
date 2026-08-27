@@ -63,9 +63,13 @@ site STCs by hand), Hercules exited normally, `./start_mvs.sh` → `IPL 150`.
 | before the IPL, measured this round | **655 360** |
 | 64-0c's closing figure | 655 360 — agrees exactly |
 | **after the IPL** | **1 073 152** |
+| **at the close of this round** | **1 073 152** — unchanged; nothing retained |
 
 The IPL reclaimed the ~418 KB that three rounds of retained anchors had taken, and
-restored the stand to the figure it carried at the start of the b4 round. Post-IPL
+restored the stand to the figure it carried at the start of the b4 round. **The round
+gives it back intact**: every `P NSFS` drained with `INFLIGHT=0`, so the retain branch was
+never taken, and a fresh `S NSFS` after the last stop reports the same 1 073 152. The next
+round does not inherit a debt from this one. Post-IPL
 environment verified before any measurement: `hercifc` running, `tun0` up
 (`192.168.200.2 peer 192.168.200.1`), CUU **0500/0501 ONLINE** (`D U` → `CTC O`),
 `NSF210I ... MTU 1500`, and a host→guest ping **3/3, 0 % loss**.
@@ -162,6 +166,7 @@ here is 64-0c's own words — **EJST bit-identical** — which discriminates in 
 | 1 | 10:44:10 | 10:51:19 | **7 m 09 s** | **spontaneously, untouched** |
 | 2 | 11:08:40 | 11:27:18 | **18 m 38 s** | **host ping**, after four other interventions did nothing |
 | 3 | 11:28:29 | 11:42:52 | **14 m 23 s** | **spontaneously, untouched — with `tun0` provably silent** |
+| 4 | 11:46:03 | 11:50:11 | 4 m 08 s | **host ping** at T+240 s, after `ext` at T+62 s did nothing |
 
 All three read the identical signature: `QFL=80[GOO]`, `SRC=09`, `RCTF=00`, `DSP1=00`,
 `0500 busy`, `0501 not busy`.
@@ -200,6 +205,34 @@ at least one swap-out *did* complete and swap back in during the round. That is 
 obvious candidate for the spontaneous terminator — the stuck swap-out eventually
 finishing — but it is not tied here to a particular stall, because `ASCBSTOR` was not
 sampled at each transition.
+
+### Experiment 3 — one rung, then the ping, in the same stall
+
+Stall 2's ladder has two weaknesses: the ping was last, and rungs 2–5 were fired at
+T+17 min. Stall 4 was run to the design that fixes both — the **negative rung first**, at
+T+62 s, and the **ping as a closing positive control in the same stall**, at T+240 s,
+which is *inside* the window where neither untreated stall had yet ended:
+
+```
+11:46:18 *** STALL: QFL=80 SRC=0A ASCBSTOR=0F8BCC00 ***
+11:47:05 >>> INTERVENTION at T+62s: ext <<<
+11:47:39     'ext' -> NO CHANGE, stall continues
+11:50:03 >>> INTERVENTION at T+240s: ping <<<
+11:50:11 *** ENDED 8s after 'ping' (T+248s) QFL=00 SRC=00 ASCBSTOR=0F923C00 ***
+```
+
+This is the round's strongest single measurement. The external interrupt key, fired
+first-in-order and early, did nothing; the ping, fired at 240 s — shorter than *both*
+untreated stalls (429 s, 863 s) — was followed by the end within 8 s.
+
+**And `ASCBSTOR` changed at that instant** (`0F8BCC00` → `0F923C00`): the address space
+came back with a **different segment-table origin**, which it can only do by having been
+swapped out and swapped back in. So the inbound read does not *cancel* the pending
+swap-out — it lets it **finish**, after which MVS swaps the address space straight back
+in. That is measured on both stalls where `ASCBSTOR` was sampled across the transition.
+
+`SRC` read **`0A`** here against `09` in stalls 1–3. Both are recorded raw and remain
+undecoded (§4); the variation is noted, not interpreted.
 
 ### `TCBNDTS` — 64-0c's open question, closed
 
@@ -345,25 +378,25 @@ minutes. Neither is shown to provoke the swap-out.
   instant, and a ping has now ended a stall in every round that tried one) but it is not
   excluded by this round's design. The clean form for any further stall is one rung, then
   the ping as a closing positive control in the same stall.
-- **The ping's effect is n=1.** It was followed by the end within 4 s, in a stall that had
-  already outlasted both untreated ones (1118 s against 429 s and 863 s) — suggestive, and
-  consistent with every earlier round, but a single trial. The clean design for a further
-  stall is the project's own c0 discipline: **one rung, then the ping as a closing positive
-  control in the same stall**, so a stall where the ping *also* failed would be visible.
-- **Rungs 2–5 were fired late** (T+16m53s to T+17m). Only rung 1, the console attention at
-  T+45 s, is an early negative — and it is the strongest of them, having been injected
-  **twice** by the standing `hao cmd /` rule while the stall ran a further 17 m 52 s.
+- **The ping's effect is n=2**, not n=1 — stall 2 (end ≤4 s after) and stall 4 (≤8 s
+  after, fired at T+240 s, inside the window where neither control had ended). Strong, and
+  consistent with every earlier round, but still two trials on one stand.
+- **In stall 2, rungs 2–5 were fired late** (T+16m53s to T+17m), so they are weak negatives
+  taken alone. The negatives that carry weight are the two early ones: the console
+  attention at T+45 s (injected **twice**, by the standing `hao cmd /` rule, with the stall
+  running a further 17 m 52 s) and `ext` at T+62 s in stall 4, fired **first-in-order**.
 - **The spontaneous terminator is not identified**, only narrowed: not MIH, not inbound
-  traffic. `ASCBSTOR` moving across the round points at the swap-out completing, but it was
-  not sampled per transition.
+  traffic. `ASCBSTOR` changing across a ping-terminated transition shows the swap *completes*
+  when released, but the untouched stalls were not sampled that way, so whether they end by
+  the same route is inferred, not measured.
 - **`OUCBSRC` 09 / 06 are undecoded** (§4). Nothing is inferred from them.
 - It did not test whether removing the spin removes the stall — that is 64-1's, and it
   becomes untestable the moment the reset lands.
 - It did not read the OUCB's swap chain (`OUCBFWD`/`OUCBBCK`/`OUCBACT` were captured but
   not interpreted), so *which* SRM queue the address space is parked on is unread.
-- It did not sample `ASCBSTOR` at each transition, which is the cheap instrument that would
-  turn "a swap completed somewhere in the round" into "this stall ended by the swap
-  completing".
+- It did not sample `ASCBSTOR` across a **spontaneous** transition — only across a
+  ping-terminated one — which is the cheap instrument that would show whether an untouched
+  stall ends by the same route.
 
 ---
 
@@ -381,6 +414,12 @@ minutes. Neither is shown to provoke the swap-out.
   for; `/.dm` is unavailable until HTTPD is up, and every instrument in §4 depends on it.
 - `ext` costs a console switch and a second press (§3). Do not treat it as free.
 - **Zero dumps.** `TSTRQXM` CC 0000; the gate jobs were run as *workload*, not as a gate.
+- **`PARM='LEAK'` was NOT run, deliberately.** The kickoff lists it as part of the arm, but
+  the stall reproduced **four times** without it, so it added no reproduction value — and
+  the induction retains ~137 KB of CSA plus the router module until the next IPL, which is
+  precisely the debt this round's IPL was taken to clear. Spending it for no measurement
+  would have handed the next round a smaller pool for nothing. Stated here rather than
+  quietly skipped.
 - The `IEA000I 400` line in the console log at 11:25:33 is this round's rung 2, not a
   fault.
 

@@ -1,0 +1,15 @@
+11:46:02 experiment 3 armed: ext at T+60s, ping at T+240s
+11:46:18 *** STALL: QFL=80 SRC=0A ASCBSTOR=0F8BCC00 ***
+11:47:05 >>> INTERVENTION at T+62s: ext <<<
+11:47:05 HHC01603I ext
+11:47:05 HHC02228I interrupt key pressed
+11:47:05 HHC00840I Processor CP01: External interrupt: interrupt key
+11:47:05 HHC00009I RRR...RING...GGG!
+11:47:08 HHC00009I RRR...RING...GGG!
+
+11:47:39     'ext' -> NO CHANGE, stall continues
+11:50:03 >>> INTERVENTION at T+240s: ping <<<
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 0.851/35.079/52.883/24.209 ms
+
+11:50:11 *** ENDED 8s after 'ping' (T+248s) QFL=00 SRC=00 ASCBSTOR=0F923C00 ***
