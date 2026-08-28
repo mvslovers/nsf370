@@ -629,6 +629,64 @@ int main(void)
                  "per-slot guard: slot B is judged clobbered");
     }
 
+    /* ---- the landing area: the 80-FIX bounded copy ------------------------
+     * The executive dispatches against PRIVATE storage, never CSA, and this
+     * helper is the crossing.  What has to be pinned here rather than left to
+     * a live run: the bound is nsfreqx_stage_len and NOT the caller's word.
+     * `xlen` arrives from a CSA slot an unauthorised client wrote, and after
+     * the fix it bounds a memcpy into the STC's own private storage -- so an
+     * inflated value must clamp, not overrun. */
+    {
+        static char land[NSFREQX_CHUNK];
+        static char csa[NSFREQX_CHUNK];
+        static char canary[NSFREQX_CHUNK];
+        UINT n;
+        unsigned k;
+
+        for (k = 0u; k < NSFREQX_CHUNK; k++) {
+            csa[k]    = (char)(k & 0xFFu);
+            land[k]   = (char)0xEE;
+            canary[k] = (char)0xEE;
+        }
+
+        n = nsfreqx_land_copy(land, csa, 100u);
+        CHECK_EQ((long)n, 100L, "land_copy(100) moves 100");
+        CHECK(memcmp(land, csa, 100u) == 0,
+              "land_copy moves the bytes byte-exact");
+        CHECK(memcmp(land + 100, canary + 100, NSFREQX_CHUNK - 100u) == 0,
+              "land_copy writes NOTHING past the count it was given");
+
+        /* THE ONE THAT MATTERS: a CSA-supplied length larger than the chunk
+         * must clamp to the chunk, because the destination IS the chunk. */
+        n = nsfreqx_land_copy(land, csa, 5000u);
+        CHECK_EQ((long)n, (long)NSFREQX_CHUNK,
+                 "land_copy clamps an over-long xlen to the chunk (no overrun)");
+        n = nsfreqx_land_copy(land, csa, NSFREQX_CHUNK + 1u);
+        CHECK_EQ((long)n, (long)NSFREQX_CHUNK,
+                 "land_copy clamps chunk+1 -- the boundary, not just the far case");
+        n = nsfreqx_land_copy(land, csa, NSFREQX_CHUNK);
+        CHECK_EQ((long)n, (long)NSFREQX_CHUNK,
+                 "land_copy at exactly the chunk is an exact fit, not clamped");
+        CHECK(memcmp(land, csa, NSFREQX_CHUNK) == 0,
+              "a whole-chunk copy is byte-exact end to end");
+
+        /* Direction-neutral: the SAME call serves the copy out.  If this ever
+         * needed a second function, the bound would have two encodings. */
+        for (k = 0u; k < NSFREQX_CHUNK; k++) csa[k] = (char)0x11;
+        n = nsfreqx_land_copy(csa, land, 64u);
+        CHECK_EQ((long)n, 64L, "land_copy serves the OUT direction identically");
+        CHECK(memcmp(csa, land, 64u) == 0, "the out direction is byte-exact");
+        CHECK_EQ((long)csa[64] & 0xFF, 0x11L,
+                 "the out direction also writes nothing past its count");
+
+        CHECK_EQ((long)nsfreqx_land_copy(land, csa, 0u), 0L,
+                 "land_copy(0) moves nothing -- the zero-byte receive");
+        CHECK_EQ((long)nsfreqx_land_copy(NULL, csa, 10u), 0L,
+                 "land_copy tolerates a NULL destination");
+        CHECK_EQ((long)nsfreqx_land_copy(land, NULL, 10u), 0L,
+                 "land_copy tolerates a NULL source");
+    }
+
     /* ---- NULL guards: every entry is defensive ------------------------- */
     nsfreqx_slot_in(NULL, &caller);
     nsfreqx_slot_in(&slot, NULL);

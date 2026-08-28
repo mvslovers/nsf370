@@ -32,6 +32,7 @@
  *   nsfreqx_classify    NSFRXCLS    nsfreqx_slot_action NSFRXACT
  *   nsfreqx_slot_legal  NSFRXLEG    nsfreqx_reap_ok    NSFRXRPO
  *   nsfreqx_rc_errno    NSFRXRCE    nsfreqx_actionable NSFRXABL
+ *   nsfreqx_land_copy   NSFRXLCP
  * ========================================================================== */
 
 #ifndef NSFREQX_H
@@ -68,6 +69,43 @@
  * frozen layout already provides.
  * -------------------------------------------------------------------------- */
 UINT nsfreqx_stage_len(UINT ulen) asm("NSFRXSLN");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_land_copy -- move one staged chunk between the CSA slot's staging
+ * buffer and the STC-private LANDING AREA, bounded by the same clamp.
+ *
+ * WHY A LANDING AREA EXISTS AT ALL (80-FIX, ADR-0041 2 as corrected).  Hop 2
+ * used to point the dispatched `ubuf` straight at slot->stage, which is CSA:
+ * subpool 241, KEY 0.  The executive dispatches in its own key 8, so any verb
+ * that WRITES its result through ubuf performed a key-8 store into key-0
+ * storage and took S0C4.  Reads were fine -- CSA is not fetch-protected --
+ * which is exactly why every path exercised before 80-CHK was a read and
+ * nothing noticed for a whole milestone.  The rule the fix establishes:
+ *
+ *   CSA NEVER APPEARS AS A WRITABLE TARGET IN THE PROTOCOL LAYER.
+ *
+ * It may be READ there; anything written into is private storage, and the
+ * crossing into CSA happens in ONE place, under a key window, in the
+ * executive.  The protocol layer keeps knowing nothing about address spaces,
+ * CSA or keys (ADR-0003), which is what makes that true by construction
+ * instead of by care.
+ *
+ * DIRECTION-NEUTRAL ON PURPOSE.  The same function serves both the copy IN
+ * (before dispatch) and the copy OUT (after completion): one encoding of the
+ * bound, and the pure half never learns which way the data is going.  A
+ * direction predicate is a thing that can be WRONG, and being wrong for a verb
+ * added later is precisely how the defect it repairs came to exist.
+ *
+ * THE BOUND IS nsfreqx_stage_len, NOT THE CALLER'S WORD.  `xlen` reaches us
+ * from the CSA slot, where an unauthorised client's request put it; after the
+ * fix it bounds a memcpy into the STC's own private storage, so the executive
+ * owns that bound and must not take the value on trust.  Reusing the clamp
+ * keeps it one host-pinned expression rather than a second `if` that can drift
+ * (the nsfreqx_reap_ok / nsfreqx_actionable precedent).
+ *
+ * Returns the count actually moved, so a caller cannot re-derive it wrongly.
+ * -------------------------------------------------------------------------- */
+UINT nsfreqx_land_copy(void *dst, const void *src, UINT xlen) asm("NSFRXLCP");
 
 /* --------------------------------------------------------------------------
  * nsfreqx_slot_in -- hop 1: the caller's NSFRQE into the CSA request slot.

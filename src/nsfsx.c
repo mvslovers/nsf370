@@ -104,6 +104,22 @@ static NSFRQE        g_priv;
 static int           g_busy;
 static NSFV_SLOT    *g_busy_slot;
 
+/* THE LANDING AREA (80-FIX, issue #80).  The dispatched request's ubuf points
+** HERE -- STC-private key-8 storage -- and never at slot->stage, which is CSA
+** subpool 241, key 0.  A verb that WRITES its result through ubuf (every
+** receive; SELECT, which writes each item's `ready`) would otherwise perform a
+** key-8 store into key-0 storage and take S0C4.  Reads succeeded, because CSA
+** is not fetch-protected, which is why sends worked and nothing noticed.
+**
+** ONE, because there is exactly ONE private NSFRQE in flight: the pool makes
+** the CLAIM concurrent, not the SERVICE (ADR-0042 10), and g_busy is what
+** serialises it.  The two declarations are adjacent deliberately -- if that
+** invariant ever falls, both have to change, and they should be impossible to
+** change apart.
+**
+** Static, not a pool entry: no runtime allocation (CLAUDE.md 3). */
+static char          g_land[NSFV_XFER_CHUNK];
+
 /* ==========================================================================
  * CSA anchor
  * ========================================================================== */
@@ -1012,6 +1028,15 @@ nsfsx_drain(void)
 
         if (__super(PSWKEY0, &savekey)) return;
 
+        /* COPY OUT, inside the key window that already existed here.  This is
+        ** MOVEOUT in the other direction: one place borrows a key, and only
+        ** one.  Sized by the same clamped xlen as the copy in -- and that is
+        ** the SAME count asm/nsfvsvc.asm's RQEOUT reloads from SLXLEN for its
+        ** own read-out, so what reaches the client is byte-for-byte what it
+        ** was before the landing area existed.  The fix moves WHERE the
+        ** protocol layer writes; it changes no observable result. */
+        (void)nsfreqx_land_copy(slot->stage, g_land, slot->xlen);
+
         nsfreqx_result_out((NSFRQE *)slot->rqe, &g_priv);
 
         cl    = nsfsx_client_state(slot);
@@ -1062,6 +1087,7 @@ nsfsx_drain(void)
         int        act     = NSFREQX_ACT_NONE;
         int        ok      = 0;
         int        corrupt = 0;
+        UINT       staged  = 0u;
 
         /* Cheap pre-filter, key-free: no published request at all is the
         ** common case and must not cost a key switch. */
@@ -1107,8 +1133,36 @@ nsfsx_drain(void)
                 ** actually staged -- the very value the SVC routine's clamp
                 ** used for the move, so the op reports what really crossed
                 ** (ADR-0041 2). */
+                /* COPY IN, then dispatch against the PRIVATE landing area.
+                ** We are inside the key window, so reading CSA is free here
+                ** and the protocol layer never sees the CSA address at all.
+                **
+                ** ALWAYS COPY, IN BOTH DIRECTIONS, EVEN THOUGH SENDS DO NOT
+                ** NEED IT.  A send only READS ubuf, and a key-8 read of the
+                ** anchor is permitted, so a direction-aware version could skip
+                ** this copy and point sends straight at slot->stage.  Not
+                ** taken, for two reasons:
+                **
+                **   1. A direction table is a thing that can be WRONG.  Being
+                **      wrong for a verb added later brings the fault back
+                **      silently, on a path nobody tests -- which is literally
+                **      how #80 came to exist.  SELECT is already a verb whose
+                **      direction is BOTH (nsfsel.c reads the item array and
+                **      writes each item's `ready`), so the table would have
+                **      had an awkward row on the day it was written.
+                **   2. g_land is ONE buffer shared by sequential clients.  A
+                **      recv of 2048 that returns 10 bytes copies xlen bytes
+                **      back, 10 real and the rest residue.  With the copy in,
+                **      that residue is the client's OWN staged content, as it
+                **      is today.  Without it, it would be the PREVIOUS
+                **      client's -- handed across address spaces.
+                **
+                ** It would become the right trade given: measured evidence
+                ** that the copy costs, the direction predicate in ONE place,
+                ** and a host test pinning it against the verb list. */
+                staged = nsfreqx_land_copy(g_land, slot->stage, slot->xlen);
                 nsfreqx_dispatch_in(&g_priv, (const NSFRQE *)slot->rqe,
-                                    slot->stage, slot->xlen);
+                                    g_land, staged);
                 ok = 1;
             } else {
                 /* A probe verb reached the production STC: reject cleanly
