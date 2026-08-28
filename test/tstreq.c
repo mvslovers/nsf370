@@ -26,6 +26,9 @@
  *    over the real queue+POST+requestECB -- is test/mvs/tstreqm.c.)
  */
 #include "nsfreq.h"
+#include "nsfapp.h"
+#include "nsfreqx.h"
+#include "nsfmsg.h"
 #include "nsfsoc.h"
 #include "nsfbuf.h"
 #include "nsfmm.h"
@@ -601,6 +604,133 @@ static void test_caller_identity(void)
     CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "TERMAPI released the second slot");
 }
 
+/* -------------------------------------------------------------------------
+ * M5-2c1: nsfreq_app_classify and the operator report.
+ *
+ * THE RED LINE IS THE POINT OF THIS SCENARIO. A Phase-1 app instance records
+ * no caller identity, and a registered classifier must NEVER be asked about
+ * it -- so the fake classifier below counts its calls, and the assertion is
+ * that the count does not move. "It returned NO-ID" would also be true of a
+ * classifier that ran and happened to answer that way; only the call count
+ * distinguishes "not asked" from "asked and forgiven".
+ * ------------------------------------------------------------------------- */
+static UINT g_cls_calls;
+static UINT g_cls_last_ascb, g_cls_last_asid;
+static int  g_cls_answer;
+
+static int fake_classify(UINT ascb, UINT asid)
+{
+    g_cls_calls++;
+    g_cls_last_ascb = ascb;
+    g_cls_last_asid = asid;
+    return g_cls_answer;
+}
+
+/* Does any captured operator line contain `needle`? */
+static int cap_contains(const char *needle)
+{
+    UINT i, n = nsfmsg_cap_count();
+
+    for (i = 0u; i < n; i++) {
+        const char *l = nsfmsg_cap_line(i);
+        if (l != NULL && strstr(l, needle) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void test_app_classify_and_report(void)
+{
+    NSFRQE r;
+    UINT   tok_live, tok_phase1;
+    int    idx_live, idx_p1;
+
+    reset_req();
+    nsfreq_set_classifier(NULL);
+
+    /* No classifier registered: an identified slot is still NOT a verdict. */
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, 0x00ABCDEFu, 0x0031u);
+    tok_live = r.apptok;
+    idx_live = app_slot_of(tok_live);
+    CHECK(idx_live >= 0, "identified app instance registered");
+    CHECK_EQ((long)nsfreq_app_classify((UINT)idx_live), (long)NSFREQ_APPCL_NONE,
+             "no classifier registered -> NO-ID, never a fabricated verdict");
+
+    /* A Phase-1 instance alongside it: no identity at all. */
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch(&r);
+    tok_phase1 = r.apptok;
+    idx_p1     = app_slot_of(tok_phase1);
+    CHECK(idx_p1 >= 0, "Phase-1 app instance registered");
+
+    /* Register a classifier that would answer DEAD for anything it is asked. */
+    g_cls_calls  = 0u;
+    g_cls_answer = NSFREQX_CL_DEAD;
+    nsfreq_set_classifier(fake_classify);
+
+    CHECK_EQ((long)nsfreq_app_classify((UINT)idx_live), (long)NSFREQX_CL_DEAD,
+             "an identified slot is classified");
+    CHECK_EQ((long)g_cls_calls, 1L, "the classifier was asked exactly once");
+    CHECK_EQ((long)g_cls_last_ascb, (long)0x00ABCDEFu,
+             "the classifier got the recorded ASCB");
+    CHECK_EQ((long)g_cls_last_asid, (long)0x0031u,
+             "the classifier got the recorded ASID");
+
+    /* THE RED LINE: the Phase-1 slot is not offered to it at all. */
+    CHECK_EQ((long)nsfreq_app_classify((UINT)idx_p1), (long)NSFREQ_APPCL_NONE,
+             "a zero-identity slot answers NO-ID");
+    CHECK_EQ((long)g_cls_calls, 1L,
+             "a zero-identity slot is NEVER handed to the classifier");
+
+    /* A free slot needs no classifier either. */
+    CHECK_EQ((long)nsfreq_app_classify(nsfreq_app_max() - 1u),
+             (long)NSFREQ_APPCL_FREE, "an idle slot answers FREE");
+    CHECK_EQ((long)nsfreq_app_classify(nsfreq_app_max()),
+             (long)NSFREQ_APPCL_FREE, "an out-of-range slot answers FREE");
+    CHECK_EQ((long)g_cls_calls, 1L, "neither asked the classifier");
+
+    /* Verdict words, so the console lines say something a reader can quote. */
+    CHECK(strcmp(nsfapp_verdict_name(NSFREQX_CL_LIVE), "LIVE") == 0, "LIVE");
+    CHECK(strcmp(nsfapp_verdict_name(NSFREQX_CL_DEAD), "DEAD") == 0, "DEAD");
+    CHECK(strcmp(nsfapp_verdict_name(NSFREQX_CL_UNKNOWN), "UNKNOWN") == 0,
+          "UNKNOWN");
+    CHECK(strcmp(nsfapp_verdict_name(NSFREQ_APPCL_NONE), "NO-ID") == 0, "NO-ID");
+    CHECK(strcmp(nsfapp_verdict_name(NSFREQ_APPCL_FREE), "FREE") == 0, "FREE");
+    CHECK(strcmp(nsfapp_verdict_name(99), "?") == 0,
+          "an unrecognised verdict is not trusted into a word");
+
+    /* The report itself: heading, one line per IN-USE slot, and a summary. */
+    nsfmsg_cap_reset();
+    nsfapp_report();
+    CHECK_EQ((long)nsfmsg_cap_count(), 4L,
+             "report = heading + 2 in-use slots + summary (idle slots silent)");
+    CHECK(cap_contains("NSF814I APP REGISTRY:"), "report has its heading");
+    CHECK(cap_contains("TOKEN=") && cap_contains("ASCB=00ABCDEF") &&
+          cap_contains("ASID=0031"), "the identified slot reports its identity");
+    CHECK(cap_contains("DEAD"), "the identified slot reports its verdict");
+    CHECK(cap_contains("NO-ID"), "the Phase-1 slot reports NO-ID");
+    CHECK(cap_contains("NSF816I APP REGISTRY: 2 OF 16 SLOTS IN USE, 1 DEAD"),
+          "the summary counts slots in use and, of those, the dead ones");
+
+    /* Read-only: the report classified twice more and reaped nothing. */
+    CHECK_EQ((long)g_cls_calls, 2L, "the report asked only about the identified slot");
+    CHECK(app_slot_of(tok_live) == idx_live && app_slot_of(tok_phase1) == idx_p1,
+          "the report changed no registry state");
+
+    /* An empty registry still says so, in one line plus its brackets. */
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u); r.apptok = tok_live;   nsfreq_dispatch(&r);
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u); r.apptok = tok_phase1; nsfreq_dispatch(&r);
+    nsfmsg_cap_reset();
+    nsfapp_report();
+    CHECK_EQ((long)nsfmsg_cap_count(), 2L, "an empty registry reports heading + summary");
+    CHECK(cap_contains("NSF816I APP REGISTRY: 0 OF 16 SLOTS IN USE, 0 DEAD"),
+          "an empty registry says so");
+
+    nsfreq_set_classifier(NULL);        /* leave the suite as we found it */
+}
+
 int main(void)
 {
     printf("=== nsf370 NSFREQ tests ===\n");
@@ -617,6 +747,7 @@ int main(void)
     test_termapi_teardown();
     test_app_full();
     test_caller_identity();
+    test_app_classify_and_report();
 #ifndef __MVS__
     test_roundtrip();
     test_lost_request();

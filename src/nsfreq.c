@@ -47,6 +47,10 @@ void nsfreq_set_transport(void (*fn)(NSFRQE *r))
     g_xtransport = fn;
 }
 
+/* The client-liveness classifier, NULL until a transport that can reach one
+ * registers it (see the header).  Phase 1 leaves it NULL. */
+static int (*g_classify)(UINT ascb, UINT asid);
+
 static XQ     g_reqxq;
 static NSFECB g_reqecb;
 
@@ -120,6 +124,7 @@ void nsfreq_init(void)
     xq_init(&g_reqxq);
     g_reqecb = 0u;
     g_xtransport = NULL;                /* Phase 1 until a transport registers */
+    g_classify   = NULL;                /* ... and until one supplies a guard  */
     for (i = 0u; i < NSFREQ_APP_MAX; i++) {
         g_apptab[i].inuse = 0u;
         g_apptab[i].ascb  = 0u;
@@ -224,6 +229,29 @@ static void app_free(UINT idx)
     if (g_apptab[idx].gen == 0u) {
         g_apptab[idx].gen = 1u;         /* never wrap to 0 */
     }
+}
+
+void nsfreq_set_classifier(int (*fn)(UINT ascb, UINT asid))
+{
+    g_classify = fn;
+}
+
+int nsfreq_app_classify(UINT idx)
+{
+    UINT ascb = 0u;
+    UINT asid = 0u;
+
+    if (!nsfreq_app_info(idx, NULL, &ascb, &asid)) {
+        return NSFREQ_APPCL_FREE;
+    }
+    /* THE RED LINE, IN ONE PLACE (see the header).  No identity recorded means
+     * there is no address space to ask about; no classifier means there is
+     * nobody to ask.  Neither is a verdict, and neither may be turned into
+     * one -- so the classifier is never called with a zero ASCB. */
+    if (ascb == 0u || g_classify == NULL) {
+        return NSFREQ_APPCL_NONE;
+    }
+    return g_classify(ascb, asid);
 }
 
 /* The one read window onto the registry (see the header). Bounds-checked, and

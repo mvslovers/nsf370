@@ -29,6 +29,11 @@
  * #ifdef: nsfopr.c is shared by both STCs and host-tested as pure C. */
 static void (*g_statsextra)(void);
 
+/* Optional APPS verb (M5-2c1): the app registry with a liveness verdict per
+ * slot.  NULL until a build registers one, so Phase 1's dispatcher is
+ * unchanged -- same seam shape as g_statsextra above and g_swapfn below. */
+static void (*g_appsfn)(void);
+
 /* Optional SWAP verb (issue #64, step 64-3-1).  NULL until a build registers
  * one, so Phase 1's dispatcher is unchanged -- `F NSF,SWAP` falls through to
  * NSF808E exactly as any other unknown verb, and the help text does not grow.
@@ -113,6 +118,11 @@ void nsfopr_set_stats_extra(void (*fn)(void))
     g_statsextra = fn;
 }
 
+void nsfopr_set_apps(void (*fn)(void))
+{
+    g_appsfn = fn;
+}
+
 void nsfopr_set_swap(void (*fn)(const char *))
 {
     g_swapfn = fn;
@@ -163,6 +173,9 @@ static void op_help(void)
     nsfmsg("NSF880I   STOP  (or P NSF)  -- orderly shutdown");
     if (g_swapfn != NULL) {
         nsfmsg("NSF880I   SWAP              -- SRM swappability probe");
+    }
+    if (g_appsfn != NULL) {
+        nsfmsg("NSF880I   APPS              -- app registry + client liveness");
     }
 }
 
@@ -218,6 +231,10 @@ int nsfopr_dispatch(const char *text)
     }
     if (tok_is(p, e, "SWAP") && g_swapfn != NULL) {
         g_swapfn(rest);
+        return 0;
+    }
+    if (tok_is(p, e, "APPS") && g_appsfn != NULL) {
+        g_appsfn();
         return 0;
     }
     if (tok_is(p, e, "HELP") || tok_is(p, e, "?")) {

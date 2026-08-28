@@ -191,7 +191,8 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_register_proto NSFRQRPT  nsfreq_register_select NSFRQRSL
  *   nsfreq_set_transport NSFRQSXT
  *   nsfreq_dispatch_id NSFRQDSI     nsfreq_app_info NSFRQAPI
- *   nsfreq_app_max NSFRQAPM
+ *   nsfreq_app_max NSFRQAPM       nsfreq_set_classifier NSFRQSCL
+ *   nsfreq_app_classify NSFRQACL
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -295,5 +296,35 @@ int      nsfreq_app_info(UINT idx, UINT *token, UINT *ascb,
 
 /* How many app-registry slots exist (the bound for nsfreq_app_info). */
 UINT     nsfreq_app_max(void) asm("NSFRQAPM");
+
+/* Register the client-liveness classifier (M5-2c1).  `fn` takes the caller
+ * identity recorded at RQ_INITAPI and returns one of NSFREQX_CL_LIVE / _DEAD /
+ * _UNKNOWN; on MVS the Phase-2 STC registers a wrapper around the ASVT lookup
+ * of ADR-0040.  NULL is the default and the Phase-1 state: no transport, so no
+ * address space to ask about.
+ *
+ * It is a seam rather than a direct call because the ASVT exists only on MVS,
+ * while the app registry and everything that consumes a verdict are portable
+ * and host-tested. */
+void     nsfreq_set_classifier(int (*fn)(UINT ascb,
+                                         UINT asid)) asm("NSFRQSCL");
+
+/* Classify the app instance in slot `idx`.  Returns the registered
+ * classifier's own verdict (NSFREQX_CL_LIVE / _DEAD / _UNKNOWN, which are
+ * 0 / 1 / 2), or one of the two answers that need no classifier:            */
+#define NSFREQ_APPCL_FREE   (-1)    /* the slot holds no app instance        */
+#define NSFREQ_APPCL_NONE   (-2)    /* nothing to ask about, or nobody to ask */
+/*
+ * NSFREQ_APPCL_NONE IS THE RED LINE, AND IT IS ENFORCED HERE SO NO CONSUMER
+ * HAS TO REMEMBER IT.  A slot whose caller ASCB is zero -- every Phase-1 slot,
+ * because nsfreq_dispatch supplies no identity -- is NOT handed to the
+ * classifier at all.  Passing it would be asking "is address space 0 alive?",
+ * a question with no true answer, and answering it either way is a bug: LIVE
+ * would be a fabricated liveness claim, DEAD would authorise tearing down the
+ * sockets of a perfectly healthy Phase-1 application.  The same answer covers
+ * "no classifier registered", because both mean the verdict has no evidence
+ * behind it -- which is exactly what ADR-0040's UNKNOWN row exists to keep
+ * separate from a verdict that does. */
+int      nsfreq_app_classify(UINT idx) asm("NSFRQACL");
 
 #endif /* NSFREQ_H */
