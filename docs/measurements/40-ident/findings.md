@@ -87,10 +87,13 @@ ASCB FD0F18  ASID 0008  FMCT 109
 `JBNS` is the initiator's own name and never changes. **`JBNI` carries the
 job.** Both targets are in **COMMON** storage, so both are readable from NSFS.
 
-`aslist.py` takes the **first non-zero** of (`JBNS`, `JBNI`), so it printed
-`INIT` for every initiator it ever surveyed — including 64-3-0's, which
-recorded ASID 6 as `INIT` at `FMCT 0`. That reading was not wrong; it was
-incomplete, and it hid the field this round is about.
+`aslist.py` takes the **first non-zero** of (`JBNS`, `JBNI`), so it will report
+`INIT` for an initiator **whenever a job is running** — the field this round is
+about, hidden by ordering alone. **That is a property of the tool, and 64-3-0's
+survey was not affected by it:** its initiator rows all show `FMCT 0`, i.e.
+idle, and on §3.3 an idle initiator has `JBNI == 0`, so first-non-zero would
+have returned `INIT` whatever the order. The masking is real and the specific
+prior reading it would have spoiled has not been found.
 
 **Positive control on the dereference**, as required: the name read back
 matches the job known to be running (`TSTAPPDH` = JOB02824's jobname) and
@@ -242,8 +245,12 @@ NSF816I APP REGISTRY: 8 OF 16 SLOTS IN USE, 1 DEAD
 **Both classes side by side in one report**: the guard cannot fire for the
 batch class and fires correctly for the STC class — the class M6 needs, since
 HTTPD and mvsMF are both STCs. A **normally ended** STC (`P=LEAVE`,
-`IEF404I ... ENDED`, no TERMAPI) read DEAD too. So the sweep's premise **holds
-for its real target class**, measured at last rather than assumed.
+`IEF404I ... ENDED`, no TERMAPI) read DEAD too.
+
+So the guard **fires correctly for an STC — inside a window §4.3 measures and
+does not bound.** Stated that way deliberately: "the sweep's premise holds for
+its real target class" is true of this reading and is **not** a green light,
+and §4.3 is the half that says why.
 
 ### 4.3 But the DEAD verdict is NOT STABLE — and this is the round's sharpest result
 
@@ -323,8 +330,11 @@ report". It returned **both**: DEAD promptly, and then not DEAD.
   comparison is worth having, and under what safety argument, is not settled
   here.
 - **How long the ASID-reuse window is in general.** One measurement, under a
-  minute, on a stand with three initiators and an idle STC range. Nothing here
-  bounds it, and a bound is what a sweep would need.
+  minute. **And this stand is the fast end of the range**: three initiators and
+  an almost-empty STC ASID range mean a freed ASID is reused about as quickly
+  as it can be. A busier system would give a *longer* window — which is the
+  dangerous direction, because a sweep would then look reliable under test and
+  fail in production. Nothing here bounds it, and a bound is what a sweep needs.
 - **That the non-printable transient is real** (§3.7) — one observation, not
   reproduced in 707 tightly-sampled transition samples.
 - **Whether `JBNI` is stable under paging or swap-out.** All samples were
@@ -341,9 +351,16 @@ registry, **verified**: STC 1538 came up `0 OF 16 SLOTS IN USE, 0 DEAD`.
 
 The shutdown **drained** — `NSF043I SVC 239 RESTORED`, `NSF011I`, `IEF404I`,
 **no `NSF054W`** — and the restart reported `NSF055I ... LARGEST FREE BLOCK
-NOW 1073152`, the same figure as before the round, so **no CSA debt and no IPL
-owed**. This is why the arms deliberately used `HANG`/`LEAVE`/`CLEAN` and
+NOW 1073152` — **identical to the reading STC 1534 took at its own startup
+03.52.18, before this round began** (no pre-round sample was taken this
+session; the comparison is against that STC's own line). So **no CSA debt and
+no IPL owed**. This is why the arms deliberately used `HANG`/`LEAVE`/`CLEAN` and
 never `PARK`/`PARKA`: a client parked on a request would have leaked
 `inflight`, forced the retain branch, and cost an IPL.
 
 **Zero dumps.** Stand left as found, NSFS running, registry empty.
+
+**`SYS2.PROCLIB(TSTAPPDS)` is left INSTALLED on purpose** — it is not round
+scaffolding. It is the only rig in this tree that produces a real dying address
+space, which c1 stage b needs for its gate and c2 needs to retire `ORPHAN`.
+`test/mvs/tstxfw.c`-style tooling aside, nothing else here can do that.

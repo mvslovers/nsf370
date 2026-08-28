@@ -1712,6 +1712,74 @@ read-back, which exists **only when there is something to post**, so it can neve
 sweep**, whose subject is clients that ended with **nothing outstanding**. It could at best
 recover 40-CHK's leaked slot — a client that died *with* a request in flight — and addresses
 nothing in M5-2c1's. #79 and #80 stay open and unpatched; #64 stays open.
+**40-IDENT (what can a recorded identity actually distinguish?) — DONE, live-green, read-only,
+no production code.** Not a milestone step; **M5 stays in progress** and c1 stage b is still with
+Mike. **The answer: something changes, and it is not an identity** — kickoff predictions **I(ii)
+and I(iii) both supported, I(i) not**. **Offline first, through 64-3-0's DSECT gate unmodified**
+(`IRAOUCB` 17/17, `IHAASCB` 13/13, new `IHAGDA` 1/1 on the `CSAPQEP` 64-3-0 proved; the live
+`IHAASCB` is byte-identical to 64-3-0's capture — the control on the fetch): `ASCBJBNI` (`X'AC'`)
+and `ASCBJBNS` (`X'B0'`) are **`DS A` — POINTERS**, both IFOX00-**proved** not derived; the macro
+**names the two client classes itself** (JBNI "FOR INITIATED PROGRAMS OR ZERO", JBNS "FOR
+START/MOUNT/LOGON OR ZERO"); and there is **no `ASSB` and no `STOKEN`** anywhere in `IHAASCB`
+(count 0 **with a positive control in the same grep**) — the architected per-instance identity of
+later MVS **does not exist here**, which is most of I(ii) without touching the stand. (`ASCBFMCT`
+is **`DS H`, a halfword** — a fullword read reports 589824 frames on a 4096-frame machine.)
+**ARM 1, live:** a running initiator reads `JBNS='INIT'` **and** `JBNI=<the job's name>`, both
+targets **COMMON** hence readable from NSFS; idle → `JBNI` **ZERO**. So the field tracks
+residency exactly. **THE DISCRIMINATING CASE WAS RUN, NOT INFERRED, AND IT KILLS THE DIRECTION:**
+the same JCL twice into the same initiator is **byte-identical** (same ASID, ASCB, `JBNI` pointer
+`FF8F58`, same eight characters) — **a jobname identity is unsound and must not be built.** The
+pointer is no fallback either: two further runs gave `FF9390` then `FF8F58`, so it **repeats
+across different submissions and differs for the same name**, and that second direction is a
+**false DEAD — the unsafe one**. **I(iii):** the per-submission identity (the JES job number)
+needs `ASCBASXB → ASXBFTCB → TCBJSCB → SSIB`, and `ASCBASXB` is **PRIVATE and ALIASED — `9DF300`
+reported by TEN address spaces** — unreachable from NSFS (ADR-0039) and, from the instrument,
+worse than unreachable: `/.dm` would have returned **HTTPD's** ASXB looking entirely plausible.
+Classifying the pointer against the GDA private window (`PASTRT`/`PASIZE`, gated) **before**
+dereferencing is what prevented that. **ARM 2 — the test that never existed.** `jcl/TSTAPPDS.jcl`
+→ `SYS2.PROCLIB(TSTAPPDS)` starts the **same** client program with `S` instead of submitting it,
+so the arms differ **only** in how they start; **left installed on purpose** (c1 stage b's gate
+and c2's `ORPHAN` retirement both need a real dying address space, and nothing else in this tree
+produces one). An **alive control was taken first and required LIVE**, and it confirmed the class
+split from the other side (STC: `JBNS=<stcname>`, `JBNI=0`). Then **DEAD within one second** for
+**both** death modes — CANCEL and normal end — ASVT `00FF8D00 avail=False` → `80FDB048
+avail=True`, **both** ADR-0040 DEAD rows firing, and through the guard's **own** arithmetic
+`SLOT 7 ... DEAD` sitting beside six batch slots reading `LIVE` **in one report**. So the guard
+**fires correctly for an STC — inside a window the next paragraph measures and does not bound**;
+that is not a green light for the sweep. **THE DEAD VERDICT IS NOT STABLE, AND NOBODY ANTICIPATED
+IT:** both STC runs got the **same ASCB *and* ASID** (MVS reused the ASID and the ASCB block at
+the identical address), and starting a third STC flipped the two provably-dead clients' slots
+**back to LIVE** — `2 DEAD` → `0 DEAD`, **not reaped, reclassified**. **ADR-0040's ASID-reuse row
+cannot catch this**, because it compares the ASCB *address* and the address was reused unchanged.
+**So a DEAD verdict states what occupies that ASID RIGHT NOW, not what happened to the recorded
+client** — correct only inside the window before the next occupant, **here under a minute**, and
+**this stand is the FAST end** (three initiators, near-empty STC ASID range), so a busier system
+gives a *longer* window: a sweep would look reliable under test and fail in production. **A sweep
+is racing a reuse window it does not control** — a far harder constraint on c1 stage b than the
+rate limit stage a was worried about. **The unifying result: batch identities NEVER die; STC
+identities die and are RESURRECTED by reuse** — either way a recorded `(ASCB, ASID)` stops
+denoting what it was recorded for, and the failure direction stays the safe one throughout.
+**Two instrument failures are in the record rather than smoothed over:** a 576-sample all-IDLE
+null and a 38-pass zero-hit sweep contradicted an earlier positive reading, so the instrument was
+put under a **positive control** — the long job re-submitted, **seen in 32 of 33 passes** — which
+proved the instrument sound and the nulls real (short jobs have sub-sample initiator residency);
+without it the tidy, publishable and **wrong** conclusion was "the field is not populated for
+short jobs". And one **non-printable** jobname sighting **could not be reproduced in 707
+tightly-sampled transition samples** (likeliest cause: the tool reads the ASCB and the target in
+two non-atomic `/.dm` round-trips), so it is recorded as an observation, not a finding. **§3.1's
+layering rule is recorded with the findings and was followed by the probe itself:** `ufsd#asv.c`'s
+hazard is an ASCB that is **gone**, ours is **alive hosting a different job**, so a candidate
+field is read **only after** the ASVT-membership check establishes the ASCB is real. **Does NOT
+establish:** any design; how long the reuse window is in general (**one** measurement); that the
+non-printable transient is real; whether `JBNI` survives a swap cycle; **TSO**, a third class,
+unmeasured; anything about #64/#79/#80. **Housekeeping:** the arms leaked 10 app slots of 16
+(that is what the arms are), `P NSFS`/`S NSFS` reset the registry **verified** at `0 OF 16`; the
+shutdown **DRAINED** (`NSF043I`/`NSF011I`/`IEF404I`, **no `NSF054W`**) and the restart reported
+`LARGEST FREE BLOCK NOW 1073152`, **identical to STC 1534's own startup line at 03.52.18 before
+the round** — no CSA debt, no IPL owed; the arms used `HANG`/`LEAVE`/`CLEAN` and **never**
+`PARK`/`PARKA` precisely because a parked client leaks `inflight` and forces the retain branch.
+**Zero dumps**, stand left as found. Host **2991 PASS / 0 FAIL** unchanged — a no-regression check
+only. `docs/measurements/40-ident/`. [[nsf370-40-ident-identity-reuse]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
