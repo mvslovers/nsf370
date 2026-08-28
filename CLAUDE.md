@@ -188,11 +188,22 @@ Violating one is a review-blocking defect, not a style nit.
   be true. In `asm/nsfvsvc.asm` it dropped `L R3,REQFUNC(,R8)` outright — the
   SVC routine's dispatch value — a 646-byte object difference. **The rule is
   therefore: NO card of any kind, comment or instruction, may reach column 72.**
-  Since mbt#94 a warned assembly (RC 4) no longer fails the build, so a
-  recurrence is silent again: the `as370 -a=` listing and an old-vs-new object
-  comparison are the gate, not a green build. **`tools/check-card-columns.sh`
-  is that gate mechanised** (CI job `asm-cards`); it counts BYTES, because a
-  UTF-8 `§` costs two and several cards measured 73 while looking like 72.
+  **The assembler now sorts the two cases, and the gate is back where it
+  belongs (cc370#84).** What matters is the card that gets EATEN, not the one
+  that eats: a swallowed **comment** costs nothing and stays IFOX's severity 4
+  (survivable, e.g. a `TITLE` string running long); a swallowed **statement** is
+  the code, and as370 raises it to **RC 8** so the build stops. mbt#94's
+  "RC < 8 survives" is therefore safe, and mbt c80e23c adds
+  `.DELETE_ON_ERROR:` — without it as370's deck outlived the failed build and
+  the NEXT `make` linked it and returned 0, so the red build went green on the
+  second run with the statement missing. Verified here: run 1 rc=2 and the
+  object deleted, run 2 rc=2 again. Note IFOX does **not** warn at all when the
+  eaten card's columns 1-15 are blank, so a macro operand card can still vanish
+  quietly. `tools/check-card-columns.sh` (CI job `asm-cards`) remains worth
+  having for a different reason: it runs before the toolchain, sees sources the
+  assembler never gets, and also reports the ~20 harmless cards — a house-style
+  call the assembler should not make for us. It counts BYTES, because a UTF-8
+  `§` costs two and several cards measured 73 while looking like 72.
 - **`as370` knows five instruction formats and three S-format instructions.** Its
   table is RR/RX/RS/SI/SS plus exactly `IPK`/`SPKA`/`STCK` — there is **no SSE and
   no RRE format at all**. Anything outside that set must be emitted as raw bytes

@@ -7,10 +7,18 @@
 # as instructions, so a card reaching column 72 CONSUMES THE CARD AFTER IT.
 # as370 agrees since mvslovers/cc370#72 and reports IFO026/IFO069 at severity 4.
 #
-# Severity 4 is a warning, and a warned assembly still punches its deck -- so
-# since mbt#94 the build rule keeps RC < 8 and make sees exit 0. That is correct
-# for warnings in general and it means this particular defect is SILENT again:
-# the object is built, the card is missing from it, and nothing complains.
+# Since cc370#84 the assembler sorts the two cases, and this script is no longer
+# the only thing standing between us and a silent miss: an eaten COMMENT stays
+# severity 4 (it costs nothing), an eaten STATEMENT is raised to RC 8 and stops
+# the build. So why keep this?
+#
+#   - it runs BEFORE the toolchain, so it answers in seconds and needs nothing
+#     installed;
+#   - it sees sources the assembler is never asked to read;
+#   - it reports the harmless cards too, which is a house-style call the
+#     assembler deliberately does not make for us;
+#   - IFOX does not warn AT ALL when the eaten card's columns 1-15 are blank,
+#     so a macro operand card can still vanish without a diagnostic.
 #
 # Measured on 2026-08-28, both directions:
 #   asm/nsfctcio.asm line 95, a 74-byte comment, swallowed the next line's
@@ -41,8 +49,10 @@ if [ -n "$bad" ]; then
     n=$(printf '%s\n' "$bad" | wc -l | tr -d ' ')
     echo ""
     echo "check-card-columns: FAILED -- $n card(s) reach column 72."
-    echo "Each one silently eats the card after it (IFO026/IFO069, severity 4,"
-    echo "which does NOT fail the build). Keep every card inside column 71."
+    echo "Each one eats the card after it. If that card carries a statement the"
+    echo "assembler stops the build (RC 8, cc370#84); if it is a comment it is"
+    echo "only a warning, and if its columns 1-15 are blank IFOX says nothing at"
+    echo "all. Keep every card inside column 71."
     exit 1
 fi
 
