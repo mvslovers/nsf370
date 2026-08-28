@@ -156,6 +156,51 @@ That resolves 64-3-0's S1/S2 boundary in favour of S1 by measurement rather than
 may weigh a non-PPT DONTSWAP differently under storage pressure, or in a shortage algorithm,
 and nothing here reads SRM's code.
 
+## 5a. Sorted by module state: no stall has ever been reproduced on a reset module
+
+**This is the strongest thing the round produced, and it changes what this ADR is claiming.**
+Every #64 stall on record, sorted by the state of the module it occurred on:
+
+| module state | stalls |
+|---|---|
+| **spinning**, before 64-1 | **all nine** — #64's own, 64-0b's two, 64-0c's two, 64-0d's four |
+| **spinning**, 64-0f's deliberate revert build | **one**, in four targeted attempts |
+| **reset**, after 64-1 | **none** — 64-1's Gate 2 (45 gate rounds), 64-0e (NSFV 543 356 requests and NSFS 139 240, max inter-step gap 1 s), 64-3-0, and both arms of 64-3-1 |
+
+Three consequences, and all three matter.
+
+**First: the gate had no control — not because the round was run badly, but because the
+phenomenon does not occur on the current module.** 64-0e measured NSFS resident on 54 of 54
+samples across 38 minutes. 64-3-1's control produced no swap transition in nine minutes of
+heavy, demonstrably non-vacuous load (`SERVED = 12997`, `COLLISIONS = 33538`). A gate cannot
+discriminate against a control that cannot fire.
+
+**And the point is sharper than "the control was quiet," because of what the revert reverted.**
+64-1's reset is one statement in `src/nsfsx.c`; 64-3-1's revert removed the `DONTSWAP` call in
+`src/nsfsmain.c` and **left `nsfsx.c` untouched**. So the control arm was *swappable but still
+reset* — it varied the wrong axis relative to the stratification above. Reproducing the
+phenomenon would have required reverting the **spin**, which is 64-0f's build, not this round's.
+
+**Second: the gate's premise was a measurement lifted out of its configuration.** The gate was
+built on `docs/nsf-64-0c-measurements.md` §6 — "reproduced twice within 90 seconds of a gate
+round starting" — without carrying the fact that **both reproductions were on the spinning
+pre-64-1 module.** That is the second time in this investigation a figure has been used outside
+the configuration it was taken in (64-1's campaign being quoted without its date was the first),
+and it is worth naming as a recurring failure mode rather than an isolated slip.
+
+**Third: 64-1 may already be the fix for #64**, found from the far end — exactly the reading
+64-0f's prediction F(i) contemplated and could not support from one onset. **The evidence is
+absence across five rounds, and absence is WEAK evidence, to be labelled weak:** none of those
+rounds was designed to reproduce a one-in-four phenomenon, several were short, and 64-1's own
+arm carried the condition every stall shares (a client parked with a published request) for
+only about 0.8 % of its sampling. It is consistent, not conclusive.
+
+**What that does to this decision.** It makes `DONTSWAP` **defence in depth on top of a probable
+fix**, rather than the only thing standing between the stack and a twelve-minute outage. It does
+not retire the mitigation — the cost is 40 KB (§8) and the failure mode it guards against is an
+outage — and it does not close #64, because "no stall observed since" is not "the cause is
+known." **#64 stays open, and the cause is still unknown.**
+
 ## 6. What this does NOT establish
 
 - **It does not explain #64.** Not the twelve minutes, not what SRM was pending on, not why
