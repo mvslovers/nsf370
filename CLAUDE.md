@@ -172,9 +172,25 @@ Violating one is a review-blocking defect, not a style nit.
   through garbage and branched to low storage. **A green host build and a clean
   cc370/as370/ld370 link are NOT evidence** — the merge is invisible off-target;
   only the live ABEND (or the `as370 -a=` listing) shows it. Keep
-  instruction-line comments short and within column 71; put long rationale in a
-  leading `*` comment block (those are full-width, whole-line comments and are
-  safe).
+  instruction-line comments short and within column 71.
+  **CORRECTED 2026-08-28: a WHOLE-LINE `*` comment is NOT exempt, and the old
+  advice to "put long rationale in a leading `*` comment block (those are
+  full-width and safe)" was wrong — it is what produced the damage.** IFOX00
+  applies the continuation rule to comment statements too (`PNXT13` reads them
+  with `RALLCNT`), so a `*` card reaching column 72 **eats the next card**;
+  as370 short-circuited comments before looking at column 72 and so disagreed
+  with the target until mvslovers/cc370#72 (`IFO026`/`IFO069`, severity 4).
+  Measured here on the fixed as370: `asm/nsfctcio.asm` line 95, a 74-byte
+  comment reading "DSECTs before the code", swallowed the `DCBD DSORG=PS` on
+  the next line, so **every** DCB DSECT symbol resolved to 0 —
+  `MVC DCBDDNAM-IHADCB(8,R2),0(R3)` assembled as `MVC 0(8,R2),0(R3)` and
+  `TM DCBOFLGS-IHADCB(R2),DCBOFOPN` as `TM 0(R2),X'00'`, a mask that can never
+  be true. In `asm/nsfvsvc.asm` it dropped `L R3,REQFUNC(,R8)` outright — the
+  SVC routine's dispatch value — a 646-byte object difference. **The rule is
+  therefore: NO card of any kind, comment or instruction, may reach column 72.**
+  Since mbt#94 a warned assembly (RC 4) no longer fails the build, so a
+  recurrence is silent again: the `as370 -a=` listing and an old-vs-new object
+  comparison are the gate, not a green build.
 - **`as370` knows five instruction formats and three S-format instructions.** Its
   table is RR/RX/RS/SI/SS plus exactly `IPK`/`SPKA`/`STCK` — there is **no SSE and
   no RRE format at all**. Anything outside that set must be emitted as raw bytes

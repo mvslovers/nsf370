@@ -40,18 +40,18 @@
 *  ENTRY CONVENTION (issue #8; CLAUDE.md 3): every entry is built the
 *  STANDARD cc370 way -- COPY MVSMACS + COPY PDPTOP, FUNHEAD / FUNEXIT,
 *  modeled on libc370 @@getclk.asm.  A hand-rolled STM/BALR/USING seam
-*  breaks the cc370 C-runtime path (@@CRTGET, ABEND S0C6).  The two leaf
+*  breaks the cc370 C-runtime path (@@CRTGET, ABEND S0C6). The two leaf
 *  entries (scb_size, status) issue no SVC and use the plain leaf form
 *  (like nsf_now).  The four macro-issuing entries (OPEN/CLOSE/EXCP are
 *  SVCs) also use the FUNHEAD leaf form, then CHAIN R13 onto the save
 *  area IN THEIR OWN scb (SCSAVE) before the SVC and restore it before
 *  FUNEXIT -- the standard SAVE=static prologue done PER-scb.  Why not
-*  FUNHEAD SAVE=<static>: with the M1-4b I/O subtasks (ADR-0022) the read
+*  FUNHEAD SAVE=<static>: with M1-4b's I/O subtasks (ADR-0022) the read
 *  and write subtasks call these entries CONCURRENTLY, so one shared
-*  static save area is corrupted by two tasks at once (the live S238).  A
+*  static save area is corrupted by two tasks at once (live S238).  A
 *  per-scb area (read subtask -> rscb, write subtask -> wscb) never
-*  overlaps -- concurrency-safe with no lock (§3).  The FUNHEAD entry name
-*  IS the 8-char asm() alias in include/nsfctci.h, character for character
+*  overlaps -- concurrency-safe, no lock (§3).  The FUNHEAD entry name
+*  IS the 8-char asm() alias in include/nsfctci.h, char for char
 *  (PR #7): NSFCISZ / NSFCIOPN / NSFCIRD / NSFCIWR / NSFCIST / NSFCICL.
 *
 *  AS370 QUIRKS kept in force (each cost a live ABEND in an M0 seam):
@@ -83,7 +83,7 @@
 *  Run live on MVSCE against a real Hercules 3088 CTCI pair (CUU
 *  500/501 on tun0).  OPEN both subchannels, one raw EXCP each way:
 *  WRITE post X'7F' 38/38 bytes (crafted ICMP seen in host tcpdump),
-*  READ post X'7F', length = requested - IOB residual.  The S102/S0C6/#8
+*  READ post X'7F', length = requested - IOB residual. The S102/S0C6/#8
 *  unvalidated-seam risk is retired for this module.  (The READ block
 *  DECODE -- walking CTCISEGs to the leading hwOffset -- is M1-4, and
 *  §9.3's old "chain to a 0x0000 terminator" model was wrong: see the
@@ -92,7 +92,7 @@
 *
          COPY  MVSMACS
          COPY  PDPTOP
-*  DSECTs before the code (tidiness; difference form is the fix, quirk 3).
+*  DSECTs before the code (difference form is the fix, quirk 3).
          DCBD  DSORG=PS
          IEZIOB ,
          CSECT ,
@@ -233,18 +233,18 @@ NSFCICL  FUNHEAD ,                per-scb save area set below
          SLR   R15,R15            rc = 0
          FUNEXIT RC=(R15)
 *---------------------------------------------------------------------*
-*  ctci_halt_read(rscb, rucb)   IOHALT (SVC 33) the read subchannel    *
-*     so a locally-originated WRITE need not wait for inbound traffic  *
-*     to free the shared channel (ADR-0027).  R0 = rucb (the read UCB, *
-*     HALT target), R1 = X'00000001' (IOS HALT I/O, no OFFSET), SVC 33 *
+*  ctci_halt_read(rscb, rucb)   IOHALT (SVC 33) the read subchannel   *
+*     so a locally-originated WRITE need not wait for inbound traffic *
+*     to free the shared channel (ADR-0027).  R0 = rucb (the read UCB,*
+*     HALT target), R1 = X'00000001' (IOS HALT I/O, no OFFSET), SVC 33*
 *     -- the exact invocation test/asm/tsthalt.asm proved live.       *
-*                                                                      *
-*  Issued ONLY on the executive task (from the write-kick path), so    *
-*  ONE static save area is concurrency-safe -- unlike the OPEN/EXCP/   *
-*  CLOSE entries, which two subtasks call at once and so need per-scb  *
-*  areas (the S238 lesson).  SVC 33 is a type-2 SVC; SAVE= sets the    *
-*  proper save-area linkage it expects (matching the Stage-0 probe).   *
-*  arg0 rscb is unused on MVS (the host shim uses it); void result.    *
+*                                                                     *
+*  Issued ONLY on the executive task (from the write-kick path), so   *
+*  ONE static save area is concurrency-safe -- unlike the OPEN/EXCP/  *
+*  CLOSE entries, which two subtasks call at once and so need per-scb *
+*  areas (the S238 lesson).  SVC 33 is a type-2 SVC; SAVE= sets the   *
+*  proper save-area linkage it expects (matching the Stage-0 probe).  *
+*  arg0 rscb is unused on MVS (the host shim uses it); void result.   *
 *---------------------------------------------------------------------*
 NSFCIHLT FUNHEAD SAVE=HLTSAVE,US=NO
          L     R0,4(,R1)          R0 = rucb (arg1), HALT target
@@ -263,12 +263,12 @@ HLTSAVE  DC    18F'0'
 *  activate one (ADR-0019).  IOBAD names a dummy model IOB the macro  *
 *  wants; the per-request IOB is the scb's SCIOB, passed to EXCP.     *
 *  NB (M1-4b, ADR-0022): there is NO shared static save area anymore. *
-*  The read and write I/O SUBTASKS call these OPEN/EXCP/CLOSE entries  *
-*  CONCURRENTLY, so a single static area would be corrupted by two     *
-*  tasks at once (the S238 that fell out of the first live run).  Each *
-*  entry now uses the save area IN ITS OWN scb (SCSAVE below): the read *
-*  subtask always passes rscb, the write subtask wscb, so their save   *
-*  areas never overlap -- concurrency-safe with no lock (§3).          *
+*  The read and write I/O SUBTASKS call these OPEN/EXCP/CLOSE entries *
+*  CONCURRENTLY, so a single static area would be corrupted by two    *
+*  tasks at once (the S238 that fell out of the first live run).  Each*
+*  entry uses the save area IN ITS OWN scb (SCSAVE below): the read   *
+*  subtask always passes rscb, the write subtask wscb, so their save  *
+*  areas never overlap -- concurrency-safe with no lock (§3).        *
 *---------------------------------------------------------------------*
          DS    0D
 MODLDCB  DCB   DSORG=PS,MACRF=E,DDNAME=NSFCTCID,IOBAD=MODLIOB
@@ -282,7 +282,7 @@ SCDCBL   EQU   MODLDCBE-MODLDCB
 *    +0        the copied DCB       (SCDCBL bytes)                    *
 *    SCIOBO    the IOB              (SCIOBL bytes, doubleword)        *
 *    SCCCWO    the single CCW       (8 bytes, doubleword)             *
-*    SCSAVE    this subchannel's own 18F OS save area (per-scb, so the *
+*    SCSAVE    this subchannel's own 18F OS save area (per-scb, so the*
 *              read and write subtasks never share one -- see above)  *
 *  SCIOBO / SCCCWO / CTCISCL are absolute EQUs (immune to quirk 3).   *
 *---------------------------------------------------------------------*

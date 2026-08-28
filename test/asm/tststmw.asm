@@ -5,13 +5,18 @@
 *
 *    stimer_wait(UINT centisecs)  -- STIMER WAIT for centisecs * 0.01s
 *
-*  A TASK-SYNCHRONOUS wait (STIMER TYPE=WAIT, SVC 47): no exit, no ECB (the
-*  form libc370 usleep uses). It measures the STIMER TIMEBASE only; the async
+*  A TASK-SYNCHRONOUS wait (STIMER TYPE=WAIT, SVC 47): no exit, no ECB
+*  (the
+*  form libc370 usleep uses). It measures the STIMER TIMEBASE only; the
+*  async
 *  exit-dispatch path is characterized at M0-6.
 *
-*  ENTRY CONVENTION (issue #8): built the STANDARD cc370 way -- COPY MVSMACS +
-*  COPY PDPTOP, FUNHEAD / FUNEXIT (like libc370 @@getclk.asm). The FUNHEAD
-*  entry name IS the 8-char asm() alias on stimer_wait in tsttmacc.c (STIMWAIT).
+*  ENTRY CONVENTION (issue #8): built the STANDARD cc370 way -- COPY
+*  MVSMACS +
+*  COPY PDPTOP, FUNHEAD / FUNEXIT (like libc370 @@getclk.asm). The
+*  FUNHEAD
+*  entry name IS the 8-char asm() alias on stimer_wait in tsttmacc.c
+*  (STIMWAIT).
 *
 *  as370: address the static interval by explicit displacement, never a
 *  bare-label USING; keep every statement inside column 71.

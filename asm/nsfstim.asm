@@ -8,33 +8,49 @@
 *    nsftmr_plat_ecb() -> UINT*    -- address of the timer ECB
 *
 *  3.8j has STIMER (SVC 47, single interval), NOT STIMERM: one STIMER
-*  re-armed to the head delta gives the tick (ADR-0011). One tick = 100ms;
+*  re-armed to the head delta gives the tick (ADR-0011). One tick =
+*  100ms;
 *  BINTVL is 0.01s units, so the interval armed is ticks*10.
 *
-*  ENTRY CONVENTION (issue #8): the three C-callable entries are built the
-*  STANDARD cc370 way -- COPY MVSMACS + COPY PDPTOP, FUNHEAD / FUNEXIT (like
-*  libc370 @@getclk.asm). A hand-rolled seam breaks the cc370 C-runtime path
-*  (@@CRTGET, ABEND S0C6); see issue #8. The FUNHEAD entry name IS the 8-char
+*  ENTRY CONVENTION (issue #8): the three C-callable entries are built
+*  the
+*  STANDARD cc370 way -- COPY MVSMACS + COPY PDPTOP, FUNHEAD / FUNEXIT
+*  (like
+*  libc370 @@getclk.asm). A hand-rolled seam breaks the cc370 C-runtime
+*  path
+*  (@@CRTGET, ABEND S0C6); see issue #8. The FUNHEAD entry name IS the
+*  8-char
 *  asm() alias in nsfstim.h -- NSFTMARM / NSFTMDIS / NSFTMECB (PR #7).
 *
 *  AS370 QUIRKS kept in force (each cost a live ABEND to find):
 *   1) Address the static ECB / interval by EXPLICIT displacement
-*      LABEL-entry(,R12) (an assembly-time constant), NEVER a bare-label
-*      USING -- as370 does not resolve those reliably and drops to base 0 /
-*      disp 0, which once made POST target the ECB at address 0 (ABEND S102).
-*   2) as370 treats a non-blank in column 72 as a continuation flag; keep
+*      LABEL-entry(,R12) (an assembly-time constant), NEVER a
+*      bare-label
+*      USING -- as370 does not resolve those reliably and drops to base
+*      0 /
+*      disp 0, which once made POST target the ECB at address 0 (ABEND
+*      S102).
+*   2) as370 treats a non-blank in column 72 as a continuation flag;
+*   keep
 *      every statement inside column 71.
 *
 *  STORAGE: this CSECT owns two static words -- the timer ECB and the
-*  interval. Correct: there is one timer service (one executive task). The
+*  interval. Correct: there is one timer service (one executive task).
+*  The
 *  ECB moves into an executive control block at M0-6.
 *
-*  STATUS: VALIDATED on 3.8j at M0-6. The three C-callable entries are FUNHEAD
-*  (issue #8); the async STIMER-REAL + POST exit (NSFTMEXP) is OS-invoked, so it
-*  does NOT get FUNHEAD and is built to the documented MVS 3.8 STIMER-exit
-*  linkage (GC28-0683; see ADR-0017 for the 7-step contract). test/mvs/tstevtm.c
-*  ran the loop over 10 heartbeats at ~100 ms and shut down clean (CC 0) -- the
-*  earlier ABEND S0C6 (a hand-rolled entry-convention shortcut) is gone.
+*  STATUS: VALIDATED on 3.8j at M0-6. The three C-callable entries are
+*  FUNHEAD
+*  (issue #8); the async STIMER-REAL + POST exit (NSFTMEXP) is
+*  OS-invoked, so it
+*  does NOT get FUNHEAD and is built to the documented MVS 3.8
+*  STIMER-exit
+*  linkage (GC28-0683; see ADR-0017 for the 7-step contract).
+*  test/mvs/tstevtm.c
+*  ran the loop over 10 heartbeats at ~100 ms and shut down clean (CC
+*  0) -- the
+*  earlier ABEND S0C6 (a hand-rolled entry-convention shortcut) is
+*  gone.
 *
          COPY  MVSMACS
          COPY  PDPTOP
@@ -99,7 +115,8 @@ NSFTMEXP DS    0H
          LM    R14,R12,12(R13)    restore caller regs
          BR    R14
 *
-*  Static timer state (one timer service; see STORAGE note). Placed right
+*  Static timer state (one timer service; see STORAGE note). Placed
+*  right
 *  after the exit code so the exit reaches them R15/R12-relative.
 BINTVLW  DC    F'0'               STIMER interval (0.01s units)
 TIMRECB  DC    F'0'               the timer ECB
