@@ -40,6 +40,7 @@
 #include "nsfcfg.h"
 #include "nsfstc.h"
 #include "nsfopr.h"
+#include "nsfswap.h"    /* nsfswap_op -- the SWAP verb (Phase 2 only) */
 #include "nsfevt.h"
 #include "nsfmsg.h"
 #include "nsfmm.h"
@@ -224,8 +225,9 @@ static void nsf_quiesce_device(NETDEV *dev, void *arg)
 
 int main(int argc, char **argv)
 {
-    char err[NSFCFG_MSGLEN];
-    INT  rc;
+    char        err[NSFCFG_MSGLEN];
+    INT         rc;
+    NSFSWAPVIEW swapview;
 
     (void)argc;
 
@@ -237,6 +239,29 @@ int main(int argc, char **argv)
     if (clib_apf_setup(argv[0]) != 0) {
         nsfmsg("NSF009E NSFS CANNOT SELF-AUTHORISE");
         return 8;
+    }
+
+    /* Ask SRM not to swap this address space (issue #64, ADR-0044).  Here --
+     * immediately after self-authorisation -- because this is the earliest
+     * point at which SYSEVENT is possible, and because the ancestor put it in
+     * the same place (mvs38j-ip sysinit.c:67, right after supervisor state).
+     *
+     * DESIGN PIN: a refusal WARNS AND CONTINUES; it never refuses to start.
+     * The SVC steal refuses because getting it wrong is a CORRECTNESS failure.
+     * This is a LATENCY mitigation, and a stack running with a known latency
+     * risk beats no stack at all.  The warning names the condition so an
+     * operator can see it in the log rather than infer it from a stall.
+     *
+     * The verdict is the OUCBNSW read-back, not R15 (unspecified for these
+     * codes).  Released in the teardown below, on every path. */
+    if (nsfswap_dontswap(&swapview) == 0) {
+        nsfmsg("NSF851I NSFS NON-SWAPPABLE (SYSEVENT DONTSWAP, NDS=%u)",
+               (unsigned)swapview.nds);
+    } else {
+        nsfmsg("NSF852W NSFS REMAINS SWAPPABLE -- DONTSWAP NOT ACCEPTED"
+               " (NSW=%c NDS=%u) -- CONTINUING, SEE ISSUE #64",
+               (swapview.sfl & NSFSWAP_NSW) ? 'Y' : 'N',
+               (unsigned)swapview.nds);
     }
 
     /* Foundation FFDC surfaces first (static storage, no pool), so even a very
@@ -359,6 +384,12 @@ int main(int argc, char **argv)
      * Phase-1 STATS reply is unchanged. Registered AFTER nsfsx_start so the
      * first STATS already reports a live anchor. */
     nsfopr_set_stats_extra(nsfsx_stats_extra);
+    /* The SRM swappability verb (issue #64, step 64-3-1).  Phase 2 only:
+     * SYSEVENT needs the APF authorisation, supervisor state and key 0 this
+     * STC already holds and the Phase-1 module does not.  Registering it here
+     * -- rather than on the startup path -- means a wrong answer cannot break
+     * a normal `S NSFS`, and the action is operator-gated and reversible. */
+    nsfopr_set_swap(nsfswap_op);
 
     /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
     __estae(ESTAE_CREATE, (void *)nsf_recover, NULL);
@@ -409,6 +440,27 @@ int main(int argc, char **argv)
      * all while the pools and the executive state still exist. */
     nsfsx_stop();
     dev_foreach(nsf_quiesce_device, NULL);
+
+    /* Release the DONTSWAP (ADR-0044).  Placement is deliberate on both sides:
+     *
+     *   AFTER nsfsx_stop() and the device quiesce, because those are exactly
+     *   the steps that must not be swapped out mid-flight -- nsfsx_stop nudges
+     *   clients parked on reply ECBs in THIS address space and drains for up
+     *   to 10 s, and the quiesce closes live channels.
+     *
+     *   BEFORE the ESTAE is deleted, so a fault here still has recovery.
+     *
+     * This one call covers BOTH of nsfsx_stop's branches -- drained and
+     * retain -- because it returns either way and the teardown below it is
+     * linear.  That matters: a pinned address space left pinned after
+     * P NSFS is the same class of debt as a retained anchor, and the retain
+     * branch is the one with no live gate (M5-2b3). */
+    if (nsfswap_okswap(NULL) == 0) {
+        nsfmsg("NSF853I NSFS SWAPPABLE AGAIN (SYSEVENT OKSWAP)");
+    } else {
+        nsfmsg("NSF854W NSFS MAY REMAIN NON-SWAPPABLE -- OKSWAP NOT CONFIRMED");
+    }
+
     __estae(ESTAE_DELETE, NULL, NULL);
     nsf_shutdown();
     nsfmsg("NSF011I NSFS SHUTDOWN COMPLETE");

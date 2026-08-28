@@ -1472,6 +1472,91 @@ establish:** whether the PPT authorisation is required; that the running `IEFSDP
 that `DONTSWAP` would fix #64; NSFS's working set under load; anything about how SRM decides
 to swap; or that pinning has no cost beyond storage. Host **2925 PASS / 0 FAIL** — a
 no-regression check only. [[nsf370-64-3-0-noswap-survey]]
+**64-3-1 — `SYSEVENT DONTSWAP`: the probe, and the mitigation — DONE, live-green, PR #77.
+It MITIGATES #64 and does not fix it; #64 stays OPEN.** Not a milestone step; M5 stays in
+progress. NSFS now issues **`SYSEVENT DONTSWAP` at init and `OKSWAP` at shutdown** (**ADR-0044**).
+**STAGE A — the probe, because SYSEVENT/SVC 95 is a seam this project had never used.**
+Operator-gated (`F NSFS,SWAP`), **never on the startup path**, so a wrong answer cannot break a
+normal `S NSFS`; the verb rides the `g_statsextra` seam pattern (a handler pointer NULL until a
+build registers one), so **Phase 1 is unchanged** — `F NSF,SWAP` draws `NSF808E` and the help
+text does not grow. It had to run **inside NSFS's address space**: 64-3-0 could not separate
+"`OUCBASW` granted at ATTACH from the PPT" from "set when a DONTSWAP is accepted" because the
+only three ASes with `ASW` were the only three with `NDS > 0`. **THE READ-BACK IS THE PROOF AND
+R15 IS NOT** — accepted / rejected / **silently ignored** are three outcomes and the third is
+this project's standing failure class; SRM documents no return code for these codes (the
+ancestor recorded it, `mvsevent.asm:15-16`), so R15 is reported, labelled unspecified, and
+**never branched on**. Verdict from `OUCBNSW`/`OUCBNDS`/`OUCBASW` read through **one** path with
+**one** identity assertion (`'OUCB'` eyecatcher **and** `OUCBASCB` pointing back at our ASCB —
+the 64-0c trap one control block over) at every read point. **`OUCBNDS` is a COUNT: the release
+is proven against the baseline VALUE, never against zero** — a probe that left NSFS pinned would
+have changed the machine as a side effect of measuring it. **Live, twice byte-identical:
+`NSW 00→80`, `NDS 0→1`, released clean.** **AND IT SETTLED 64-3-0's OPEN QUESTION: `ASW` stayed
+CLEAR across an ACCEPTED DONTSWAP** (`AFL=X'48'` = `APG`+`JSR` throughout) — so ASW is **not**
+set by an accepted DONTSWAP **and not** a precondition for one. **NSFS has no PPT entry and the
+request took, so the PPT route is NOT REQUIRED and the self-issued route costs an installation
+nothing** — S1 resolved by measurement, not correlation. Narrowly: proven only that the PPT entry
+is not a precondition *for the request taking effect*, not that `ASW` has no other consequence.
+**THE SEAM** (`asm/nsfsevt.asm`) is **derived, not copied** — as370 has no `SYSEVENT` macro
+(mvsmacs/pdptop checked), so the two instructions the macro generates for the no-ASID/`ENTRY=SVC`
+case are written out; codes re-derived live this round (`DONTSWAP` 41 line 91, `OKSWAP` 42 line
+93, `SVC 95` line 209). **LEAF FORM, AND THE RULE IS THE SVC TYPE, NOT "ISSUES AN SVC":**
+`NSFCIHLT` needs `SAVE=` because **SVC 33 is type 2**; **SVC 95 is type 1** (measured off the live
+SVCTABLE in 64-3-0) so it saves into the FLIH's SVRB and never walks the caller's R13 chain —
+which is also why `nsftmr_plat_arm` issues STIMER (SVC 47, type 1) as a leaf. **§3's sentence is
+too broad as written and `NSFTMARM` has contradicted it since M0-5.** No `SPKA` in the seam:
+`__super(PSWKEY0,…)` does `MODESET MODE=SUP` **and** `SPKA`. as370 listing checked
+(`L R0,0(,R1)` = `5800 1000` base R1 not dropped to 0; `SVC 95` = `0A5F`), all 8 statements
+present in order — **and that check was verified to discriminate: an over-long comment on the
+`L` line made as370 merge the next statement and DROP THE `SVC 95` entirely.**
+**STAGE B.** `DONTSWAP` right after `clib_apf_setup` (earliest possible, where the ancestor put
+it); `OKSWAP` **after `nsfsx_stop()` and the device quiesce, before the ESTAE is deleted** —
+those two steps must not be swapped out mid-flight, and a fault in the release should still have
+recovery. **One call covers BOTH `nsfsx_stop` branches** (drained and retain) because it returns
+either way and the teardown is linear: a pinned AS left pinned after `P NSFS` is the same debt
+class as a retained anchor. **DESIGN PIN: a refusal WARNS AND CONTINUES** (`NSF852W`), never
+refuses to start — the SVC steal refuses because that is a *correctness* failure; this is a
+*latency* mitigation. **Phase 1 can never issue SYSEVENT, STRUCTURALLY** (`src/nsfswap.c`,
+`asm/nsfsevt.asm` in the NSFS module source list only; Phase 1 has no `ac=1`, no
+`clib_apf_setup`, no `__super`). **THE GATE DID NOT DISCRIMINATE, AND THAT IS THE ROUND'S MOST
+IMPORTANT NEGATIVE RESULT.** With `DONTSWAP` reverted and NSFS verified swappable (`SFL=00` on
+all 163 samples), **nine minutes of heavy non-vacuous load** (`SERVED=12997`,
+`COLLISIONS=33538`, `EXHAUSTED=517`) produced **one** distinct `ASCBSTOR`, `OUCBSWC` never off
+zero, `QFL` only `00`. **The control shows no swap transitions either, so the pinned arm's null
+is uninterpretable.** **A prior round had already refuted the premise:** 64-0e measured NSFS
+**resident 54/54 over 38 min** while NSFV swapped 12/16 — **NSFS does not swap on this stand
+under any load this round can produce**, which is also why the stalls are rare. So the mitigation
+rests on (1) **MEASURED** — DONTSWAP accepted/effective/released, five observations — and (2)
+**REASONED, NOT MEASURED HERE** — MVS does not swap a non-swappable AS, which follows from what
+`OUCBNSW` *means*. **The control for the pinned side remains 64-0f's stall**, on record, not
+re-run. **THREE DEPLOYED STATES, EACH PROVEN POSITIVELY:** pinned (`NSF851I … NDS=1`); reverted
+(`NSF851I` absent is *ambiguous alone*, so the check is the probe reporting **`NSW=N NDS=0`** on
+a fresh STC — impossible on the pinned build); restored (`NSF851I` again, source
+`git diff --quiet` identical to committed). The revert was verified as **exactly one change** by
+a comment-stripped diff. **COST, LIKE-FOR-LIKE** (both arms 163 samples / 9 min, one sampler,
+monotonic): the ONLY fields that differ are `SFL` and `NDS`; `ASCBFMCT` **peak 186 (744 KB) both
+ways**, floor **56 pinned vs 46 swappable** — **pinning costs 10 frames / 40 KB more resident**
+of 4096. **Pinning does NOT prevent page stealing** (186→56 while pinned); only the *swap* is
+prevented — which corrects this round's own earlier note and makes 64-3-0's 39-frame idle figure
+comparable rather than anomalous. **THREE FAULTS OF MINE IN THE RECORD:** a **bug found by
+re-reading the code, not by a test** — `swap_set` returned on the `__super` failure path
+**before** writing `*out`, so `NSF852W`, the very message the design pin exists to produce, would
+have printed an uninitialised struct (never fired live because DONTSWAP was accepted); **arm 1
+was contaminated** by two samplers writing one file (a `nohup` run I believed dead, plus one that
+truncated the file underneath it) and is **SUPERSEDED, not caveated**, the re-run script now
+killing strays and **asserting none survive**; and the sampler **took the password on `argv`**,
+visible in `ps`, fixed to read the environment. **`NSF853I` IS NOT PROOF OF A RELEASE** —
+`nsfswap_okswap` returns success whenever `OUCBNSW` ends *clear*, also true when nothing was
+pinned, and it was observed live on the revert build. **Regression:** host **2934 PASS / 0 FAIL**
+(TSTOPR 25→34, new assertions **verified to discriminate**); cross-build clean, alias scan **224
+unique**; **NSFV round `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH`/`TSTXFW` 484 PASS CC 0 batch+TSO**;
+**NSFS `TSTRQXC`/`TSTRQXF` 122 PASS CC 0 batch+TSO**; **`TSTRQXM` batch CC 0** with the host peer
+verifying **9353 bytes byte-exact** and the batch run passing *"the first PARKED request to
+complete"* (TSO FAIL by design, one-shot listener consumed, `errno 61`); **no dumps**.
+**Round-order note:** the Stage-0 tests are clients of **NSFV**, so `P NSFS` alone leaves no SVC
+router and they abend `SFEF` — the order is `P NSFS` → **`S NSFV`** → run → `P NSFV` → `S NSFS`.
+**#64 STAYS OPEN — mitigated, not fixed, with the investigation deferred rather than closed —
+and (e) STAYS BLOCKED, because the kickoff's condition was "unblocked only if the gate holds"
+and it did not.** [[nsf370-64-3-1-dontswap]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |

@@ -29,6 +29,15 @@
  * #ifdef: nsfopr.c is shared by both STCs and host-tested as pure C. */
 static void (*g_statsextra)(void);
 
+/* Optional SWAP verb (issue #64, step 64-3-1).  NULL until a build registers
+ * one, so Phase 1's dispatcher is unchanged -- `F NSF,SWAP` falls through to
+ * NSF808E exactly as any other unknown verb, and the help text does not grow.
+ * Only the Phase-2 STC registers a handler (nsfswap_op), because SYSEVENT
+ * needs APF authorisation, supervisor state and key 0 and the Phase-1 module
+ * has none of the three.  Same seam shape as g_statsextra above, and for the
+ * same reason: nsfopr.c is shared by both STCs and host-tested as pure C. */
+static void (*g_swapfn)(const char *);
+
 /* -- tiny tokenizer over the uppercased work buffer ------------------------ */
 
 static const char *skip_sep(const char *p)
@@ -104,6 +113,11 @@ void nsfopr_set_stats_extra(void (*fn)(void))
     g_statsextra = fn;
 }
 
+void nsfopr_set_swap(void (*fn)(const char *))
+{
+    g_swapfn = fn;
+}
+
 static void op_trace(const char *rest)
 {
     const char *c  = skip_sep(rest);
@@ -147,6 +161,9 @@ static void op_help(void)
     nsfmsg("NSF880I   STATS             -- statistics counters");
     nsfmsg("NSF880I   TRACE comp ON|OFF -- e.g. F NSF,TRACE IP ON");
     nsfmsg("NSF880I   STOP  (or P NSF)  -- orderly shutdown");
+    if (g_swapfn != NULL) {
+        nsfmsg("NSF880I   SWAP              -- SRM swappability probe");
+    }
 }
 
 /* -- the router ------------------------------------------------------------ */
@@ -198,6 +215,10 @@ int nsfopr_dispatch(const char *text)
         nsfmsg("NSF830I NSF STOP ACCEPTED -- SHUTTING DOWN");
         nsfevt_stop();
         return 1;
+    }
+    if (tok_is(p, e, "SWAP") && g_swapfn != NULL) {
+        g_swapfn(rest);
+        return 0;
     }
     if (tok_is(p, e, "HELP") || tok_is(p, e, "?")) {
         op_help();
