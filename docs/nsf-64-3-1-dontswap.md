@@ -340,8 +340,63 @@ with the 46-56 floors here rather than anomalous beside them.*
 | NSFS round | `TSTRQXC`/`TSTRQXF` **122 PASS / 0 FAIL**, CC 0 batch **and** TSO |
 | `TSTRQXM` | **batch CC 0**, host peer verifying **9353 bytes byte-exact**; the batch run passes *"CONNECT across the boundary (the first PARKED request to complete)"*. The TSO re-run FAILs **by design** — `errno=61`, the one-shot listener consumed by the batch run (the TSTTCPW precedent); batch is the gate |
 | dumps | none |
+| re-run after the forced-failure arm | NSFS `TSTRQXC`/`TSTRQXF` **122 PASS CC 0 batch+TSO**; NSFV round **484 PASS CC 0 batch+TSO**; host **2934 PASS / 0 FAIL** — all on the restored shipping build (§8) |
 
 **A procedural note worth keeping:** the first NSFV attempt failed `ABEND SFEF` on four of five
 tests because **NSFV was never started** — the Stage-0 tests are clients of the probe STC, and
 `P NSFS` alone leaves no SVC router installed. The round order is `P NSFS` → **`S NSFV`** →
 run → `P NSFV` → `S NSFS`.
+
+---
+
+## 8. The failure path, exercised deliberately
+
+The round's own bug lived here: `swap_set` returned on the `__super` failure path **before
+writing `*out`**, so `NSF852W` — the message the design pin exists to produce — would have
+printed an uninitialised struct. It was found by re-reading the code, and **it never fires in
+normal service**, which is the shape at its most awkward: *a failure path that never runs is
+never tested, and its absence is not even visible.* The pin makes that path the only thing that
+can produce a correct diagnostic when the mechanism is unavailable — on another installation,
+on another stand, at the moment it matters most. So it was run on purpose.
+
+**Induced LIVE, not host, and the choice is not a preference.** `src/nsfswap.c` includes
+`<clibos.h>` directly for `__super` / `__prob` / `__ascb`, and the host build has no shim for
+that header — the existing `src/*_host.c` shims replace whole **asm modules**, not a libc370
+header. Host-testing this branch would mean introducing a new seam purely to make one arm
+reachable: a larger change than the fix it would guard. And the property under test is the
+**emitted message and the values it carries**, which is a live property of the deployed module.
+
+**Induction:** a temporary build with the guard short-circuited —
+`if (1 || __super(PSWKEY0, &savekey) != 0)` — so the arm is taken **without** calling
+`__super`. Short-circuit matters: inverting the comparison instead would have entered
+supervisor state key 0 and returned without `__prob`, leaving the task authorised. Deployed,
+started, observed, then the shipping source restored and verified `git diff --quiet` identical.
+
+**As emitted** (STC01500, `docs/measurements/64-3-1/forced-failure-console.log`):
+
+```
+NSF852W NSFS REMAINS SWAPPABLE -- DONTSWAP NOT ACCEPTED (NSW=N NDS=0) -- CONTINUING, SEE ISSUE #64
+NSF040I NSFS 0.1.0-dev STARTING (PHASE 2)
+NSF001I NSFS INITIALIZATION COMPLETE
+...
+NSF854W NSFS MAY REMAIN NON-SWAPPABLE -- OKSWAP NOT CONFIRMED
+NSF011I NSFS SHUTDOWN COMPLETE
+```
+
+Four things this proves, and the third is the one that matters most:
+
+1. **The values are defined.** `NSW=N NDS=0` — the zeroed out-parameter. Before the fix this
+   printed whatever was on the stack.
+2. **The design pin holds live.** `NSF040I` and `NSF001I` follow the warning: NSFS **warned and
+   continued**, exactly as §3.1 specifies, and did not refuse to start.
+3. **The message is TRUE, not merely well-formed.** `F NSFS,SWAP` on that instance reported
+   `BASELINE … NSW=N ASW=N NDS=0` — and `nsfswap_probe` calls `__super` **itself** rather than
+   through `swap_set`, so it was unaffected by the forced failure and is an *independent*
+   reading. The address space really was swappable, so "REMAINS SWAPPABLE" was a correct claim
+   about the machine and not just a defined string.
+4. **The shutdown warning works too.** The same forced failure reaches `nsfswap_okswap`, giving
+   `NSF854W` — conservative wording ("MAY REMAIN NON-SWAPPABLE"), which is right, since a
+   failure to confirm is not a confirmation of failure.
+
+**Restored and re-proven:** `NSF851I … NDS=1` on the shipping build, source verified identical
+to the committed version.
