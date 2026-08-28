@@ -4,9 +4,12 @@
 PR #78), client `TSTAPPD` PARK arm, unauthorised. Times UTC unless a console
 line is quoted (those are MVS local, ~1 h behind).
 
-**Status: BLOCKED, and the blocker is finding 4.** The guard's decision was
-measured; whether the POST proceeds was not. NSFS cannot currently be started
-on this stand.
+**Status: ANSWERED. G(i) fires, in full.** The guard answers LIVE for a batch
+client that died with a request outstanding, and the reply POST proceeds. The
+cost is a **permanent resource leak**, not corruption.
+
+The round was blocked mid-way by finding 4 and resumed after Mike IPLed the
+stand; findings 2 and 4 are filed as #80 and #79 and are NOT fixed here.
 
 ---
 
@@ -184,3 +187,147 @@ any stimulus is sent.
 The run therefore supports **G(i) as far as it goes and no further**, and adds
 two things none of the three anticipated: the `ubuf` key-0 write (finding 2)
 and the recovery-path SVC leak (finding 4).
+
+
+---
+
+# 7. THE ANSWER: G(i) fires. The guard says LIVE, the POST proceeds, the slot leaks.
+
+Finding 2's `S0C4` sits on the RECVFROM completion path, upstream of the guard
+(issue #80). `accept` and `connect` never touch `ubuf` -- their results go into
+the STC-PRIVATE NSFRQE, which `nsfreqx_result_out` copies to CSA inside the key
+window -- so a parked **ACCEPT** reaches the classify decision and the POST with
+nothing CSA-touching running in key 8. That is the `PARKA` arm.
+
+## The run (NSFS STC 1520, post-IPL, anchor `00A8B7C8`)
+
+Startup **positively confirmed** before any stimulus (`NSF041I` + `NSF001I`) --
+finding 5's lesson applied.
+
+**Outstanding at the moment of death**, by the conjunction:
+
+```
+[08:18:54Z] SLOT 0  req_state=1 (PENDING) reply_ecb=809DE5F0
+                    req_ascb=00FE7330 req_asid=0008 xfunc=6 xlen=0
+NSF813I BUSY=1 BUSYSLOT=0 INFLIGHT=1 ...   SERVED=9
+```
+
+**Dead:** `C TSTAPPDA` 08:19:07Z -> JOB02815 `ABEND S222`, `OUTPUT`, gone from
+`D A,L`, `$HASP309 INIT 1 INACTIVE`. Verified before anything else proceeded.
+
+**The guard, on that exact pair, after the death:**
+
+```
+NSF815I   SLOT  0 TOKEN=00010000 ASCB=00FE7330 ASID=0008 LIVE
+```
+
+**Then a host `nc` to port 7799 completed the parked ACCEPT:**
+
+| | before | after |
+|---|---|---|
+| `served` | 9 | **10** |
+| `req_state` | 1 (PENDING) | **2 (DONE)** |
+| `BUSY` / `BUSYSLOT` | 1 / 0 | 0 / -1 |
+| `inflight` | 1 | **1** |
+| `reaped` | 0 | **0** |
+
+`NSFTCP passiveopen 1 established 1` -- the connection was really accepted. No
+`NSF050I`, no `NSF051W`, no abend, STC healthy.
+
+**`served++` -> `req_state = DONE` -> `__xmpost` is one straight-line sequence
+in `nsfsx_drain` step 1.** `served` moved and the state changed, so control
+reached the POST; the STC survived past it. That is acceptance item 4: **the
+POST was attempted, into an address space whose client task was dead.**
+
+## What the POST did: nothing observable, and the contrast is free
+
+The recorded reply ECB is at **`00A8B808`** and still reads **`809DE5F0`** --
+the dead task's WAIT bit plus its RB address, unchanged, three minutes later.
+A POST that took would leave `40000000`.
+
+The control arrived by itself. The next client (JOB02816) had to take **slot
+1**, and slot 1 reads:
+
+```
+SLOT 1 @00A8C060  req_state=0 (FREE)  reply_ecb=40000000
+```
+
+A LIVE client's reply ECB is posted (`40000000`) and its slot returns to FREE.
+The dead client's is neither. Same anchor, same code path, minutes apart.
+
+## The cost: a permanently leaked slot, and a tax on every later claim
+
+`req_state` is stuck at **DONE** for ever, because the party that releases a
+slot is its owner and its owner is dead. The drain cannot recover it either,
+and by design rather than oversight:
+
+* `nsfreqx_slot_action` returns `ACT_NONE` for anything that is not `PENDING`;
+* `nsfreqx_reap_ok(DONE, LIVE, storage_ok=1)` returns **0** -- not DEAD and the
+  storage is trusted, so there is nothing to reclaim on.
+
+Both are correct given a LIVE verdict. The verdict is the defect.
+
+Measured consequences at the end of the round:
+
+* `inflight` **1**, permanently -- never given back.
+* `collisions` **0 -> 4**: every later claim scan walks over the dead slot and
+  pays for it. The leak taxes the pool for as long as the STC lives.
+* the app-registry slot leaked too (`3 OF 16 SLOTS IN USE`) -- M5-2c1 stage a's
+  finding, unchanged.
+* 64 such deaths exhaust the pool (`RCNOBUF` / `ENOBUFS` to healthy clients).
+
+**Reasoned, not measured** (and cheap to measure at the cost of one CSA pool):
+a leaked `inflight` makes every subsequent `P NSFS` take `nsfsx_stop`'s
+**retain** branch -- the nudge cannot drain a client that is dead -- so the STC
+keeps the 137 KB pool and the router on the way down (`NSF054W`). One dead
+client with a request outstanding therefore costs a CSA pool per STC recycle,
+until IPL.
+
+## §2.3 answered, with addresses
+
+* reply ECB: **`00A8B808`** -- inside the CSA anchor at `00A8B7C8`, common
+  storage.
+* the client's private storage, WTOed by the job itself:
+  `STACK=000D1348 HEAP=00094C68`.
+* **the private region IS reused**: JOB02816, a different job, reported the
+  same `ASCB=00FE7330 ASID=0008` **and byte-identical** `STACK=000D1348
+  HEAP=00094C68`. The initiator handed the next job the same storage.
+
+So the region genuinely comes back -- but **the reply ECB is not in it**, and
+the overlap §2.3 asks about does not exist. §2.3 is **discharged**: the
+consequence it was written to expose (a POST into storage a later job has been
+given) cannot arise on this path. That is a measurement of the addresses and a
+**reasoned** conclusion about the consequence, which is the labelling the round
+asked for.
+
+## The three predictions, resolved
+
+* **G(i)** -- *"the guard answers LIVE and the POST proceeds"*. **SUPPORTED,
+  both halves measured.** The damage is a resource leak, which round 2's
+  predictions called in advance from the CSA reply-ECB location and the
+  claim-time `XC`.
+* **G(ii)** -- *"something else stops the POST"*. **REFUTED.** Nothing stopped
+  it; `served` moved, the state changed, the POST was issued. Nothing in this
+  design partners the guard.
+* **G(iii)** -- *"the client's death releases the slot"*. **REFUTED**, twice:
+  the slot stayed PENDING across the death, and after completion it is stuck at
+  DONE rather than FREE.
+
+## So: does the ADR-0040 guard protect anything for a batch client?
+
+**No.** Every client in this tree today is a batch job; for all of them the
+recorded ASCB is the initiator's, the initiator outlives the job, the ASVT
+entry never goes AVAILABLE, and the guard answers LIVE at exactly the moment it
+exists to say DEAD. The check runs, costs a lookup per reply, and cannot fire.
+
+**The failure direction is still the safe one** -- nothing was corrupted, and
+the POST landed on a CSA word nobody was waiting on. ADR-0040's safe-side
+asymmetry holds. What is lost is the slot, the in-flight count, and the app
+registry entry, permanently.
+
+**Untested, and it is the same gap stage a named:** an STC or TSO client *is*
+its own address space and does terminate, which is the case the guard was built
+for. No test in this tree has ever watched a real address space die.
+
+**Next artifact is an ADR-0040 annotation naming the client class it does not
+cover, and a decision from Mike -- not a patch.**
