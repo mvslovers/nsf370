@@ -25,7 +25,15 @@
 #   DCBD DSORG=PS. Every DCB DSECT symbol then resolved to 0, so
 #   MVC DCBDDNAM-IHADCB(8,R2),0(R3) assembled as MVC 0(8,R2),0(R3) and
 #   TM DCBOFLGS-IHADCB(R2),DCBOFOPN as TM 0(R2),X'00'.
-#   asm/nsfvsvc.asm dropped L R3,REQFUNC(,R8), the SVC dispatch value.
+#   asm/nsfvsvc.asm lost FOUR cards -- ANCVERNO EQU 3 (its own anchor-version
+#   check then compares against 0), ASCBASID EQU 36 (the caller ASID is read
+#   from ASCB+0), L R3,REQFUNC(,R8), and DOUNSTG DS 0H, which turns
+#   BE DOUNSTG into 4780 0000: a branch to address 0, supervisor state key 0.
+#
+# AND THE CHAINS ARE LONGER THAN ONE CARD. 573 and 574 are both overlong, so
+# 573 continues onto 574 and 574 onto 575 -- the statement. A card-by-card
+# reading stops at 574, sees a comment, and reports nothing lost. That is why
+# this script flags the CARD and leaves naming the victim to the assembler.
 #
 # LENGTH IS IN BYTES, NOT CHARACTERS -- as370 reads bytes, and a UTF-8 'S'
 # (U+00A7) costs two of them. Several cards measured 73 while looking like 72.

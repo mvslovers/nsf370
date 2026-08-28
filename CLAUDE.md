@@ -185,9 +185,24 @@ Violating one is a review-blocking defect, not a style nit.
   the next line, so **every** DCB DSECT symbol resolved to 0 —
   `MVC DCBDDNAM-IHADCB(8,R2),0(R3)` assembled as `MVC 0(8,R2),0(R3)` and
   `TM DCBOFLGS-IHADCB(R2),DCBOFOPN` as `TM 0(R2),X'00'`, a mask that can never
-  be true. In `asm/nsfvsvc.asm` it dropped `L R3,REQFUNC(,R8)` outright — the
-  SVC routine's dispatch value — a 646-byte object difference. **The rule is
-  therefore: NO card of any kind, comment or instruction, may reach column 72.**
+  be true. `asm/nsfvsvc.asm` lost **four** cards (646-byte object difference),
+  and they are four separate safety mechanisms: `ANCVERNO EQU 3` (so the SVC
+  routine's own anchor-version check compares against **0** — the stale-router
+  defence), `ASCBASID EQU 36` (so it reads the caller ASID from **ASCB+0**, and
+  ADR-0040's client-death guard classifies the wrong field), `L
+  R3,REQFUNC(,R8)` (the request function is never loaded) and `DOUNSTG DS 0H`
+  — which turns `BE DOUNSTG` into **`4780 0000`, a branch to address 0** in
+  supervisor state key 0. **The rule is therefore: NO card of any kind, comment
+  or instruction, may reach column 72.**
+  **CHAINS ARE LONGER THAN ONE CARD, and a card-by-card reading misses them:**
+  573 and 574 are BOTH overlong, so 573 continues onto 574 and 574 onto 575,
+  the statement. Looking only at "which card does this one eat" stops at 574,
+  sees a comment, and concludes nothing was lost. Read the assembler's own
+  diagnostics instead of deriving the victims — **and check the tool is
+  reporting all of them**: as370 truncated its diagnostic array at 128 entries,
+  `nsfvsvc.asm` emits 130, and the two that carried the severity were the last
+  two, so it reported 2 of 4 and the RC depended on what happened to fit
+  (cc370#85). Twice in one day a silent cap hid a statement loss.
   **The assembler now sorts the two cases, and the gate is back where it
   belongs (cc370#84).** What matters is the card that gets EATEN, not the one
   that eats: a swallowed **comment** costs nothing and stays IFOX's severity 4
