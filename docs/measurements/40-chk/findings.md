@@ -276,12 +276,24 @@ Measured consequences at the end of the round:
   finding, unchanged.
 * 64 such deaths exhaust the pool (`RCNOBUF` / `ENOBUFS` to healthy clients).
 
-**Reasoned, not measured** (and cheap to measure at the cost of one CSA pool):
-a leaked `inflight` makes every subsequent `P NSFS` take `nsfsx_stop`'s
-**retain** branch -- the nudge cannot drain a client that is dead -- so the STC
-keeps the 137 KB pool and the router on the way down (`NSF054W`). One dead
-client with a request outstanding therefore costs a CSA pool per STC recycle,
-until IPL.
+**MEASURED** (it was reasoned when first written; the IPL that was owed anyway
+made it free to test). A leaked `inflight` makes `P NSFS` take `nsfsx_stop`'s
+**retain** branch -- the nudge POSTs parked clients and there is nobody to wake
+-- so the STC keeps the pool and the router on the way down:
+
+```
+3.44.32 STC 1520  NSF043I SVC 239 RESTORED
+3.44.42 STC 1520  NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE RETAINED (EXHAUSTED=0)
+3.44.58 STC 1521  NSF055I CSA POOL 137272 BYTES ... LARGEST FREE BLOCK NOW 933888
+```
+
+against `1073152` at the previous start: **139 264 bytes**, pool plus router,
+**and again on every recycle**. The drain ran its full 10 s ceiling first.
+
+**Distinct from #79**, and the difference matters: here the SVC **is** restored
+(`NSF043I` precedes the drain), so NSFS comes back -- it simply cannot reclaim
+its CSA. One parked batch client that dies therefore costs an IPL **without
+NSFS ever crashing**.
 
 ## §2.3 answered, with addresses
 
