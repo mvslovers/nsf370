@@ -31,6 +31,7 @@
  *   nsfsx_start NSFSXSTA   nsfsx_stop  NSFSXSTO   nsfsx_ecb   NSFSXECB
  *   nsfsx_drain NSFSXDRN   nsfsx_pending NSFSXPND
  *   nsfsx_stats_extra NSFSXSXT   nsfsx_classify_client NSFSXCLC
+ *   nsfsx_recover_quiesce NSFSXRQ
  * ========================================================================== */
 
 #ifndef NSFSX_H
@@ -52,6 +53,40 @@ int   nsfsx_start(void) asm("NSFSXSTA");
  * can enter), then invalidate the published ECB address, wake anyone parked,
  * drain the in-flight count, unload the routine and free the CSA.              */
 void  nsfsx_stop(void) asm("NSFSXSTO");
+
+/* THE RECOVERY-PATH COUNTERPART OF nsfsx_stop (issue #79).  An ESTAE exit is
+ * not a shutdown path and must not pretend to be one, so this is deliberately
+ * NOT nsfsx_stop with a flag: it does the two things whose absence costs an
+ * IPL and nothing else.
+ *
+ *   DOES     restore the SVC slot (no new client can enter, and the next
+ *            S NSFS can steal it again -- without this the STC cannot restart
+ *            at all), then clear ANCHOR_ACTIVE and null the published wake-ECB
+ *            address, which names key-8 storage that dies with this address
+ *            space.
+ *
+ *   DOES NOT drain.  nsfsx_stop's drain polls for up to 10 s and nudges parked
+ *            clients; a polling loop in an exit in a damaged environment is not
+ *            acceptable.  Recovery takes the RETAIN posture unconditionally.
+ *
+ *   DOES NOT free the CSA anchor or unload the router.  The M5-2b3 rule stands
+ *            unchanged: a client may be parked in a WAIT *inside* that code, so
+ *            freeing it is strictly worse than leaking it.  Restoring the table
+ *            entry is a different act from freeing the module and only the
+ *            first is in scope.
+ *
+ * State-aware: it borrows key 0 and returns the task to the state it was
+ * entered in, because __prob unconditionally MODESETs to problem state and the
+ * exit may well have been entered in supervisor state (see the NSF902I reading
+ * nsf_recover emits).  Returns one of the NSFSX_RQ_* values below; the caller
+ * turns that into the operator message, because a silent failure here is the
+ * difference between "recovered" and "an IPL is coming" and nobody can see it
+ * from the outside.  Safe to call when the transport was never started.        */
+#define NSFSX_RQ_QUIESCED   0   /* slot restored, anchor marked inactive       */
+#define NSFSX_RQ_IDLE       1   /* nothing was installed -- nothing to undo    */
+#define NSFSX_RQ_NOKEY      2   /* could not reach key 0: SLOT STILL STOLEN    */
+#define NSFSX_RQ_STUCK      3   /* key obtained, slot still not restored       */
+int   nsfsx_recover_quiesce(void) asm("NSFSXRQ");
 
 /* The executive's wake ECB -- in the STC's OWN key-8 private storage, NOT the
  * key-0 CSA one.  evt_mainloop WAITs from problem state, where a key-0 ECB in

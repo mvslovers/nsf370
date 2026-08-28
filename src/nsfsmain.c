@@ -78,16 +78,83 @@ static NSFCFG g_cfg;
  * ESTAE recovery (spec 17.1). MVS enters here on any unhandled abend on the
  * executive task. First-failure data is already captured for the dump: the
  * trace ring ("NSFTRACE"), the statistics registry ("NSFSTATS") and every pool
- * header carry eyecatchers (spec 17.2). We WTO a marker, attempt the SAME
- * orderly teardown the clean path uses (nsf_shutdown: disarm the timer exit,
- * free the pool regions), then percolate (SDWARCDE = SDWACWT == 0) so RTM
- * produces the dump and terminates the address space -- no Hercules restart is
- * ever needed to clean up (goal, ADR-0006). Minimal + defensive: it may run in
- * a damaged environment, so it does the least that is useful and never loops.
+ * header carry eyecatchers (spec 17.2). We WTO a marker, release what MVS will
+ * NOT release for us, then percolate (SDWARCDE = SDWACWT == 0) so RTM produces
+ * the dump and terminates the address space -- no Hercules restart is ever
+ * needed to clean up (goal, ADR-0006). Minimal + defensive: it may run in a
+ * damaged environment, so it does the least that is useful and never loops.
+ *
+ * WHAT "THE SAME TEARDOWN AS THE ORDERLY PATH" ACTUALLY MEANS HERE (issue #79).
+ * The comment above used to claim this ran the clean path's teardown, and for
+ * Phase 1 that was true -- nsf_shutdown() was COMPLETE when it was written.
+ * Phase 2 then acquired resources that live OUTSIDE this address space, added
+ * their release to the clean path, and never came back here. So the honest
+ * division, which is the one the audit in the PR is organised by:
+ *
+ *   MVS reclaims it at address-space termination -- recovery need not, and in
+ *   a damaged environment should not, touch it:
+ *     the private region and everything in it, the SVC 99 device allocations,
+ *     the I/O subtasks, the OUCB (hence the DONTSWAP: it is reached through
+ *     the ASCB, which is freed with the address space, so there is nothing
+ *     left to issue OKSWAP against and nothing to release).
+ *
+ *   NOBODY reclaims it but us, because it is in COMMON storage or the nucleus:
+ *     the stolen SVC slot (SVCTABLE), the CSA anchor and the router module.
+ *
+ * nsfsx_recover_quiesce() handles the second group -- restoring the slot and
+ * marking the anchor inactive, and deliberately NOT draining, unloading or
+ * freeing (see its header). It runs BEFORE nsf_shutdown(), because
+ * mm_shutdown() releases every pool region and because the slot restore is the
+ * one action whose absence costs an IPL: it goes ahead of every later step that
+ * is a fresh chance to fault.
+ *
+ * The environment reading (NSF902I) is emitted rather than assumed: whether an
+ * ESTAE exit is entered supervisor or problem state, and whether the task is
+ * still APF-authorised here, decides whether the slot restore is possible at
+ * all -- and __super's failure is otherwise silent. One WTO per abend, on a
+ * path that by definition already has the operator's attention.
+ *
+ * Re-entry guard: the exit is intended to run once. If a fault inside recovery
+ * re-drives it, the second pass reports and does nothing -- "never loops" was
+ * stated intent above and is now enforced.
  */
 static void nsf_recover(SDWA *sdwa)
 {
+    static int in_recovery;             /* single executive task, no lock     */
+    int        rq;
+
+    if (in_recovery) {
+        nsfmsg("NSF905E NSF RECOVERY RE-ENTERED -- PERCOLATING IMMEDIATELY");
+        if (sdwa != NULL) {
+            sdwa->SDWARCDE = SDWACWT;
+        }
+        return;
+    }
+    in_recovery = 1;
+
     nsfmsg("NSF900E NSF ABEND INTERCEPTED -- CAPTURING AND PERCOLATING");
+    nsfmsg("NSF902I RECOVERY ENVIRONMENT: SUP=%c AUTH=%c",
+           __issup()  ? 'Y' : 'N',
+           __isauth() ? 'Y' : 'N');
+
+    /* Common-storage / nucleus state first (issue #79). */
+    rq = nsfsx_recover_quiesce();
+    switch (rq) {
+    case NSFSX_RQ_QUIESCED:
+        nsfmsg("NSF903I NSFS TRANSPORT QUIESCED BY RECOVERY -- SVC RESTORED,"
+               " CSA AND ROUTER RETAINED");
+        break;
+    case NSFSX_RQ_IDLE:
+        nsfmsg("NSF903I NSFS TRANSPORT WAS NOT INSTALLED -- NOTHING TO QUIESCE");
+        break;
+    default:
+        /* NAME THE CONSEQUENCE. An operator reading this needs to know that
+         * the next S NSFS will fail NSF049E and why, not to deduce it. */
+        nsfmsg("NSF904E NSFS SVC SLOT STILL STOLEN (RC=%d) -- NSFS CANNOT"
+               " RESTART, AN IPL IS REQUIRED", (int)rq);
+        break;
+    }
+
     nsf_shutdown();
     nsfmsg("NSF901I NSF EMERGENCY TEARDOWN COMPLETE");
     if (sdwa != NULL) {

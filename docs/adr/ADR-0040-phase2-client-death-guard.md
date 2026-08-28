@@ -523,3 +523,123 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
   down a healthy client's sockets — the asymmetry §5 is built on, holding under a condition
   nobody had anticipated.
 
+
+- **2026-08-28 — A SECOND ANNOTATION, AND IT IS ABOUT THE *OTHER* CLIENT CLASS: A `DEAD`
+  VERDICT IS TRANSIENT. THE ASID-REUSE ROW CANNOT CATCH ITS OWN WORST CASE.**
+  Measured live (40-IDENT, `docs/measurements/40-ident/findings.md` §4.2–§4.4).
+  **No change to the guard, the classifier or the POST path** — like the annotation above,
+  this records what the check covers, so that what to do about it is decided on a reading.
+  It is filed here rather than left in a measurement log because the preceding annotation
+  closed the batch class with "the guard fires correctly for an STC", and this is the half
+  that says for how long.
+
+  1. **The measurement.** `TSTAPPDS` (the STC form of the test client, `jcl/TSTAPPDS.jcl`)
+     was started, registered an app slot, and killed. Within one second the ASVT entry went
+     `asvtenty[11]=00FF8D00 avail=False` → `80FDB048 avail=True`, so **both** DEAD rows of
+     §1 fire — the availability bit *and* an ASCB word replaced by a free-chain pointer —
+     and the guard's own arithmetic reported it: `SLOT 7 ASCB=00FF8D00 ASID=000C DEAD`,
+     sitting in one report beside six batch slots reading `LIVE`. A normally ended STC
+     (`IEF404I ... ENDED`, no TERMAPI) read DEAD too. **Then it stopped being DEAD.** Both
+     STC runs were given the **same `ASCB=00FF8D00` and the same `ASID=000C`** — MVS reused
+     the ASID *and* the ASCB block at the identical address — and starting a third STC
+     flipped both recorded clients back:
+
+     ```
+     before: SLOT 7 ... DEAD   SLOT 8 ... DEAD    2 DEAD
+     after:  SLOT 7 ... LIVE   SLOT 8 ... LIVE    0 DEAD
+     ```
+
+     **Not reaped — reclassified.** No sweep exists yet; nothing acted. Both clients were
+     provably dead, one cancelled and one ended normally, each witnessed on the console.
+
+  2. **§3's rule is what lets this through, and it is still the right rule.** The
+     comparison is on the ASCB **address**, and the address was reused unchanged, so
+     `entry == req_ascb` and `nsfreqx_classify` returns LIVE — correctly, for the question
+     it asks. **Precisely: the window closes on ASID reuse *with an ASCB at the recorded
+     address*, not on ASID reuse as such.** A reused ASID whose ASCB lands elsewhere still
+     classifies DEAD, and for the right reason (§4's second row). The failure needs both
+     halves to be recycled together, which is exactly what the very next `S` of the same
+     PROC produced here.
+
+  3. **`(ASCB, ASID)` is an ADDRESS, NOT AN IDENTITY — one defect at two scales.** With the
+     annotation above, the pair is now known to fail in both directions:
+
+     | class | what happens to the recorded pair |
+     |---|---|
+     | batch | the identity **never dies** — the initiator outlives every job |
+     | STC | the identity dies, then is **resurrected** by ASID + ASCB reuse |
+
+     In both, a recorded pair **stops denoting what it was recorded for**.
+
+     **And 40-IDENT looked for a sound replacement at this level and did not find one**,
+     which is why this entry proposes no mechanism. `ASCBJBNI`/`ASCBJBNS` are `DS A` —
+     **pointers**, IFOX00-proved, not derived — and the jobname they reach is
+     **byte-identical for the same JCL submitted twice**; the pointer itself is no fallback
+     either, since it was observed to **repeat across different submissions and to differ
+     for the same name**, and that second direction is a false DEAD. The per-submission
+     identity (the JES job number) needs `ASCBASXB → ASXBFTCB → TCBJSCB → SSIB`, and
+     `ASCBASXB` is **private and aliased** — one value, `9DF300`, was reported by **ten**
+     address spaces, so from the STC it is not merely unreachable (ADR-0039) but actively
+     misleading. And there is **no `ASSB` and no `STOKEN` anywhere in `IHAASCB`** on 3.8j
+     (counted with a positive control in the same grep): the architected per-instance
+     identity of later MVS **does not exist on this system**.
+
+  4. **THE SAFE-SIDE ASYMMETRY SURVIVES, AND IT IS WHY THIS IS A RELIABILITY PROBLEM AND
+     NOT A SAFETY ONE.** Say this explicitly, because without it a reader over-corrects and
+     starts hardening a guard that is not unsafe:
+
+     - A **false LIVE** — what reuse produces — leaks a slot, an app-registry entry and an
+       `inflight` count. Nothing is torn down that should not be.
+     - A **false DEAD** would free storage under a live client. **Reuse cannot produce
+       one.** An ASID is unique among live address spaces: if the recorded client is still
+       alive then its ASVT entry is not AVAILABLE and its ASCB has not moved, so both DEAD
+       rows are unreachable while it lives. The classifier's DEAD verdicts remain
+       trustworthy in the only direction that could damage a client.
+
+     So reuse can only ever convert DEAD → LIVE, never LIVE → DEAD. This is the same
+     asymmetry §5 is built on, holding under a second condition nobody had anticipated.
+
+  5. **THE DIRECTION OF THE TEST-VS-PRODUCTION ARGUMENT, CORRECTED.** 40-IDENT §6 wrote
+     that this stand is the fast end of the reuse range and concluded "a sweep would look
+     reliable under test and fail in production". **That consequence is inverted**, and
+     since it would feed a decision about whether the test environment flatters a sweep,
+     the corrected reading is recorded here rather than the original:
+
+     A sweep reclaims only what it classifies DEAD, and a slot is classifiable DEAD only
+     **inside** the window. Fast reuse ⇒ short window ⇒ the sweep **misses more** and leaks
+     more. So a short window is the **hard** case, and **this stand — three initiators, an
+     almost-empty STC ASID range, the same ASID *and* ASCB back on the very next start — is
+     the PESSIMISTIC one.** A hit rate measured here is a **floor**, not a ceiling: a
+     longer window in production means a sweep succeeds *more* often than it appears to
+     here, not less.
+
+     **The premise underneath it is unmeasured, and the one datum available points the
+     other way.** "A busier system gives a longer window" was reasoning, not a measurement.
+     The ASVT free entry read `80FDB048` — a **free-chain** pointer — so the reuse order is
+     the chain's discipline, and that discipline was never established. Under **LIFO** the
+     just-freed ASID returns first regardless of how long the chain is, so a busier system
+     gives the *same* fast reuse; under FIFO a busier system has *fewer* free entries and
+     the window is arguably *shorter* still. Arm 2's own evidence — the same ASID and the
+     same ASCB address returned on the immediately following start — is what LIFO predicts.
+     **So the magnitude is bounded in neither direction, and the discriminator is named:
+     the ASVT free-chain discipline, unmeasured.** What is settled is only the sign of the
+     consequence, above.
+
+  6. **The lever this actually hands the design: the window is only meaningful relative to
+     the SWEEP PERIOD.** A window under a minute against a ten-second sweep is mostly
+     caught; against a sixty-second sweep it is a coin flip. That is the same knob M5-2c1
+     stage a stopped on for a different reason — it found the locked "at most once per 100
+     ticks, no timer" rate limit **unsatisfiable**, because under ADR-0034 *queue empty ⟺
+     STIMER disarmed* nothing advances an NSFTMR-derived tick on an idle stack. The two
+     findings meet on one number, and neither of them chooses it. **A sweep is racing a
+     reuse window it does not control**, and no bound on that window exists — which is a
+     considerably stronger constraint on c1 stage b than the rate limit alone.
+
+  **What this does NOT establish.** How long the window is in general — **one**
+  measurement, under a minute. The free-chain discipline. Whether `JBNI` is worth having
+  under any safety argument, or is stable across a swap cycle (untracked). **TSO**, a third
+  client class, unmeasured. Nothing about #64, #79 or #80.
+
+  **Whether a sweep is worth building on this footing is the maintainer's decision, on this
+  record** — the same posture as the annotation above, and for the same reason: what is
+  missing is an identity, and this system does not have one to offer.
