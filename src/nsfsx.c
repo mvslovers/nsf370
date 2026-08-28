@@ -117,8 +117,14 @@ static NSFV_SLOT    *g_busy_slot;
 ** invariant ever falls, both have to change, and they should be impossible to
 ** change apart.
 **
+** SIZED BY NSFREQX_CHUNK, THE SAME CONSTANT nsfreqx_stage_len CLAMPS TO --
+** not by NSFV_XFER_CHUNK, which is equal today and tied to it only by
+** NSFREQX_CHUNK_ASSERT on the target.  Buffer and bound must be one constant
+** here: this is the single place where a mismatch between them is an overrun
+** into the STC's own private storage.
+**
 ** Static, not a pool entry: no runtime allocation (CLAUDE.md 3). */
-static char          g_land[NSFV_XFER_CHUNK];
+static char          g_land[NSFREQX_CHUNK];
 
 /* ==========================================================================
  * CSA anchor
@@ -1088,6 +1094,7 @@ nsfsx_drain(void)
         int        ok      = 0;
         int        corrupt = 0;
         UINT       staged  = 0u;
+        int        busyviol = 0;
 
         /* Cheap pre-filter, key-free: no published request at all is the
         ** common case and must not cost a key switch. */
@@ -1127,6 +1134,22 @@ nsfsx_drain(void)
             nsfsx_reap(slot, NSFV_REQ_PENDING, cl, 0);
             break;
         case NSFREQX_ACT_DISPATCH:
+            /* THE ONE-IN-FLIGHT INVARIANT, ASSERTED RATHER THAN ASSUMED.
+            ** g_priv and g_land are each ONE object, and that is safe only
+            ** because nsfreqx_actionable returns DISPATCH exclusively when
+            ** !busy -- a gate one function away from here.  If concurrent
+            ** service ever lands (ADR-0042 10 records it open, and whoever
+            ** implements it will be editing this file), two clients would
+            ** interleave in one landing area: no fault, no abend, WRONG DATA
+            ** crossing address spaces.  That is this project's most expensive
+            ** failure class, so the invariant is checked where it is relied
+            ** on, not merely documented next to the declaration.  Decline the
+            ** dispatch and say so; the slot stays PENDING and a later pass
+            ** takes it. */
+            if (g_busy) {
+                busyviol = 1;
+                break;
+            }
             if (slot->xfunc == NSFV_REQ_RQE) {
                 /* Hop 2: the CSA slot into the STC-private copy.  ubuf is
                 ** rewritten to THIS SLOT's staging buffer and ulen to the count
@@ -1175,7 +1198,10 @@ nsfsx_drain(void)
         }
         __prob(savekey, NULL);
 
-        if (corrupt == 1)
+        if (busyviol)
+            wtof("NSF054E DISPATCH DECLINED -- A REQUEST IS ALREADY IN"
+                 " SERVICE (ONE PRIVATE NSFRQE, ADR-0042 10)");
+        else if (corrupt == 1)
             wtof("NSF052E SLOT RQE GUARD CLOBBERED -- REQUEST REAPED,"
                  " NOT POSTED");
         else if (corrupt == 2)

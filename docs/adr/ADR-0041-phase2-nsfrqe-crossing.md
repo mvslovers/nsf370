@@ -714,10 +714,16 @@ The comment at the copy site carries this, so the alternative is not rediscovere
 
 ### Two properties worth stating
 
-**The change is semantically transparent.** Both copies are sized by the same clamped
-`xlen` that `asm/nsfvsvc.asm`'s `RQEOUT` already reloads from `SLXLEN` for its own
-read-out. What reaches the client is therefore byte-for-byte what it was before the landing
-area existed. This moves *where* the protocol layer writes; it changes no observable result.
+**The change is semantically transparent for well-formed requests — and a deliberate
+narrowing for malformed ones.** Both copies are sized by the same clamped `xlen` that
+`asm/nsfvsvc.asm`'s `RQEOUT` already reloads from `SLXLEN` for its own read-out, so for
+every request the SVC routine can legitimately produce (its own move already clamps) what
+reaches the client is byte-for-byte what it was before the landing area existed: this moves
+*where* the protocol layer writes and changes no observable result. For a **corrupted or
+hostile** `xlen` it is more than transparent — `priv->ulen` is now
+`nsfreqx_stage_len(slot->xlen)` rather than the raw word, so the protocol op receives a
+clamped length where before it received the inflated one and overread `stage[]`. Stating
+this separately because the transparency framing alone would hide a real improvement.
 
 **The executive now owns the bound.** `xlen` arrives from a CSA slot an unauthorised client
 wrote. Before, an inflated value made the *protocol layer* overrun `stage[]` into the next
@@ -737,9 +743,18 @@ direction at all.
 | TCP, data | **`S0C4` — measured, not reasoned** | completes, `n=256` byte-exact |
 
 TCP was reasoned in 80-CHK and is now **measured on both sides** (`test/mvs/tstrqxr.c`
-`PARM='ARMT'`), which matters because TCP is the path HTTPD and mvsMF would use at M6. The
-**inline** (rxq-dequeue) completion shape is still **reasoned, not run** —
-`udp_complete_recv`'s own header states it is shared by the parked and rxq-dequeue paths.
+`PARM='ARMT'`), which matters because TCP is the path HTTPD and mvsMF would use at M6.
+
+Still **reasoned, not run**, and named here so a reader does not infer otherwise:
+
+- the **inline** (rxq-dequeue) completion shape — `udp_complete_recv`'s own header states
+  it is shared by the parked and rxq-dequeue paths;
+- **`SELECT` across the boundary.** It is cited above as the verb whose direction is
+  *both*, and that citation is a true statement about `src/nsfsel.c:166` used to show the
+  direction table would have been wrong on day one — but **nothing in TSTRQXM or TSTRQXR
+  drives a cross-AS SELECT**, and M4-5 already recorded the Phase-2 item array as needing a
+  keyed move. The argument does not depend on the verb having been exercised; the verb
+  having been exercised is simply not something this round establishes.
 
 Nothing in this ADR's subject moved: anchor layout unchanged, `NSFV_ANCHOR_VER` stays 3,
 **NSFRQE stays frozen at 64 bytes**, `asm/nsfvsvc.asm` untouched, `MOVEOUT` remains the only

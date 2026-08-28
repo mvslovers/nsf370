@@ -2023,11 +2023,16 @@ was added to the protocol layer** and none of `nsfudp.c`/`nsfbuf.c`/`nsftcp.c`/`
 that ignorance is the design (ADR-0003) and is what makes the rule true *by construction*
 rather than by care. Two alternatives are **recorded as rejected on blast radius** so they
 are not proposed again: protocol completion under key 0, and a key-8 staging area (which
-trades a fault for a security hole). **SEMANTICALLY TRANSPARENT, and this is the strongest
-claim available about a data-path change:** both copies are sized by the same clamped
+trades a fault for a security hole). **SEMANTICALLY TRANSPARENT for well-formed requests — and a
+deliberate NARROWING for malformed ones:** both copies are sized by the same clamped
 `xlen` that `asm/nsfvsvc.asm`'s `RQEOUT` **already** reloads from `SLXLEN` for its own
-read-out, so what reaches the client is byte-for-byte what it was before — the fix moves
-WHERE the protocol layer writes and changes no observable result. **THE EXECUTIVE NOW OWNS
+read-out, so for every request the SVC routine can legitimately produce (its move already
+clamps) what reaches the client is byte-for-byte what it was before — the fix moves WHERE
+the protocol layer writes and changes no observable result. But `priv->ulen` is now
+`nsfreqx_stage_len(slot->xlen)` rather than the raw word, so a **corrupted or hostile**
+`xlen` reaches the protocol op CLAMPED where before it arrived inflated and overread
+`stage[]` — stated separately because the transparency framing alone hides a real
+improvement. **THE EXECUTIVE NOW OWNS
 THE BOUND:** `xlen` arrives from a CSA slot an *unauthorised* client wrote, and after the
 fix it bounds a `memcpy` into the STC's OWN private storage (before, an inflated value
 overran `stage[]` into the next slot — a different blast radius, not a smaller one). Both
@@ -2094,8 +2099,10 @@ different router EP each time — the retained-module evidence); and **#83's `A0
 fire with devices UP**, `NSF901I` reached, corroborating the m5-79 reading that devices-up
 is necessary but not sufficient. **DOES NOT ESTABLISH:** the **inline** (rxq-dequeue)
 completion shape, still **reasoned, not run** (`udp_complete_recv`'s header states it is
-shared with the parked path); whether the faulting `MVC` suppresses or terminates; recovery
-from the dangling state (`req_state` stuck, `inflight` leaked — still the open M5-2 item
+shared with the parked path); **`SELECT` across the boundary** — cited as the
+both-directions verb and true of `nsfsel.c:166`, but **no test drives a cross-AS SELECT**,
+so the argument stands while the exercise does not; whether the faulting `MVC` suppresses
+or terminates; recovery from the dangling state (`req_state` stuck, `inflight` leaked — still the open M5-2 item
 ADR-0039 names); or anything about #64/#83. ADR-0041 annotated append-only with the false
 sentence quoted; ADR-0039 carries a pointer to the read-in side.
 [[nsf370-80-fix-landing-area]]
