@@ -1,0 +1,48 @@
+=== BOUNDARIES (common vs private), and the control on them ===
+  CVT       01D048
+  GDA       FFFFC0   (CVT+X'230')
+  PASTRT    090000   PASIZE 00950000 (9536 KB)
+  private area window: [090000 .. 9E0000)
+  CONTROL: GDA+8 CSAPQEP -> PQE FFFF50  PQESIZE 2113536 (2064 KB)  PQEREGN 9E0000
+           64-3-0 measured CSA = 2064 KB -> REPRODUCES
+
+=== 12:02:47  ASCBs ===
+  000000  NOT AN ASCB (no eyecatcher) -- skipped
+12:02:50 pass=1 live=0 
+12:02:52 pass=2 live=0 
+12:02:54 pass=3 live=0 
+12:02:56 pass=4 live=0 
+12:02:58 pass=5 live=0 
+12:03:00 pass=6 live=0 
+12:03:02 pass=7 live=0 
+12:03:04 pass=8 live=0 
+12:03:06 pass=9 live=0 
+12:03:08 pass=10 live=0 
+12:03:10 pass=11 live=0 
+12:03:12 pass=12 live=0 
+12:03:14 pass=13 live=0 
+12:03:16 pass=14 live=0 
+12:03:18 pass=15 live=0 
+12:03:20 pass=16 live=0 
+12:03:22 pass=17 live=0 
+12:03:24 pass=18 live=0 
+12:03:25 pass=19 live=0 
+12:03:27 pass=20 live=0 
+12:03:29 pass=21 live=0 
+12:03:31 pass=22 live=0 
+12:03:33 pass=23 live=0 
+12:03:35 pass=24 live=0 
+12:03:37 pass=25 live=0 
+12:03:39 pass=26 live=0 
+12:03:41 pass=27 live=0 
+12:03:44 pass=28 live=0 
+12:03:46 pass=29 live=0 
+12:03:48 pass=30 live=0 
+12:03:50 pass=31 live=0 
+12:03:52 pass=32 live=0 
+12:03:54 pass=33 live=0 
+12:03:56 pass=34 live=0 
+12:03:58 pass=35 live=0 
+12:04:00 pass=36 live=0 
+12:04:02 pass=37 live=0 
+12:04:04 pass=38 live=0 
