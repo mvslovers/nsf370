@@ -403,3 +403,101 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
      a host test pins the whole truth table instead of leaning on a live run to exercise
      every row. **Not** retrofitted into Stage-0c: right-sized for M5-2, which owns this
      guard on `owner_ascb`.
+
+- **2026-08-28 — THE GUARD IS INERT FOR A CLIENT THAT HAS NO ADDRESS SPACE OF ITS OWN.**
+  Measured live (40-CHK, `docs/measurements/40-chk/findings.md`; M5-2c1 stage a,
+  `docs/measurements/m5-2c1/stage-a.md`). **No change to the guard, the classifier or the
+  POST path** — this entry records what the check does and does not cover, so that what to
+  do about it is decided on a reading rather than on an expectation.
+
+  1. **The class: clients that do not own their address space.** A batch job runs in an
+     **initiator**, and an initiator does not terminate when a job ends — it waits for the
+     next one. So the ASCB recorded at the claim is the *initiator's*, its ASVT entry never
+     goes AVAILABLE, and `nsfreqx_classify` answers **LIVE** at exactly the moment this
+     guard exists to answer DEAD. **The classifier is not wrong**: it answers "did that
+     address space end?", and for a batch client the honest answer is no, even though the
+     application is gone. Measured twice, on two different initiators: stage a saw **three
+     jobs** report `ASCB=00FE7B58 ASID=0006` (one submitted after the first had reached
+     OUTPUT), and 40-CHK saw **two jobs** report `ASCB=00FE7330 ASID=0008`. **Every client
+     in this tree today is a batch job**, so today the check runs, costs a lookup per
+     reply, and cannot fire.
+
+  2. **NO CORRUPTION, and this is milder than the concern that motivated the round.** The
+     reply ECB is the word at **slot+8 inside the CSA anchor** — `asm/nsfvsvc.asm:584-585`,
+     `LA R3,SLRECB(,R7)` / `WAIT 1,ECB=(R3)`, issued in supervisor state key 0, which is
+     what makes a key-0 ECB legal there. Common storage; **job termination does not free
+     it.** This ADR's own header already said the CSA reply ECB "turns out to carry half
+     the safety argument" — 40-CHK is where that half was collected. The private region
+     genuinely *is* handed on: two different jobs reported byte-identical
+     `STACK=000D1348 HEAP=00094C68`. **But the ECB is not in it**, so a POST into storage a
+     later job has been given cannot arise on this path. The fear was reasonable and it is
+     refuted.
+
+  3. **What it costs instead — the expensive consequence first.** `inflight` is **never
+     given back**, because the party that returns it is the client and the client is dead.
+     `nsfsx_stop` then cannot drain: its nudge POSTs parked clients, and there is nobody to
+     wake. So `P NSFS` runs the full drain ceiling and takes the **retain** branch, keeping
+     the anchor *and* the SVC routine — and the storage is unreclaimable **until an IPL**.
+     Measured, not reasoned: `NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE
+     RETAINED (EXHAUSTED=0)` ten seconds after `NSF830I`, then the next start reporting
+     `NSF055I ... LARGEST FREE BLOCK NOW 933888` against `1073152` before it — **139 264
+     bytes**, the pool plus the router, **and again on every recycle**. The IPL that
+     followed put it back exactly: **933888 → 1073152**, the same 139 264, which is the
+     other half of the claim — nothing short of an IPL reclaims it. So **one parked batch
+     client that dies costs an IPL, without NSFS ever crashing.** (Distinct from
+     issue #79, where an *abend* leaves SVC 239 stolen and NSFS cannot restart at all. Here
+     the SVC **is** restored — `NSF043I` precedes the drain — so the STC comes back; it
+     simply cannot get its CSA back.) *Then*, and only then, the smaller costs: the request
+     slot is stuck at `DONE` for ever, and every later claim scan walks over it and pays —
+     `collisions` **0 → 4** across the remainder of the round, a permanent tax for the life
+     of the STC. Sixty-four such deaths exhaust the pool.
+
+     The slot is unrecoverable **by design, given the verdict**: `nsfreqx_slot_action`
+     returns `ACT_NONE` for anything that is not `PENDING`, and
+     `nsfreqx_reap_ok(DONE, LIVE, storage_ok=1)` returns 0 — not DEAD, storage trusted, so
+     there is nothing to reclaim on. Both rows are right. **The verdict is the defect.**
+
+  4. **The two ECB states, because they carry the refutation.** The guard answered LIVE and
+     the LIVE branch ran to completion — `served` 9 → 10, `req_state` 1 → 2 (`DONE`),
+     `reaped` 0, no `NSF050I`, no `NSF051W`, no abend — and `served++` → `DONE` →
+     `__xmpost` is one straight-line sequence, so **the POST was attempted into an address
+     space whose client task was dead.**
+
+     - dead client, slot 0: `reply_ecb` at `00A8B808` still **`809DE5F0`** minutes later —
+       the dead task's WAIT bit plus its RB address, **unchanged**; slot stuck at `DONE`.
+     - live client, slot 1, same anchor and same code path minutes later:
+       `reply_ecb` **`40000000`** — properly posted — and `req_state` back to `FREE`.
+
+     The contrast is what makes the first reading mean something: it is not that the POST
+     was skipped, it is that it left no mark. A control obtained for free, because the next
+     client had to skip the leaked slot.
+
+  5. **An OPEN DIRECTION, offered as a question and explicitly not as a mechanism.** The
+     guard asks *"is the client alive?"*. The reading suggests asking *"did the POST
+     arrive?"* instead: POST, read the ECB back, and a missing POSTED bit means the waiter
+     is gone, so the slot and the in-flight count can be returned. It is attractive because
+     it addresses **exactly the class the ASCB check fails on**, and because it invents no
+     per-task identity — for which this ecosystem has no pattern: `ufsd#asv.c` is
+     address-space-wide and expressly designed that way, which is why §5 of this ADR
+     already declined to carry one of its rows.
+
+     **It is n=1 against n=1**, and it rests on undocumented POST behaviour when the
+     recorded RB has expired. This round observed the ECB unchanged in one case and posted
+     in one other; that is an observation, not a contract, and nothing here establishes
+     what POST does in general with a stale RB. **It becomes a mechanism only after a
+     measurement with several cases**, and until then it is a direction, not a design.
+
+  6. **The gap that made all of this possible, named plainly: no test in this tree has ever
+     watched a real address space die.** `TSTDEATH`'s DEAD rows stage a **synthetic**
+     identity — `tstd_free_asid` scans the ASVT for an ASID that is *already* AVAILABLE —
+     so the guard's DEAD path has always been exercised against a manufactured pair, never
+     against a client whose address space actually ended. An **STC** or TSO client *is* its
+     own address space and does terminate, which is the case this guard was built for and
+     the one M6 needs (HTTPD and mvsMF are both STCs). A dying STC client is the test that
+     never existed. It is independently fixable and **not part of this annotation**.
+
+  **What happens to the batch class is the maintainer's decision, on this record.** The
+  failure direction remains the safe one throughout: a false LIVE leaks, and never tears
+  down a healthy client's sockets — the asymmetry §5 is built on, holding under a condition
+  nobody had anticipated.
+
