@@ -203,6 +203,14 @@ Violating one is a review-blocking defect, not a style nit.
   `nsfvsvc.asm` emits 130, and the two that carried the severity were the last
   two, so it reported 2 of 4 and the RC depended on what happened to fit
   (cc370#85). Twice in one day a silent cap hid a statement loss.
+  **The object-comparison gate has ONE spurious byte, and it is a date:** the
+  END record carries `ASM370 <ver> <julian>` and the Julian day sits at
+  **column 52 of the last card**, so an object assembled on one day and
+  re-assembled the next differs by exactly one byte (`F0`→`F1` at the 240→241
+  rollover, measured). Same-day assembly is deterministic, which is why an
+  earlier same-day control wrongly concluded there was no stamp at all. Mask
+  that byte before reading a diff as a code change — all nine modules showed
+  it at once, which is itself the tell.
   **The assembler now sorts the two cases, and the gate is back where it
   belongs (cc370#84).** What matters is the card that gets EATEN, not the one
   that eats: a swallowed **comment** costs nothing and stays IFOX's severity 4
