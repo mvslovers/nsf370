@@ -82,7 +82,14 @@ void  nsfsx_stop(void) asm("NSFSXSTO");
  * turns that into the operator message, because a silent failure here is the
  * difference between "recovered" and "an IPL is coming" and nobody can see it
  * from the outside.  Safe to call when the transport was never started.        */
-#define NSFSX_RQ_QUIESCED   0   /* slot restored, anchor marked inactive       */
+/* QUIESCED means "nothing of ours is left reachable" -- the slot is not stolen
+ * and the anchor is marked inactive.  It does NOT assert that a stolen slot was
+ * RETURNED: the restore is a no-op when nothing was stolen, which is reachable
+ * (an abend part-way through nsfsx_start, anchor allocated, slot not yet taken).
+ * Read it as a state, not as an event.  NSF903I says "SVC RESTORED", which is
+ * the wording the live gate captured and is kept so that evidence stays
+ * reproducible; on the no-op path read it as "the slot is not ours".           */
+#define NSFSX_RQ_QUIESCED   0   /* slot not stolen, anchor marked inactive     */
 #define NSFSX_RQ_IDLE       1   /* nothing was installed -- nothing to undo    */
 #define NSFSX_RQ_NOKEY      2   /* could not reach key 0: SLOT STILL STOLEN    */
 #define NSFSX_RQ_STUCK      3   /* key obtained, slot still not restored       */

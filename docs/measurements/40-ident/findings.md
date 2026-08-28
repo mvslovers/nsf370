@@ -335,6 +335,16 @@ report". It returned **both**: DEAD promptly, and then not DEAD.
   as it can be. A busier system would give a *longer* window — which is the
   dangerous direction, because a sweep would then look reliable under test and
   fail in production. Nothing here bounds it, and a bound is what a sweep needs.
+
+  > **CORRECTED 2026-08-28 in ADR-0040 (second annotation, §5), which is
+  > authoritative — the consequence above is INVERTED.** A sweep reclaims only
+  > what it classifies DEAD, and a slot is classifiable DEAD only *inside* the
+  > window, so fast reuse means the sweep **misses more**: this stand is the
+  > **pessimistic** case, and a hit rate measured here is a **floor**, not a
+  > ceiling. The premise "a busier system would give a longer window" is also
+  > unmeasured, and the free-chain pointer in §4.3 points the other way (under
+  > LIFO the just-freed ASID returns first regardless of chain length — which is
+  > what §4.3 observed). See the ADR.
 - **That the non-printable transient is real** (§3.7) — one observation, not
   reproduced in 707 tightly-sampled transition samples.
 - **Whether `JBNI` is stable under paging or swap-out.** All samples were
