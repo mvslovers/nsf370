@@ -404,11 +404,22 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
      every row. **Not** retrofitted into Stage-0c: right-sized for M5-2, which owns this
      guard on `owner_ascb`.
 
-- **2026-08-28 — THE GUARD IS INERT FOR A CLIENT THAT HAS NO ADDRESS SPACE OF ITS OWN.**
+- **2026-08-28 — A CORRECTION OF THE READING, NOT A DEFECT IN THE GUARD: THIS CHECK GUARDS
+  THE POST AGAINST A STALE POINTER AND WAS NEVER A DEAD-CLIENT DETECTOR.**
   Measured live (40-CHK, `docs/measurements/40-chk/findings.md`; M5-2c1 stage a,
   `docs/measurements/m5-2c1/stage-a.md`). **No change to the guard, the classifier or the
   POST path** — this entry records what the check does and does not cover, so that what to
   do about it is decided on a reading rather than on an expectation.
+
+  **The guard states its own purpose, and it is narrower than its name suggests.**
+  `src/nsfsx.c:316-317`, written when it was built: "`__xmpost` dereferences the recorded
+  ASCB, and the ASCB of an ended address space is reused SQA. **Compare the ASCB ADDRESS
+  only.**" That is a **stale-pointer guard**. For a batch client the ASCB is genuinely
+  live, so the check returns the **correct answer to the question it asks**. What is dead
+  is the *task* inside a live address space, and **nothing in this system asks about
+  that** — which is where the gap is. This entry's first heading read "the guard is inert
+  for a client that has no address space of its own"; that phrasing invites a repair to
+  the guard, and there is nothing in the guard to repair.
 
   1. **The class: clients that do not own their address space.** A batch job runs in an
      **initiator**, and an initiator does not terminate when a job ends — it waits for the
@@ -486,6 +497,17 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
      in one other; that is an observation, not a contract, and nothing here establishes
      what POST does in general with a stale RB. **It becomes a mechanism only after a
      measurement with several cases**, and until then it is a direction, not a design.
+
+     **And it has a CEILING, recorded here so the direction is not read as a plan.**
+     `__xmpost` is **`void`** — `libc370/include/clibos.h:95`, and the implementation
+     `src/clib/@@xmpost.c:5` agrees; verified in source rather than assumed. **There is no
+     return code the transport could learn from.** The only observable that a POST did not
+     land is the **ECB read-back**, and that observable exists *only when there is
+     something to post*. So it can never serve **the sweep** (obligation #3), whose whole
+     subject is clients that ended with **nothing outstanding**: there is no request, no
+     slot, no ECB, and therefore nothing to read back. At best it recovers the leaked slot
+     in 40-CHK's shape — a client that died *with* a request in flight. It addresses
+     nothing in M5-2c1's.
 
   6. **The gap that made all of this possible, named plainly: no test in this tree has ever
      watched a real address space die.** `TSTDEATH`'s DEAD rows stage a **synthetic**

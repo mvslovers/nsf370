@@ -1696,6 +1696,22 @@ stimulus. **Still untested, the same gap stage a named:** an STC/TSO client *is*
 space and does terminate — no test in this tree has ever watched a real address space die. **Next
 artifact is an ADR-0040 annotation naming the client class it does not cover, plus a decision — not
 a patch.** Host **2991 PASS / 0 FAIL** unchanged. `docs/measurements/40-chk/`.
+**COUNTERSIGNED (PR #81 merged); the annotation was REFRAMED at the countersign, and the
+reframing is the part that carries.** The guard is **not, and never was, a dead-client
+detector** — `src/nsfsx.c:316-317` states its purpose in the source: "`__xmpost` dereferences
+the recorded ASCB, and the ASCB of an ended address space is reused SQA. **Compare the ASCB
+ADDRESS only.**" It guards the POST against a **stale pointer**. For a batch client the ASCB is
+genuinely live, so it returns the **correct answer to the question it asks**; what is dead is
+the *task* inside a live address space, and **nothing in this system asks about that**. So the
+record is a **correction of a reading, not a defect in the guard** — the first heading read "the
+guard is inert for batch", which invites someone to repair the guard, and the gap is not there.
+**And the ADR's open direction now carries its ceiling:** `__xmpost` is **`void`**
+(`libc370/include/clibos.h:95`, implementation `src/clib/@@xmpost.c:5` — verified in source),
+so **there is no return code the transport could learn from**; the only observable is the ECB
+read-back, which exists **only when there is something to post**, so it can never serve **the
+sweep**, whose subject is clients that ended with **nothing outstanding**. It could at best
+recover 40-CHK's leaked slot — a client that died *with* a request in flight — and addresses
+nothing in M5-2c1's. #79 and #80 stay open and unpatched; #64 stays open.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
