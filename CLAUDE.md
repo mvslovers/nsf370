@@ -1554,6 +1554,41 @@ verifying **9353 bytes byte-exact** and the batch run passing *"the first PARKED
 complete"* (TSO FAIL by design, one-shot listener consumed, `errno 61`); **no dumps**.
 **Round-order note:** the Stage-0 tests are clients of **NSFV**, so `P NSFS` alone leaves no SVC
 router and they abend `SFEF` — the order is `P NSFS` → **`S NSFV`** → run → `P NSFV` → `S NSFS`.
+**SORTED BY MODULE STATE, NO STALL HAS EVER BEEN REPRODUCED ON A RESET MODULE** (ADR-0044 §5a,
+added at the countersign): all **nine** on record were on the **spinning** pre-64-1 module;
+64-0f's one-in-four was on its deliberate spin revert build; on a **reset** module there have
+been **none** — 64-1's Gate 2 (45 rounds, run after the reset), 64-0e (NSFV 543 356 requests,
+NSFS 139 240, max inter-step gap 1 s), 64-3-0, and both arms of 64-3-1. **That is why the gate
+had no control** — not a badly-run round but a phenomenon that does not occur on the current
+module — **and the reason is concrete: 64-1's reset is one statement in `src/nsfsx.c`, which
+64-3-1 does not touch**, while the revert removed the `DONTSWAP` call in `nsfsmain.c`, so the
+control arm was *swappable but still reset* and varied the wrong axis. **The gate's premise was
+a measurement lifted out of its configuration** — 64-0c's "reproduced twice within 90 seconds"
+quoted without carrying that both were on the spinning module; **the second time in this
+investigation**, so it is named as a recurring failure mode. **So 64-1 may already be the fix
+for #64**, found from the far end (64-0f's F(i)) — **the evidence is ABSENCE across five rounds
+and is LABELLED WEAK** (none designed to reproduce a one-in-four phenomenon; 64-1's own arm held
+the shared condition ~0.8 % of its sampling). It makes DONTSWAP **defence in depth on top of a
+probable fix** rather than the only thing between the stack and a twelve-minute outage; it does
+not retire the mitigation (40 KB against an outage) and it does not close #64.
+**THE FAILURE PATH WAS EXERCISED DELIBERATELY** (§8): the `__super` arm **never fires in normal
+service**, which is the awkward shape in full — *a failure path that never runs is never tested,
+and its absence is not even visible*. Induced **LIVE** (host was not an option without a new
+shim for `<clibos.h>`: the existing `src/*_host.c` shims replace whole **asm modules**, not a
+libc370 header — and the property under test is the *emitted message*), with the guard
+short-circuited `if (1 || __super(...))` so the arm is taken **without calling `__super`**
+(inverting the comparison instead would have entered supervisor key 0 and returned without
+`__prob`, leaving the task authorised). Emitted: **`NSF852W NSFS REMAINS SWAPPABLE -- DONTSWAP
+NOT ACCEPTED (NSW=N NDS=0) -- CONTINUING, SEE ISSUE #64`** then `NSF040I`/`NSF001I` — values
+**defined** (the zeroed out-param), and **the pin holds live: it warned and CONTINUED**. Also
+`NSF854W … OKSWAP NOT CONFIRMED` at shutdown. **And the message is TRUE, not merely
+well-formed:** `F NSFS,SWAP` independently read `NSW=N ASW=N NDS=0` on that instance, and
+`nsfswap_probe` calls `__super` **itself** rather than through `swap_set`, so it was unaffected
+by the forced failure. Restored and re-proven `NSF851I … NDS=1`, source `git diff --quiet`
+identical; re-run after the arm: NSFS **122 PASS**, NSFV **484 PASS**, host **2934 PASS**, no
+dumps. **DESIGN PIN RATIFIED: a refusal warns and continues** — correctness failures refuse to
+start (the SVC steal's posture, unchanged); a latency mitigation that cannot be applied is a
+warning naming the condition.
 **#64 STAYS OPEN — mitigated, not fixed, with the investigation deferred rather than closed —
 and (e) STAYS BLOCKED, because the kickoff's condition was "unblocked only if the gate holds"
 and it did not.** [[nsf370-64-3-1-dontswap]]
