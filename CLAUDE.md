@@ -1653,6 +1653,49 @@ asks after an idle period"**, which is the normal case. Three options are laid o
 Mike's call.** Each LEAVE/CANCEL arm costs one app slot of 16; the round leaked three and
 `P NSFS`/`S NSFS` reset it (**verified**: STC 1505 came up `0 OF 16 SLOTS IN USE`, no
 `NSF054W`, `SVC 239 RESTORED`, stand left clean). `docs/measurements/m5-2c1/`.
+**40-CHK (does the ADR-0040 guard protect anything for a batch client?) — DONE, live-green,
+docs-only. It fixes nothing; the answer is NO.** Not a milestone step; **M5 stays in progress**
+and c1 stage b is still with Mike. Stage a proved a batch job runs in a **reused initiator**, so
+40-CHK asked the consequence: when a batch client dies with a request OUTSTANDING, does the guard
+permit the reply POST? **G(i) fires, both halves measured.** Outstanding proven by the
+**CONJUNCTION** (`req_state=1` **and** `NSF813I BUSY=1 BUSYSLOT=0 INFLIGHT=1`) — `PENDING` alone is
+also the state of a request already in service, so it does not discriminate. Client killed
+(`ABEND S222`, OUTPUT, gone from `D A,L`, **verified before anything else**); guard answers
+`ASCB=00FE7330 ASID=0008` **LIVE**; a host connect completing the parked ACCEPT gives
+**`served` 9→10, `req_state` 1→2 (DONE)**, `reaped 0`, no `NSF050I`/`NSF051W`, no abend — and
+`served++`→`DONE`→`__xmpost` is one straight-line sequence, so **the POST was attempted into an
+address space whose client task was dead.** **What it did: nothing observable** — the reply ECB at
+`00A8B808` still reads `809DE5F0` (the dead task's WAIT bit + RB address); **the control arrived
+free**, the next client took slot 1 which reads `reply_ecb=40000000 req_state=0` — a live client's
+ECB is posted and its slot returns FREE, the dead one's is neither. **The cost is a PERMANENT LEAK,
+not corruption:** `req_state` stuck at DONE (the party that releases a slot is its owner),
+unrecoverable **by design** — `slot_action` is `ACT_NONE` for anything not PENDING and
+`reap_ok(DONE, LIVE, trusted)` is 0; both correct given a LIVE verdict, **the verdict is the
+defect**. Measured: `inflight` leaked at 1, **`collisions` 0→4** (every later claim scan walks the
+dead slot and pays), the app slot leaked too; 64 such deaths exhaust the pool. **§2.3 discharged,
+not fulfilled** — the kickoff's premise that *"the reply ECB lives in the client's private storage"*
+is **WRONG** (`asm/nsfvsvc.asm:579-585` waits on `SLRECB` in the **CSA** anchor, corrected from
+source BEFORE the run): the private region IS reused (a different job reported the same ASCB/ASID
+**and byte-identical** `STACK=000D1348 HEAP=00094C68`) but the ECB is not in it, so the overlap
+cannot arise. **G(ii) refuted** (nothing stopped the POST; nothing partners the guard); **G(iii)
+refuted twice**. **TWO ISSUES FELL OUT, filed at Mike's direction, priority his:**
+**#79 (certain, fires on EVERY abend, costs an IPL)** — `nsf_recover` calls `nsf_shutdown()` and
+never `nsfsx_stop()`, so an abend leaves **SVC 239 stolen**, the router loaded, the anchor ACTIVE
+and ~139 KB of CSA leaked; `S NSFS` then fails `NSF049E`→`SA0A`. **This contradicts CLAUDE.md §3
+and `nsf_recover`'s own comment** ("a crash must never require a Hercules restart to clean up") —
+it required one here. The refusal to re-steal is **correct and not the defect**. **#80 (suspected,
+UNCONFIRMED)** — a cross-AS **receive** completes by writing `r->ubuf` = `slot->stage`, key-0
+`SP=241` CSA, from the executive's **key 8**: the store M5-2b0 measured faulting `S0C4`. Every other
+CSA write sits in a key window; the protocol op's does not. **Phase 1 unaffected** (same-space key-8
+`ubuf`), and **no test covers a cross-AS data-returning receive** — TSTRQXM covers `send`/`connect`/
+`close`, so "never worked" is consistent with everything green. **A round-hygiene failure of mine is
+in the record:** I read `IEE341I NOT ACTIVE` after a stimulus as "the stimulus crashed it" when NSFS
+had abended 36 s earlier for #79 and **the control never ran** — an absence that looks exactly like
+its own result (§8.5); startup is now positively confirmed (`NSF041I`+`NSF001I`) before any
+stimulus. **Still untested, the same gap stage a named:** an STC/TSO client *is* its own address
+space and does terminate — no test in this tree has ever watched a real address space die. **Next
+artifact is an ADR-0040 annotation naming the client class it does not cover, plus a decision — not
+a patch.** Host **2991 PASS / 0 FAIL** unchanged. `docs/measurements/40-chk/`.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
