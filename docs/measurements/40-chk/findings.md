@@ -295,6 +295,16 @@ against `1073152` at the previous start: **139 264 bytes**, pool plus router,
 its CSA. One parked batch client that dies therefore costs an IPL **without
 NSFS ever crashing**.
 
+**Both halves measured.** The IPL that closed the round put the storage back
+exactly: largest free block **933888 before -> 1073152 after**, the same
+139 264 bytes. Nothing short of an IPL reclaims it.
+
+## Stand left clean
+
+IPL 2026-08-28 (owed since M5-2b4). NSFS STC 1534: `NSF210I CTCI 0500/0501 UP
+... MTU 1500`, `NSF055I ... LARGEST FREE BLOCK NOW 1073152`, `NSF041I` +
+`NSF001I`. No leaked slot, no leaked in-flight, CSA whole.
+
 ## §2.3 answered, with addresses
 
 * reply ECB: **`00A8B808`** -- inside the CSA anchor at `00A8B7C8`, common

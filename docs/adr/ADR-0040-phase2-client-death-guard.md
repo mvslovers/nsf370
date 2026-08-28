@@ -441,8 +441,10 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
      Measured, not reasoned: `NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE
      RETAINED (EXHAUSTED=0)` ten seconds after `NSF830I`, then the next start reporting
      `NSF055I ... LARGEST FREE BLOCK NOW 933888` against `1073152` before it — **139 264
-     bytes**, the pool plus the router, **and again on every recycle**. So **one parked
-     batch client that dies costs an IPL, without NSFS ever crashing.** (Distinct from
+     bytes**, the pool plus the router, **and again on every recycle**. The IPL that
+     followed put it back exactly: **933888 → 1073152**, the same 139 264, which is the
+     other half of the claim — nothing short of an IPL reclaims it. So **one parked batch
+     client that dies costs an IPL, without NSFS ever crashing.** (Distinct from
      issue #79, where an *abend* leaves SVC 239 stolen and NSFS cannot restart at all. Here
      the SVC **is** restored — `NSF043I` precedes the drain — so the STC comes back; it
      simply cannot get its CSA back.) *Then*, and only then, the smaller costs: the request
