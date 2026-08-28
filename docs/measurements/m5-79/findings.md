@@ -16,6 +16,7 @@ The audit is `audit.md`; this is what the machine said.
 | **B (again)** | same | S0C4 | yes | SUCCEEDS |
 | **B2** | fix + injection **inside `evt_mainloop`** | S0C4 | yes | SUCCEEDS |
 | **C** | **fix reverted**, same injection | S0C4 | **no** | **FAILS** — `NSF049E SVC 239 IN USE (EP 00AF3248) -- NOT STOLEN` |
+| **D** | fix + injection + **forced `__super` failure** | S0C4 | `NSF904E` | **FAILS** — `NSF049E SVC 239 IN USE (EP 00A820C8) -- NOT STOLEN` |
 
 **Exactly one assertion moves**, and the axis that moves it is the one the fix
 names. #79's own field observation (STC 1505/1506 on `main`, a *spontaneous*
@@ -141,6 +142,50 @@ available on the other module, so no arm rests on an absence alone.
 
 ---
 
+## 3a. Arm D — the `__super`-fails posture, demonstrated
+
+Run after IPL #1, on a clean slot. The failure is forced the **64-3-1 way** —
+`if (1 || __super(PSWKEY0, &savekey) != 0)` short-circuits, so `__super` is
+**never called** and the task never enters supervisor key 0. Inverting the
+comparison instead would have entered key 0 and returned without `__prob`,
+leaving the task authorised; this way the slot is **genuinely** not restored,
+which is the posture under test rather than a message rehearsal.
+
+```
+NSF042I SVC 239 STOLEN (EP 00A820C8)
+NSF001I NSFS INITIALIZATION COMPLETE
+NSF900E NSF ABEND INTERCEPTED -- CAPTURING AND PERCOLATING
+NSF902I RECOVERY ENVIRONMENT: SUP=N AUTH=Y
+NSF904E NSFS SVC SLOT STILL STOLEN (RC=2) -- NSFS CANNOT RESTART, AN IPL IS REQUIRED
+NSF901I NSF EMERGENCY TEARDOWN COMPLETE
+IEF450I NSFS NSFS - ABEND S0C4 U0000
+```
+
+then, confirming the failure was real and not cosmetic:
+
+```
+NSF049E SVC 239 IN USE (EP 00A820C8) -- NOT STOLEN
+NSF009E NSFS TRANSPORT INITIALIZATION FAILED
+```
+
+Four things are demonstrated, and the last two were not the point but matter
+more than the first two:
+
+1. **The message fires with DEFINED values** — `RC=2` is `NSFSX_RQ_NOKEY`, not
+   a stack remnant. This is the class 64-3-1 caught by re-reading code
+   (`swap_set` returning before writing `*out` on its own `__super` arm); the
+   equivalent hole does not exist here, and now it is measured rather than
+   argued.
+2. **It NAMES THE CONSEQUENCE.** An operator does not have to deduce that the
+   next `S NSFS` will fail — and the very next line of the log is that failure.
+3. **The warn-and-continue pin holds.** `NSF901I` follows: recovery did not
+   hang, loop or bail — it reported and finished. Same posture as `NSF852W`
+   (ADR-0044 §8), now shown for the recovery path.
+4. **The ORIGINAL abend code percolates.** `IEF450I ... ABEND S0C4`, not a
+   code manufactured by the exit — the ESTAE contract doing what it should.
+
+---
+
 ## 4. A SECOND DEFECT, FOUND BY THE GATE AND NOT INTRODUCED BY IT: recovery does not reach `NSF901I`
 
 Every abend in this round ended:
@@ -175,14 +220,38 @@ five occurrences**, so it is deterministic, not a corruption artefact.
    byte-identically in arm C run 2. So "`nsf_shutdown()` then terminate" was
    already abending `A0A` on `main`, on a path nobody was reading it on.
 
-**What is NOT established:** why. `NSF902I` adds two `TESTAUTH`s and one WTO to
-the exit and is present in every arm, so it is *not excluded* — only the
-quiesce and the lifecycle position are. 40-CHK observed `main` reaching
-`NSF901I` once, from a spontaneous S0C4 during service; that is one
-observation, under a different provocation, and it is the only evidence that
-the recovery path ever completed. Whether it is `NSF902I`, the C-runtime stack
-the ESTAE stub GETMAINs, or something about `free()` in an exit is **not
-answered here**.
+**What is NOT established: why — and arm D moved the question rather than
+answering it.** Arm D, run after IPL #1, is the **first arm with no `A0A`**:
+`NSF901I` was emitted and the original `S0C4` percolated cleanly. But it is
+**confounded two ways** and cannot be read as a cause:
+
+* it short-circuits the quiesce **before** `__super`, so no key window ran; and
+* the CTCI pair was still offline after the IPL (`NSF202E CTCI 0500 ALLOC
+  FAILED S99 ERR 0244`, `NSF212E CTCI 0500 FAILED TO START`), so the device
+  **I/O subtasks were never attached**.
+
+Across all six observations the device state is the variable that tracks the
+`A0A` perfectly — four arms with `NSF210I/NSF211I` all produced it, two arms
+without devices produced none — and there is a mechanism to fit: the recovery
+path does **not** quiesce devices (`audit.md` row 7), so `mm_shutdown()`'s
+`free()` runs while two ATTACHed subtasks are still live on the same
+non-reentrant libc370 heap. The clean path cannot hit this because
+`dev_foreach(nsf_quiesce_device)` runs *before* `nsf_shutdown()`.
+
+**But that hypothesis has a counter-example already on record, and it is the
+reason this is not being asserted.** 40-CHK's STC 1505 abended on the
+**RECVFROM completion path** — a datagram had arrived over the CTCI, so the
+devices were up and the subtasks live — and it reached `NSF901I`. Devices-up
+therefore does *not* imply `A0A`.
+
+So two candidates stand, neither excluded: **the device subtasks**, and
+**`NSF902I`** (added by this change, present in every A0A arm and absent from
+`main`'s STC 1505). The controlled arm that separates them is **free** — the
+fixed module restores the slot, so it costs no IPL — and it is one binary with
+one variable: run arm B with the CTCI **offline**, then bring the pair online
+and run it again. That is the next step, and `audit.md` §5's "rows 7 and 8,
+named and deliberately not fixed here" may need revisiting depending on how it
+reads.
 
 **What it costs: nothing that matters, and this is why it is reported rather
 than fixed in this round.** The NSFMM pool regions are **AS-scoped**
@@ -190,12 +259,11 @@ than fixed in this round.** The NSFMM pool regions are **AS-scoped**
 terminates, so a `free()` that never runs loses nothing. Critically, the `A0A`
 happens **after** `NSF903I`: the SVC slot is already restored, the anchor
 already marked inactive. **It does not touch the fix's purpose**, which is why
-arm B restarts cleanly in spite of it. It is a *reporting* defect — recovery ends without saying it
-finished, and an operator sees an unexplained second abend code instead of
-`NSF901I` — and it also means any teardown step added to `nsf_shutdown()` in
-future will silently not run in recovery. **Filed as issue #83**, with the three
-exclusions and the next (IPL-free) arm: deploy with `NSF902I` removed and see
-whether `NSF901I` appears.
+arm B restarts cleanly in spite of it. It is a *reporting* defect — recovery
+ends without saying it finished, and an operator sees an unexplained second
+abend code instead of `NSF901I` — and it also means any teardown step added to
+`nsf_shutdown()` in future will silently not run in recovery. **Filed as issue
+#83.**
 
 ---
 
