@@ -591,3 +591,69 @@ only. The RQE path's instruction stream is **byte-for-byte unchanged**: M5-2c0 d
 a shared subroutine, precisely so that this claim is provable by diff. `TSTRQXM` (batch
 **CC 0, 32/32**, host peer **9353 bytes byte-exact**) and `TSTRQXF` (**53/53 CC 0**
 batch+TSO) were re-run as confirmation of it, not as proof of it.
+
+---
+
+## Update (2026-08-28, 80-CHK) — a FOURTH category, outside the transport, and it faults
+
+The three-category table above counts every key-0 store **in the SVC routine**. 80-CHK
+measured a fourth that the table cannot see, because it is not in `asm/nsfvsvc.asm` at
+all and not in Phase-2 code either.
+
+**§2's `ubuf` rewrite has a consequence for the store direction that was never measured.**
+`nsfreqx_dispatch_in` points the private NSFRQE's `ubuf` at `slot->stage` — CSA, subpool
+241, key 0 — and `nsfsx_drain` then dispatches *outside* the key window, deliberately, so
+that the socket and protocol layers never learn a boundary exists. That is the property
+this ADR was built to have, and it holds. What follows from it is that a protocol op which
+**writes** its result into `r->ubuf` performs a key-8 store into key-0 CSA:
+
+- `src/nsfudp.c:200` — `got = buf_copyout(bpay, r->ubuf, want);`
+- `src/nsftcp.c:628` / `:639` — `tcp_recv_drain_to`, the same `buf_copyout`
+- the instruction is `src/nsfbuf.c:285`, `memcpy(d + total, b->data, take)`
+
+A grep for `__super|__prob|SPKA|PSWKEY0` across the protocol layer returns **nothing**:
+this is the only CSA write in the design that sits outside a key window, and it sits
+there because the code containing it is *supposed* to know nothing about keys.
+
+**Measured, twice, with a control that isolates the store to one line.**
+`udp_complete_recv` guards its copy with `r->ubuf != NULL && r->ulen > 0`, and
+`buf_copyout`'s loop does not run when `n == 0`. So a **zero-length datagram** crosses
+identically, calls the identical function, and elides only the `memcpy`. It completes
+`n=0`. A **256-byte datagram** on the same socket, in the same job, moments later, abends
+the STC `S0C4` (`IEF450I NSFS NSFS - ABEND S0C4 U0000`). The retained anchor reads
+`served = 6` (exactly the requests that completed), slot `req_state` **PENDING**, `xlen`
+**512** — so the length crossed, the store ran with `n > 0`, and the client is parked on a
+`reply_ecb` nobody will ever POST. Full record: `docs/measurements/80-chk/`.
+
+**Why this never showed until now.** CSA is key 0 and *not* fetch-protected, so a key-8
+**fetch** succeeds where a key-8 **store** faults (M5-2b0). Every cross-AS path exercised
+to date reads `ubuf` — `TSTRQXM`'s 9353 bytes are all sends — and no test in the tree had
+ever driven a cross-AS receive that returns data. The path is not regressed; it has never
+worked.
+
+**The obligation table therefore reads:**
+
+| # | destination | status |
+|---|---|---|
+| 1 | `ubuf` in the SVC routine (`RQEOUT`, `XFEROUT`) | closed (b1, M5-2c0) |
+| 2 | `rqeimg` (`RQEOUT`'s second move) | closed (b1) |
+| 3 | the caller's `NSFV_REQ` block — 20 unwindowed stores | open, home is **(d)** |
+| 4 | **`r->ubuf` written by a PROTOCOL OP, from the executive's key 8** | **open — measured faulting, 80-CHK / #80** |
+
+Category 4 is different in kind from 1–3 and that is the part worth carrying: 1–3 are
+stores the transport makes and can bracket where it stands. Category 4 is a store made by
+code that this ADR deliberately kept ignorant of the boundary, so the fix cannot be
+another `SPKA` pair in `MOVEOUT` — the candidates are a key window around the completion
+copy, or a key-8 landing area with a keyed move on the way out (`MOVEOUT` is the
+precedent for the other direction and its rationale carries), and choosing between them
+is a design decision with ADR weight. **80-CHK deliberately built none of it.**
+
+Nothing in this ADR's subject moved: anchor layout unchanged, `NSFV_ANCHOR_VER` stays 3,
+**NSFRQE stays frozen at 64 bytes**, `asm/nsfvsvc.asm` untouched, and the C / EZASOKET /
+EZASMI surfaces are unchanged.
+
+**Scope of the measurement, stated narrowly.** It was taken on **UDP**, on the **parked**
+completion shape. TCP reaches the same `buf_copyout` through the same rewritten `ubuf`,
+and `udp_complete_recv`'s own header states it is shared by the parked and rxq-dequeue
+paths — so the inline shape and TCP are the same store *by construction*, but they were
+reasoned, not run.

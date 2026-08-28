@@ -643,6 +643,27 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- 80-CHK: the cross-AS receive key probe (TSTRQXR) ------------------------
+# MVS-only (host = false): the property under test is a STORAGE KEY, which the
+# host build does not have. A thin client like TSTRQXM -- API layer plus the two
+# transport halves, no device, no executive.
+#
+# It drives ONE code path twice, differing by the store and by nothing else.
+# udp_complete_recv guards its copy with `r->ubuf != NULL && r->ulen > 0`, and
+# buf_copyout's own loop does not run when n == 0 -- so a ZERO-LENGTH datagram
+# traverses the identical function and elides only the memcpy. That is the
+# control; an N-byte datagram is the arm, and its memcpy stores into the CSA
+# staging buffer (subpool 241, key 0) from the executive's key 8.
+#
+# EXPECT THE ARM TO ABEND NSFS (S0C4) and the client to hang parked on SLRECB;
+# the evidence is the wtof markers on the console, which survive the cancel.
+# PREREQUISITES: S NSFS, and samples/host/recvkey_peer.py on the host.
+[[test]]
+name = "TSTRQXR"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstrqxr.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
 # -- M5-2c1 stage a: the app-death measurement arm (TSTAPPD) -----------------
 # MVS-only (host = false): "the job ended" and the ASVT have no host analog.
 # Drives the situation obligation #3 must reclaim -- an app instance with a
