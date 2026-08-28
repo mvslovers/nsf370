@@ -220,63 +220,110 @@ five occurrences**, so it is deterministic, not a corruption artefact.
    byte-identically in arm C run 2. So "`nsf_shutdown()` then terminate" was
    already abending `A0A` on `main`, on a path nobody was reading it on.
 
-**What is NOT established: why — and arm D moved the question rather than
-answering it.** Arm D, run after IPL #1, is the **first arm with no `A0A`**:
-`NSF901I` was emitted and the original `S0C4` percolated cleanly. But it is
-**confounded two ways** and cannot be read as a cause:
+**The cause is narrowed by a controlled arm, and `NSF902I` is EXCLUDED.** After
+IPL #2 the CTCI pair came back **offline** (`NSF202E CTCI 0500 ALLOC FAILED S99
+ERR 0244`), which handed the round a free single-variable experiment: **one
+binary** — arm B, the fix plus the same forced `S0C4` — run with the devices up
+and with the devices down.
 
-* it short-circuits the quiesce **before** `__super`, so no key window ran; and
-* the CTCI pair was still offline after the IPL (`NSF202E CTCI 0500 ALLOC
-  FAILED S99 ERR 0244`, `NSF212E CTCI 0500 FAILED TO START`), so the device
-  **I/O subtasks were never attached**.
+| arm B run | CTCI | `A0A` | `NSF901I` |
+|---|---|---|---|
+| ×3, before the IPLs | **up** (`NSF210I`/`NSF211I`) | **yes** | no |
+| ×1, after IPL #2 | **down** | **no** | **yes** |
 
-Across all six observations the device state is the variable that tracks the
-`A0A` perfectly — four arms with `NSF210I/NSF211I` all produced it, two arms
-without devices produced none — and there is a mechanism to fit: the recovery
-path does **not** quiesce devices (`audit.md` row 7), so `mm_shutdown()`'s
-`free()` runs while two ATTACHed subtasks are still live on the same
-non-reentrant libc370 heap. The clean path cannot hit this because
-`dev_foreach(nsf_quiesce_device)` runs *before* `nsf_shutdown()`.
+Devices down, the same recovery path ran in full and finished:
 
-**But that hypothesis has a counter-example already on record, and it is the
-reason this is not being asserted.** 40-CHK's STC 1505 abended on the
-**RECVFROM completion path** — a datagram had arrived over the CTCI, so the
-devices were up and the subtasks live — and it reached `NSF901I`. Devices-up
-therefore does *not* imply `A0A`.
+```
+NSF903I NSFS TRANSPORT QUIESCED BY RECOVERY -- SVC RESTORED, CSA AND ROUTER RETAINED
+NSF901I NSF EMERGENCY TEARDOWN COMPLETE
+IEF450I NSFS NSFS - ABEND S0C4 U0000
+```
 
-So two candidates stand, neither excluded: **the device subtasks**, and
-**`NSF902I`** (added by this change, present in every A0A arm and absent from
-`main`'s STC 1505). The controlled arm that separates them is **free** — the
-fixed module restores the slot, so it costs no IPL — and it is one binary with
-one variable: run arm B with the CTCI **offline**, then bring the pair online
-and run it again. That is the next step, and `audit.md` §5's "rows 7 and 8,
-named and deliberately not fixed here" may need revisiting depending on how it
-reads.
+That **excludes `NSF902I`** — it ran here — and it excludes the key window a
+second time, more strongly than arm C did: arm C only showed the `A0A` surviving
+the quiesce's *removal*, whereas this arm runs `nsfsx_recover_quiesce` in its
+entirety (`__super`, both CSA stores, `__prob`) and does not fire. Arm D agrees
+from the other side, though it is confounded (devices down **and** the quiesce
+short-circuited), which is why it is not the evidence being leaned on.
 
-**What it costs: nothing that matters, and this is why it is reported rather
-than fixed in this round.** The NSFMM pool regions are **AS-scoped**
-(`audit.md` §1) — MVS reclaims the private region as the address space
-terminates, so a `free()` that never runs loses nothing. Critically, the `A0A`
-happens **after** `NSF903I`: the SVC slot is already restored, the anchor
-already marked inactive. **It does not touch the fix's purpose**, which is why
-arm B restarts cleanly in spite of it. It is a *reporting* defect — recovery
-ends without saying it finished, and an operator sees an unexplained second
-abend code instead of `NSF901I` — and it also means any teardown step added to
-`nsf_shutdown()` in future will silently not run in recovery. **Filed as issue
-#83.**
+**The mechanism that fits is `audit.md` row 7.** Recovery does **not** quiesce
+devices: the clean path runs `dev_foreach(nsf_quiesce_device, NULL)` *before*
+`nsf_shutdown()`, and `nsf_recover` goes straight there — so `mm_shutdown()`'s
+`free()` runs while two ATTACHed CTCI I/O subtasks are still live on a libc370
+heap that is not reentrant across subtasks. `SA0A` is the SVC 10 family, which
+is what a corrupted free-chain surfaces as.
+
+**Necessary, not sufficient — and that is evidence FOR a race.** 40-CHK's STC
+1505 abended on the RECVFROM completion path with devices up and subtasks live,
+and reached `NSF901I`. So devices-up does not *always* fire it. A race fires
+sometimes; a deterministic bug does not. (The `IEA700I` operands being identical
+across all five firings says the *failing free* is the same one each time, not
+that the race always fires.)
+
+**So `audit.md` §5 needs reading with this next to it.** Rows 7 and 8 were
+entered as "named, and deliberately not fixed here" on the grounds that MVS
+reclaims them anyway. That is still true of the *storage*, and it is why the
+`A0A` costs nothing — but the row is no longer merely cosmetic: **it is the
+leading candidate cause of a second abend inside the exit.** The narrow fix
+probably runs the other way from "quiesce devices in recovery" — `dev_shutdown`
+does OPEN/CLOSE/EXCP and joins subtasks, exactly the blocking work
+`nsfsx_recover_quiesce` refuses to do — and towards *not calling `mm_shutdown()`
+in an exit at all*, since §1 already classifies those regions as AS-scoped. That
+is #83's decision, not this branch's.
+
+**What it costs: nothing that matters, which is why it is reported and not
+patched here.** The pool regions are AS-scoped, so a `free()` that never runs
+loses nothing. Critically the `A0A` lands **after** `NSF903I`: the SVC slot is
+already restored and the anchor already marked inactive, which is why arm B
+restarts cleanly in spite of it. It is a *reporting* defect — recovery ends
+without saying it finished, and an operator sees an unexplained second abend
+code instead of `NSF901I` — and it means any teardown step added to
+`nsf_shutdown()` in future will silently not run in recovery. **Issue #83**,
+updated with this arm.
 
 ---
 
-## 5. Housekeeping and stand state
+## 5. The final regression, and the stand
 
-Four retained anchor+router pairs accumulated across the round (three from the
-arm-B family, one from arm C), plus one failed start. Largest free CSA block
-went `1073152` → **`487424`**. This is the designed retain posture doing its
-job, at the rate the gate demanded of it; **an IPL is the only way to reclaim
-it** ([[nsf370-mvsdev-ipl]]).
+Final module deployed with **every injection removed** (tree clean, a grep for
+the injection markers across `src/` and `include/` returns 0).
 
-**The stand is left with `SVC 239` stolen by arm C's dead STC** — that is the
-defect, deliberately reached, and it is what an IPL clears. No NSF client may
-be run in this state.
+| gate | result |
+|---|---|
+| `S NSFS` / `P NSFS` on the final module | clean both ways — `NSF041I`/`NSF001I`, then `NSF043I SVC 239 RESTORED` → `NSF853I` → `NSF011I` → `IEF404I`, **no `NSF054W`** |
+| `TSTRQXC` + `TSTRQXF` | **122 PASS / 0 FAIL, CC 0 batch + TSO** |
+| `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH`/`TSTXFW` (NSFV round) | **484 PASS / 0 FAIL, CC 0 batch + TSO** |
+| host suite | **2991 PASS / 0 FAIL** — a no-regression check only; both changed files are MVS-only |
+| dumps | **none**, whole round (`IEA700I` is the no-dump form) |
 
-Zero dumps: `SYSUDUMP` never engaged (`IEA700I` is the no-dump form).
+`TSTMVCD` excluded, per #53. `NSFV` started and stopped cleanly around its round
+(`NSFV034I` → `NSFV095I SVC 239 RESTORED` → `NSFV011I`).
+
+**`NSF043I SVC 239 RESTORED` on the clean stop is the no-regression check that
+matters most for the refactor**: the table write now goes through the shared
+`nsfsx_svc_restore_locked`, and the clean path is the caller that was already
+countersigned.
+
+### Not run: `TSTRQXM`
+
+It needs the CTCI pair, and the pair did not survive the IPLs: Hercules failed
+to create the TUN interface at startup (`HHC00138E Error setting TUN/TAP mode :
+Interrupted system call` → `HHC01463E 0:0501 device initialization failed`), so
+devices 0500/0501 do not exist in the emulator. They can be re-`attach`ed — the
+config line verbatim, and `tun0` comes up correctly — but **MVS still answers
+`IEE025I UNIT 500 HAS NO LOGICAL PATHS`**: it IPLed without them, and 3.8j has
+no dynamic I/O reconfiguration. Only a full Hercules restart cycle recovers it.
+
+`TSTRQXM` exercises the cross-address-space **data** path, which this change
+does not touch; what it would add over the 122 + 484 above is coverage of the
+transport under load. Recorded as not run, with the reason, rather than quietly
+omitted.
+
+### Stand
+
+One `tun0` and one route to `192.168.200.1` (a `devinit` during diagnosis
+briefly created a duplicate `tun1` with the same address and a competing route;
+`detach` cleared it, and the orphaned `tun0` needs root to remove, so it is left
+for the next Hercules restart). Devices 0500/0501 left **detached**. NSFS
+running on the final module. CSA largest free block `933888` — one retained
+anchor+router from the controlled arm, the designed posture.

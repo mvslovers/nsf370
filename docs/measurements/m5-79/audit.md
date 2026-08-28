@@ -116,6 +116,24 @@ They are in the table because the audit's value is the enumeration, not the
 diff. If a future Phase-2 resource turns out to be system-scoped, this is the
 column it must be entered in.
 
+**Correction, added after the live gate: row 7 is not merely cosmetic.** The
+storage argument above still holds — MVS reclaims it, so nothing leaks — but the
+gate went on to identify the un-quiesced device subtasks as the leading cause of
+a **second abend inside the exit** (`A0A`, issue #83): `mm_shutdown()`'s `free()`
+runs while two ATTACHed I/O subtasks are live on a libc370 heap that is not
+reentrant across subtasks, and the clean path cannot hit it because
+`dev_foreach(nsf_quiesce_device, NULL)` runs first. Proven by one binary with
+one variable — the CTCI up (`A0A`, ×3) versus down (no `A0A`, `NSF901I`
+reached). See `findings.md` §4.
+
+**That does not turn "quiesce devices in recovery" into the fix.**
+`dev_shutdown` does OPEN/CLOSE/EXCP and joins subtasks — precisely the blocking
+work §6 forbids an exit to attempt. The direction §1 actually points is the
+opposite one: **`mm_shutdown()` in an ESTAE exit buys nothing**, because those
+regions are AS-scoped, so the narrow fix is likely to stop calling it rather than
+to add a step before it. Recovery would then release only what nobody else will,
+which is this audit's own dividing line applied one step further. #83's call.
+
 ---
 
 ## 6. What recovery must not do, restated as rules
