@@ -287,9 +287,29 @@ and returns **CC 20** — the `XR_CC_GATE_SKIPPED` idiom already used by `TSTXFW
 `TSTRQXF`, so "did not run" can never be read as "passed" (CLAUDE.md §8.5). The arm needs
 `PARM='ARM'` via `jcl/TSTRQXR.jcl`.
 
-The guard was verified from **both** sides rather than from its return code alone:
-`make test-mvs ARGS="--only TSTRQXR"` gave `FAIL CC 20` in batch and TSO, and the STC it
-did not touch reported `NSF812I ... SERVED=0` afterwards.
+**CC 20 alone would not have shown the guard works for the intended reason** — it is
+also what you would see if `argc` never arrived under `crt1`, or if the PARM arrived in a
+shape the compare misses. All three look identical from outside, which is §8.5 aimed at
+the guard rather than at the code it guards. So the not-run branch reports what it saw,
+and it was measured (JOB02868, batch and TSO):
+
+```
+11.01.27 JOB 2868  +TSTRQXR: NOT RUN -- argc=1 argv1=<none> (need PARM='ARM')
+```
+
+`argc=1` is the program name alone, so the PARM genuinely was absent and `argc`/`argv`
+do arrive under `crt1`. The other direction is proven by JOB02864 having executed the arm
+at all. The guard is therefore measured **both** ways, and independently corroborated from
+the STC side: the instance the default run did not touch reported `NSF812I ... SERVED=0`
+afterwards.
+
+**Which binary carried which measurement.** The arm (§3) ran on the binary before this
+marker was added; the marker run is the binary after. The change is **8 inserted lines
+entirely inside the not-run branch** (`git diff --stat test/mvs/tstrqxr.c` → `1 file
+changed, 8 insertions(+)`), so the arm's code path is untouched — the same standard
+M5-2c0 used when it proved the RQE path unchanged by confining the diff. The match is
+`strncmp(argv[1], "ARM", 3)`, a prefix test rather than an exact one; literal-to-literal,
+so charset-transparent by the project's own rule.
 
 ---
 

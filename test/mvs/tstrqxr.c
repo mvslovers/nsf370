@@ -157,6 +157,14 @@ int main(int argc, char **argv)
      * gate did not run", never 0.  A vacuous green here would be exactly the
      * failure class CLAUDE.md 8.5 is about. */
     if (argc < 2 || argv[1] == NULL || strncmp(argv[1], "ARM", 3) != 0) {
+        /* MARK THE NOT-RUN BRANCH, and say WHY it was taken.  CC 20 alone
+         * cannot distinguish "no PARM was given" from "argc never arrives
+         * under crt1" or "the PARM arrives in a shape this compare misses" --
+         * the guard would return 20 for all three and look identical.  So the
+         * branch reports what it actually saw.  (CLAUDE.md 8.5, aimed at this
+         * guard rather than at the code it guards.) */
+        wtof("TSTRQXR: NOT RUN -- argc=%d argv1=%s (need PARM='ARM')",
+             argc, (argc > 1 && argv[1] != NULL) ? argv[1] : "<none>");
         printf("=== TSTRQXR -- 80-CHK probe: NOT RUN ===\n");
         printf("  This probe is OPT-IN: it abends NSFS on purpose and blocks\n");
         printf("  on a host peer.  Run it with PARM='ARM' via jcl/TSTRQXR.jcl,\n");

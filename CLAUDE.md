@@ -1925,9 +1925,17 @@ but not sufficient**; a free data point about #83, not a finding, since nothing 
 designed to test it. **The probe is OPT-IN and the default is inert**: it abends NSFS and
 its receives block with no timeout, so a bare run does nothing and returns **CC 20**
 (`XR_CC_GATE_SKIPPED`, the TSTXFW/TSTRQXF idiom — "did not run" can never read as
-"passed", §8.5), the arm needing `PARM='ARM'` via `jcl/TSTRQXR.jcl`; the guard was checked
-from **both** sides — `FAIL CC 20` batch+TSO **and** the untouched STC reporting
-`SERVED=0`. **ADR-0041 gains a FOURTH write-out category** and it is different in kind:
+"passed", §8.5), the arm needing `PARM='ARM'` via `jcl/TSTRQXR.jcl`. **CC 20 alone would not
+have shown the guard fires for the intended REASON** (identical to `argc` never arriving
+under `crt1`, or a PARM shape the compare misses — §8.5 aimed at my own guard), so the
+not-run branch reports what it saw: **`argc=1 argv1=<none>`**, measured batch+TSO — which
+also establishes that `argc`/`argv` do arrive under `crt1`. Both directions are therefore
+measured (the other by JOB02864 having run the arm at all), corroborated from the STC side
+by the untouched instance reporting `SERVED=0`. The arm ran on the binary **before** that
+marker; the diff is **8 lines confined to the not-run branch**, so the arm's path is
+untouched — the M5-2c0 standard. Like `TSTMVCD`, it is **excluded from a round's
+regression set** (noted in `project.toml`): inert by construction, but a CC 20 still reads
+FAIL in the matrix. **ADR-0041 gains a FOURTH write-out category** and it is different in kind:
 1–3 are stores the transport makes and can bracket where it stands; **4 is made by code
 this ADR deliberately kept ignorant of the boundary**, so the fix cannot be another `SPKA`
 pair in `MOVEOUT` — a key window around the completion copy, or a key-8 landing area with a

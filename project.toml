@@ -658,6 +658,13 @@ sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c"
 # EXPECT THE ARM TO ABEND NSFS (S0C4) and the client to hang parked on SLRECB;
 # the evidence is the wtof markers on the console, which survive the cancel.
 # PREREQUISITES: S NSFS, and samples/host/recvkey_peer.py on the host.
+#
+# EXCLUDE IT FROM A ROUND'S REGRESSION SET, the way TSTMVCD is excluded. A bare
+# run is INERT BY CONSTRUCTION -- no PARM means it never touches the transport
+# and returns CC 20 ("the gate did not run", the TSTXFW/TSTRQXF idiom) -- but a
+# CC 20 still shows as FAIL in the matrix, and a round that has to explain one
+# expected red cell erodes exactly the confidence a full-green round buys. Run
+# it deliberately, via the JCL, or not at all.
 [[test]]
 name = "TSTRQXR"
 startup = "crt1"
