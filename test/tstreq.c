@@ -500,6 +500,107 @@ static void test_lost_request(void)
 }
 #endif /* !__MVS__ */
 
+/* -------------------------------------------------------------------------
+ * M5-2c1: the caller identity travels from the transport to the app registry.
+ *
+ * Two halves, and the second is the red line: Phase 1 dispatches with a ZERO
+ * identity, so a slot registered that way must read back as "none recorded"
+ * and must never be handed to a liveness classifier as if it named an address
+ * space.  Here we assert the value; the consumer-side rule is asserted where
+ * the consumers are.
+ * ------------------------------------------------------------------------- */
+static int app_slot_of(UINT token)
+{
+    UINT i, n = nsfreq_app_max();
+    UINT t;
+
+    for (i = 0u; i < n; i++) {
+        if (nsfreq_app_info(i, &t, NULL, NULL) && t == token) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static UINT app_token_at(UINT idx)
+{
+    UINT t = 0u;
+
+    (void)nsfreq_app_info(idx, &t, NULL, NULL);
+    return t;
+}
+
+static void test_caller_identity(void)
+{
+    NSFRQE r;
+    UINT   tok_id, tok_zero, ascb, asid;
+    int    idx;
+
+    reset_req();
+
+    CHECK_EQ((long)nsfreq_app_max(), 16L, "app registry bound is 16 slots");
+
+    /* (a) An identified caller: the pair is stored verbatim against the slot. */
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, 0x00F1E2D3u, 0x0025u);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "INITAPI with an identity ok");
+    tok_id = r.apptok;
+    idx    = app_slot_of(tok_id);
+    CHECK(idx >= 0, "identified app instance is findable in the registry");
+    ascb = asid = 0xFFFFFFFFu;
+    CHECK(idx >= 0 && nsfreq_app_info((UINT)idx, NULL, &ascb, &asid),
+          "nsfreq_app_info reports the slot in use");
+    CHECK_EQ((long)ascb, (long)0x00F1E2D3u, "caller ASCB stored verbatim");
+    CHECK_EQ((long)asid, (long)0x0025u, "caller ASID stored verbatim");
+
+    /* (b) THE PHASE-1 PATH. nsfreq_dispatch is nsfreq_dispatch_id(r, 0, 0):
+     * the slot is fully usable and names nobody. */
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "INITAPI without an identity ok");
+    tok_zero = r.apptok;
+    CHECK(tok_zero != 0u && tok_zero != tok_id, "a second, distinct app token");
+    idx  = app_slot_of(tok_zero);
+    ascb = asid = 0xFFFFFFFFu;
+    CHECK(idx >= 0 && nsfreq_app_info((UINT)idx, NULL, &ascb, &asid),
+          "Phase-1 app instance is registered like any other");
+    CHECK_EQ((long)ascb, 0L, "Phase-1 caller ASCB is zero (no identity)");
+    CHECK_EQ((long)asid, 0L, "Phase-1 caller ASID is zero (no identity)");
+
+    /* (c) A REUSED slot carries no stale identity.  Release the identified
+     * instance, then take a slot again with a zero identity: it lands on the
+     * same index (lowest free wins), and it must read back as naming nobody --
+     * not as still naming the address space that used to live there. */
+    idx = app_slot_of(tok_id);
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+    r.apptok = tok_id;
+    nsfreq_dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "TERMAPI released the slot");
+    CHECK(app_slot_of(tok_id) < 0, "the freed token no longer resolves");
+
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch(&r);
+    CHECK_EQ((long)app_slot_of(r.apptok), (long)idx, "the freed slot is reused");
+    ascb = asid = 0xFFFFFFFFu;
+    CHECK(nsfreq_app_info((UINT)idx, NULL, &ascb, &asid),
+          "the reused slot is in use");
+    CHECK_EQ((long)ascb, 0L, "a reused slot carries no stale caller ASCB");
+    CHECK_EQ((long)asid, 0L, "a reused slot carries no stale caller ASID");
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+    r.apptok = app_token_at((UINT)idx);
+    nsfreq_dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "TERMAPI released the reused slot");
+
+    /* (d) Out of range is 0, not an error and not a read. */
+    CHECK_EQ((long)nsfreq_app_info(nsfreq_app_max(), NULL, NULL, NULL), 0L,
+             "an out-of-range app index reports not-in-use");
+
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+    r.apptok = tok_zero;
+    nsfreq_dispatch(&r);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "TERMAPI released the second slot");
+}
+
 int main(void)
 {
     printf("=== nsf370 NSFREQ tests ===\n");
@@ -515,6 +616,7 @@ int main(void)
     test_dispatch();
     test_termapi_teardown();
     test_app_full();
+    test_caller_identity();
 #ifndef __MVS__
     test_roundtrip();
     test_lost_request();

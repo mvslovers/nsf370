@@ -61,6 +61,12 @@ static NSFECB g_reqecb;
 typedef struct appreg {
     UCHAR  inuse;
     USHORT gen;                         /* bumped on free -> stale-token guard */
+    /* WHO asked, recorded by the TRANSPORT at RQ_INITAPI (M5-2c1). Both halves,
+     * because an ASCB alone cannot survive ASID reuse -- the pair is what
+     * nsfreqx_classify needs. Zero in Phase 1 (no transport, no caller address
+     * space) and that is a supported value meaning "no identity recorded". */
+    UINT   ascb;
+    UINT   asid;
 } APPREG;
 
 static APPREG g_apptab[NSFREQ_APP_MAX];
@@ -116,6 +122,8 @@ void nsfreq_init(void)
     g_xtransport = NULL;                /* Phase 1 until a transport registers */
     for (i = 0u; i < NSFREQ_APP_MAX; i++) {
         g_apptab[i].inuse = 0u;
+        g_apptab[i].ascb  = 0u;
+        g_apptab[i].asid  = 0u;
         g_apptab[i].gen   = 1u;         /* token 0 (gen 0, idx 0) never valid   */
     }
     for (i = 0u; i < NSFREQ_PROTO_MAX; i++) {
@@ -175,14 +183,17 @@ static UINT app_token(UINT idx)
     return ((UINT)g_apptab[idx].gen << 16) | (idx & 0xFFFFu);
 }
 
-/* Allocate an app slot; returns its token, or 0 when the table is full. */
-static UINT app_alloc(void)
+/* Allocate an app slot; returns its token, or 0 when the table is full. The
+ * caller identity is stored with the slot and never read from the request. */
+static UINT app_alloc(UINT ascb, UINT asid)
 {
     UINT i;
 
     for (i = 0u; i < NSFREQ_APP_MAX; i++) {
         if (!g_apptab[i].inuse) {
             g_apptab[i].inuse = 1u;
+            g_apptab[i].ascb  = ascb;
+            g_apptab[i].asid  = asid;
             return app_token(i);
         }
     }
@@ -207,10 +218,30 @@ static int app_index(UINT token)
 static void app_free(UINT idx)
 {
     g_apptab[idx].inuse = 0u;
+    g_apptab[idx].ascb  = 0u;           /* a freed slot names nobody */
+    g_apptab[idx].asid  = 0u;
     g_apptab[idx].gen   = (USHORT)(g_apptab[idx].gen + 1u);
     if (g_apptab[idx].gen == 0u) {
         g_apptab[idx].gen = 1u;         /* never wrap to 0 */
     }
+}
+
+/* The one read window onto the registry (see the header). Bounds-checked, and
+ * an idle slot reports 0 rather than handing back stale fields. */
+int nsfreq_app_info(UINT idx, UINT *token, UINT *ascb, UINT *asid)
+{
+    if (idx >= NSFREQ_APP_MAX || !g_apptab[idx].inuse) {
+        return 0;
+    }
+    if (token != NULL) *token = app_token(idx);
+    if (ascb  != NULL) *ascb  = g_apptab[idx].ascb;
+    if (asid  != NULL) *asid  = g_apptab[idx].asid;
+    return 1;
+}
+
+UINT nsfreq_app_max(void)
+{
+    return (UINT)NSFREQ_APP_MAX;
 }
 
 /* ---- fn handlers (executive side) ------------------------------------------
@@ -218,9 +249,9 @@ static void app_free(UINT idx)
  * delegated op, lets the protocol callback complete or park it. A handler never
  * touches r after completing it (the app owns it again post-POST). */
 
-static void do_initapi(NSFRQE *r)
+static void do_initapi(NSFRQE *r, UINT caller_ascb, UINT caller_asid)
 {
-    UINT token = app_alloc();
+    UINT token = app_alloc(caller_ascb, caller_asid);
 
     if (token == 0u) {
         soc_complete(r, NSF_RETERR, NSF_EMFILE);    /* no free app slot         */
@@ -479,6 +510,14 @@ static void do_delegate(NSFRQE *r)
 
 void nsfreq_dispatch(NSFRQE *r)
 {
+    /* Phase 1 and every direct-call test: no transport, so no caller address
+     * space, so no identity. Zero is the supported "none recorded" value -- see
+     * the nsfreq_dispatch_id contract in the header. */
+    nsfreq_dispatch_id(r, 0u, 0u);
+}
+
+void nsfreq_dispatch_id(NSFRQE *r, UINT caller_ascb, UINT caller_asid)
+{
     if (r == NULL) {
         return;
     }
@@ -488,7 +527,7 @@ void nsfreq_dispatch(NSFRQE *r)
 
     switch (r->fn) {
     /* -- protocol-independent, handled here -- */
-    case RQ_INITAPI:     do_initapi(r);      break;
+    case RQ_INITAPI:     do_initapi(r, caller_ascb, caller_asid); break;
     case RQ_TERMAPI:     do_termapi(r);      break;
     case RQ_SOCKET:      do_socket(r);       break;
     case RQ_BIND:        do_bind(r);         break;

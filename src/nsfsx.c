@@ -1020,7 +1020,13 @@ nsfsx_drain(void)
             ** either way step 1 picks it up, this pass or a later one. */
             g_busy      = 1;
             g_busy_slot = slot;
-            nsfreq_dispatch(&g_priv);
+            /* THE IDENTITY COMES FROM THE SLOT, NOT THE REQUEST (M5-2c1).  The
+            ** SVC routine recorded this pair at CLAIMOK from the FLIH's R7,
+            ** before any client data was staged, so it is the one thing about
+            ** this request that a client cannot influence.  RQ_INITAPI records
+            ** it against the new app instance; every other verb is dispatched
+            ** exactly as before. */
+            nsfreq_dispatch_id(&g_priv, (UINT)slot->req_ascb, slot->req_asid);
         }
     }
 }
