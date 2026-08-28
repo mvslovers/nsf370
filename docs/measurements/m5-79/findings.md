@@ -190,9 +190,12 @@ than fixed in this round.** The NSFMM pool regions are **AS-scoped**
 terminates, so a `free()` that never runs loses nothing. Critically, the `A0A`
 happens **after** `NSF903I`: the SVC slot is already restored, the anchor
 already marked inactive. **It does not touch the fix's purpose**, which is why
-arm B restarts cleanly in spite of it. It is a *reporting* defect — recovery
-ends without saying it finished — and it deserves its own issue, not a
-kitchen-sink patch on this branch.
+arm B restarts cleanly in spite of it. It is a *reporting* defect — recovery ends without saying it
+finished, and an operator sees an unexplained second abend code instead of
+`NSF901I` — and it also means any teardown step added to `nsf_shutdown()` in
+future will silently not run in recovery. **Filed as issue #83**, with the three
+exclusions and the next (IPL-free) arm: deploy with `NSF902I` removed and see
+whether `NSF901I` appears.
 
 ---
 
