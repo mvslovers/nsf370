@@ -172,9 +172,61 @@ Violating one is a review-blocking defect, not a style nit.
   through garbage and branched to low storage. **A green host build and a clean
   cc370/as370/ld370 link are NOT evidence** — the merge is invisible off-target;
   only the live ABEND (or the `as370 -a=` listing) shows it. Keep
-  instruction-line comments short and within column 71; put long rationale in a
-  leading `*` comment block (those are full-width, whole-line comments and are
-  safe).
+  instruction-line comments short and within column 71.
+  **CORRECTED 2026-08-28: a WHOLE-LINE `*` comment is NOT exempt, and the old
+  advice to "put long rationale in a leading `*` comment block (those are
+  full-width and safe)" was wrong — it is what produced the damage.** IFOX00
+  applies the continuation rule to comment statements too (`PNXT13` reads them
+  with `RALLCNT`), so a `*` card reaching column 72 **eats the next card**;
+  as370 short-circuited comments before looking at column 72 and so disagreed
+  with the target until mvslovers/cc370#72 (`IFO026`/`IFO069`, severity 4).
+  Measured here on the fixed as370: `asm/nsfctcio.asm` line 95, a 74-byte
+  comment reading "DSECTs before the code", swallowed the `DCBD DSORG=PS` on
+  the next line, so **every** DCB DSECT symbol resolved to 0 —
+  `MVC DCBDDNAM-IHADCB(8,R2),0(R3)` assembled as `MVC 0(8,R2),0(R3)` and
+  `TM DCBOFLGS-IHADCB(R2),DCBOFOPN` as `TM 0(R2),X'00'`, a mask that can never
+  be true. `asm/nsfvsvc.asm` lost **four** cards (646-byte object difference),
+  and they are four separate safety mechanisms: `ANCVERNO EQU 3` (so the SVC
+  routine's own anchor-version check compares against **0** — the stale-router
+  defence), `ASCBASID EQU 36` (so it reads the caller ASID from **ASCB+0**, and
+  ADR-0040's client-death guard classifies the wrong field), `L
+  R3,REQFUNC(,R8)` (the request function is never loaded) and `DOUNSTG DS 0H`
+  — which turns `BE DOUNSTG` into **`4780 0000`, a branch to address 0** in
+  supervisor state key 0. **The rule is therefore: NO card of any kind, comment
+  or instruction, may reach column 72.**
+  **CHAINS ARE LONGER THAN ONE CARD, and a card-by-card reading misses them:**
+  573 and 574 are BOTH overlong, so 573 continues onto 574 and 574 onto 575,
+  the statement. Looking only at "which card does this one eat" stops at 574,
+  sees a comment, and concludes nothing was lost. Read the assembler's own
+  diagnostics instead of deriving the victims — **and check the tool is
+  reporting all of them**: as370 truncated its diagnostic array at 128 entries,
+  `nsfvsvc.asm` emits 130, and the two that carried the severity were the last
+  two, so it reported 2 of 4 and the RC depended on what happened to fit
+  (cc370#85). Twice in one day a silent cap hid a statement loss.
+  **The object-comparison gate has ONE spurious byte, and it is a date:** the
+  END record carries `ASM370 <ver> <julian>` and the Julian day sits at
+  **column 52 of the last card**, so an object assembled on one day and
+  re-assembled the next differs by exactly one byte (`F0`→`F1` at the 240→241
+  rollover, measured). Same-day assembly is deterministic, which is why an
+  earlier same-day control wrongly concluded there was no stamp at all. Mask
+  that byte before reading a diff as a code change — all nine modules showed
+  it at once, which is itself the tell.
+  **The assembler now sorts the two cases, and the gate is back where it
+  belongs (cc370#84).** What matters is the card that gets EATEN, not the one
+  that eats: a swallowed **comment** costs nothing and stays IFOX's severity 4
+  (survivable, e.g. a `TITLE` string running long); a swallowed **statement** is
+  the code, and as370 raises it to **RC 8** so the build stops. mbt#94's
+  "RC < 8 survives" is therefore safe, and mbt c80e23c adds
+  `.DELETE_ON_ERROR:` — without it as370's deck outlived the failed build and
+  the NEXT `make` linked it and returned 0, so the red build went green on the
+  second run with the statement missing. Verified here: run 1 rc=2 and the
+  object deleted, run 2 rc=2 again. Note IFOX does **not** warn at all when the
+  eaten card's columns 1-15 are blank, so a macro operand card can still vanish
+  quietly. `tools/check-card-columns.sh` (CI job `asm-cards`) remains worth
+  having for a different reason: it runs before the toolchain, sees sources the
+  assembler never gets, and also reports the ~20 harmless cards — a house-style
+  call the assembler should not make for us. It counts BYTES, because a UTF-8
+  `§` costs two and several cards measured 73 while looking like 72.
 - **`as370` knows five instruction formats and three S-format instructions.** Its
   table is RR/RX/RS/SI/SS plus exactly `IPK`/`SPKA`/`STCK` — there is **no SSE and
   no RRE format at all**. Anything outside that set must be emitted as raw bytes
@@ -1875,7 +1927,84 @@ what arm 2 saw), so the magnitude is unbounded in both directions and the **disc
 (free-chain discipline, unmeasured). The **safe-side asymmetry survives and is stated explicitly** —
 reuse can only convert DEAD → LIVE, never LIVE → DEAD, since an ASID is unique among live address
 spaces — and the window only means anything **relative to the sweep period**, the same knob c1 stage
-a stopped on. `docs/measurements/m5-79/`. [[nsf370-m5-79-recovery-teardown]]
+a stopped on. `docs/measurements/m5-79/`. **80-CHK (does a data-returning cross-AS receive store into key-0 CSA from key 8?) —
+DONE, live-green, docs + one opt-in probe. It fixes nothing; #80 is CONFIRMED and stays
+OPEN.** Not a milestone step; **M5 stays in progress**, c1 stage b is still with Mike, and
+#64/#83 are untouched. **The answer is yes, and the fix is a design decision with ADR
+weight that this round deliberately did not build.** §0 first, because the previous round
+could not run the data path at all: `TSTRQXM` **batch CC 0** with the host peer verifying
+**9353 bytes byte-exact** (TSO FAIL by design — the one-shot listener consumed by the
+batch run, `errno 61` on CONNECT + its dependent CLOSE, checked not assumed). **The chain,
+re-derived from source:** `nsfreqx_dispatch_in` sets `priv->ubuf = slot->stage` — CSA,
+`SP=241`, **key 0** — and `nsfsx_drain` dispatches **outside** the `__super` window by
+design, so a protocol op that *writes* its result performs a key-8 store into key-0
+storage. The named store is `src/nsfudp.c:200` `buf_copyout(bpay, r->ubuf, want)` →
+`src/nsfbuf.c:285` `memcpy(d + total, b->data, take)` (TCP reaches the same call from
+`src/nsftcp.c:628/639`). A grep for `__super` / `__prob` / `SPKA` / `PSWKEY0` across the
+protocol layer returns **NOTHING** — the load-bearing negative: this is the ONE CSA write outside a
+key window, and it is there because that code is *supposed* to know nothing about keys.
+**Why it never showed:** CSA is key 0 and **not fetch-protected**, so a key-8 *fetch*
+succeeds where a *store* faults (M5-2b0) — every cross-AS path exercised to date READS
+`ubuf` (TSTRQXM's 9353 bytes are all sends), and **no test in this tree had ever driven a
+cross-AS receive that returns data**. Not regressed; never worked. **THE CONTROL IS THE
+ROUND'S DESIGN, because "NSFS abended S0C4" alone does not separate K(i) from K(iii):**
+`udp_complete_recv` guards its copy with `r->ubuf != NULL && r->ulen > 0`, and
+`buf_copyout`'s loop does not run when `n == 0` — so a **zero-length datagram** crosses
+identically, calls the identical function on the identical request, and elides **only the
+memcpy**. One line apart, one code path. Live (`test/mvs/tstrqxr.c` + `samples/host/
+recvkey_peer.py`, unauthorised client): `ZERO-BYTE RECV RETURNED n=0` **present**,
+`ARM -- DATA RECV RETURNED` **absent**, `IEF450I NSFS NSFS - ABEND S0C4 U0000` —
+**reproduced twice**, the second time on the **final committed binary** so the artifact and
+the evidence are the same thing. **The retained anchor was read back** (`NSF903I` retains
+CSA; a retained anchor is readable through `/.dm` after its AS is gone — the m5-79
+technique, instrument validated first against `NSF813I`/`NSF041I` field for field):
+`served=6` **exactly** the six requests that completed, slot `req_state` **PENDING** (not
+DONE — the write-out fault's shape, so the dispatch fault is distinguishable from it),
+`reply_ecb=809DE5F0` (client parked, never POSTed), `inflight` leaked at 1, and
+**`xlen=512`** — which is what forecloses "a silent zero-length no-op masquerading as
+K(ii)": the length crossed and the store ran with `n > 0`. The peer log shows both replies
+sent, triggers decoding as EBCDIC `R0`/`R1`, so the arm's datagram genuinely reached the
+wire. **The client HANGS** (parked on `SLRECB`; recovery does not nudge parked clients) and
+the `S222` cancel takes buffered SYSPRINT with it — `0 PASS, 0 FAIL` in the matrix — which
+is why every step is a `wtof` marker and **the console markers ARE the result** (the M4-5
+lesson, applied in advance rather than learned again). **#79 VALIDATED IN THE FIELD, twice,
+on a NATURAL abend** (its own gate used an *injected* one): `NSF900E`→`NSF902I SUP=N
+AUTH=Y`→`NSF903I`→`NSF901I`, and **`S NSFS` succeeded on the same IPL both times** with
+`NSF042I SVC 239 STOLEN` on a **different anchor and a different router EP** each time —
+the evidence the module was retained. **#83's `A0A` did NOT fire either time with devices
+UP**, `NSF901I` reached — corroborating the m5-79 reading that devices-up is **necessary
+but not sufficient**; a free data point about #83, not a finding, since nothing here was
+designed to test it. **The probe is OPT-IN and the default is inert**: it abends NSFS and
+its receives block with no timeout, so a bare run does nothing and returns **CC 20**
+(`XR_CC_GATE_SKIPPED`, the TSTXFW/TSTRQXF idiom — "did not run" can never read as
+"passed", §8.5), the arm needing `PARM='ARM'` via `jcl/TSTRQXR.jcl`. **CC 20 alone would not
+have shown the guard fires for the intended REASON** (identical to `argc` never arriving
+under `crt1`, or a PARM shape the compare misses — §8.5 aimed at my own guard), so the
+not-run branch reports what it saw: **`argc=1 argv1=<none>`**, measured batch+TSO — which
+also establishes that `argc`/`argv` do arrive under `crt1`. Both directions are therefore
+measured (the other by JOB02864 having run the arm at all), corroborated from the STC side
+by the untouched instance reporting `SERVED=0`. The arm ran on the binary **before** that
+marker; the diff is **8 lines confined to the not-run branch**, so the arm's path is
+untouched — the M5-2c0 standard. Like `TSTMVCD`, it is **excluded from a round's
+regression set** (noted in `project.toml`): inert by construction, but a CC 20 still reads
+FAIL in the matrix. **ADR-0041 gains a FOURTH write-out category** and it is different in kind:
+1–3 are stores the transport makes and can bracket where it stands; **4 is made by code
+this ADR deliberately kept ignorant of the boundary**, so the fix cannot be another `SPKA`
+pair in `MOVEOUT` — a key window around the completion copy, or a key-8 landing area with a
+keyed move, and choosing is Mike's. **DOES NOT ESTABLISH:** the **inline** (rxq-dequeue)
+shape or **TCP** live — both reach the identical instruction *by construction*
+(`udp_complete_recv`'s own header says it is shared by both paths; `dispatch_in` rewrites
+`ubuf` for any crossing request regardless of protocol) but were **reasoned, not run**, and
+TCP is what M6's HTTPD/mvsMF would use; whether the faulting `MVC` suppresses or
+terminates; or any recovery from the dangling state (still the open M5-2 item ADR-0039
+names). **Red lines held** — no key window added, no landing area, no `ubuf` rewrite, no
+existing window widened, `asm/nsfvsvc.asm` untouched, anchor layout unmoved, `ANCVERNO` 3,
+**NSFRQE frozen at 64 B**. **Cost:** each arm retains its anchor + router until IPL,
+**139264 bytes measured identically both times** (1073152→933888→794624). **Zero dumps**
+(`IEA995I` 0 against `IEF450I` 4 as the positive control — itself the right number: 2 NSFS
+`S0C4` + 2 client `S222`). Host **2991 PASS / 0 FAIL** unchanged — a no-regression check
+only. `docs/measurements/80-chk/`.
+[[nsf370-m5-79-recovery-teardown]]
 [[nsf370-a0a-recovery-device-subtasks]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |

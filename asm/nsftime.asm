@@ -1,6 +1,7 @@
          TITLE 'NSFTIME - PLATFORM PRIMITIVES: CLOCK + TASK ID'
 *
-*  NSFTIME - the two platform facts NSF asks the machine for, behind one
+*  NSFTIME - the two platform facts NSF asks the machine for, behind
+*  one
 *            C-callable seam (Architecture Spec 7.2, reused by NSFTMR):
 *
 *    nsf_now(NSFTIME *out)   -- store the 64-bit TOD clock (STCK)
@@ -11,18 +12,25 @@
 *  FUNEXIT epilogue -- modeled on libc370/asm/@@getclk.asm (NSFNOW is
 *  that routine). A hand-rolled STM/BALR/USING seam does NOT set up the
 *  ENTRY / name eyecatcher / R12=R15 base the cc370 C-runtime path
-*  (@@CRTGET) relies on, and breaks the next C call (ABEND S0C6). Proven
-*  by the issue #8 staged isolation; never hand-roll a C-callable routine.
+*  (@@CRTGET) relies on, and breaks the next C call (ABEND S0C6).
+*  Proven
+*  by the issue #8 staged isolation; never hand-roll a C-callable
+*  routine.
 *
-*  EXTERNAL SYMBOLS: the FUNHEAD entry name IS the 8-char asm() alias in
-*  include/nsftime.h -- NSFNOW / NSFTASK -- character for character, so the
+*  EXTERNAL SYMBOLS: the FUNHEAD entry name IS the 8-char asm() alias
+*  in
+*  include/nsftime.h -- NSFNOW / NSFTASK -- character for character, so
+*  the
 *  C =V(...) still resolves (PR #7; CLAUDE.md paragraph 3).
 *
-*  Linkage: args are a fullword list at R1 (arg0 at 0(R1)); a value result
+*  Linkage: args are a fullword list at R1 (arg0 at 0(R1)); a value
+*  result
 *  returns in R15 via FUNEXIT RC=(Rn).
 *
-*  STATUS: nsf_now is RUNTIME-VALIDATED on 3.8j (issue #8 stage 2 = CC 0).
-*  STCK stores a doubleword, so one STCK 0(out) fills both NSFTIME halves.
+*  STATUS: nsf_now is RUNTIME-VALIDATED on 3.8j (issue #8 stage 2 = CC
+*  0).
+*  STCK stores a doubleword, so one STCK 0(out) fills both NSFTIME
+*  halves.
 *
          COPY  MVSMACS
          COPY  PDPTOP

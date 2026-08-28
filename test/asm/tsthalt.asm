@@ -1,29 +1,38 @@
-         TITLE 'TSTHALT - M3-0a STAGE 0: IOHALT (SVC 33) / PURGE (SVC 16)'
+         TITLE 'TSTHALT - M3-0a STAGE 0: IOHALT SVC 33 / PURGE SVC 16'
 *
-*  TSTHALT -- test-only seam for test/mvs/tsthio.c (M3-0a Stage 0: can a
-*            PROBLEM-STATE program halt an outstanding CTCI READ?). Lives
+*  TSTHALT -- test-only seam for test/mvs/tsthio.c (M3-0a Stage 0: can
+*  a
+*            PROBLEM-STATE program halt an outstanding CTCI READ?).
+*            Lives
 *            under test/asm/, NOT asm/ -- this Stage 0 probe adds zero
 *            production surface (CLAUDE.md gate: no changes to src/ or
 *            asm/). Modeled on test/asm/tststmw.asm.
 *
 *            Two C-callable entries, each issuing exactly the SVC its
-*            shipped/documented macro expands to. Neither is COPYed from
-*            the real macro (SYS1.MACLIB is not on the host as370 SYSLIB
+*            shipped/documented macro expands to. Neither is COPYed
+*            from
+*            the real macro (SYS1.MACLIB is not on the host as370
+*            SYSLIB
 *            search path for a cross-build) -- each is hand-transcribed
-*            verbatim from the primary source read off the live target /
+*            verbatim from the primary source read off the live target
+*            /
 *            IBM documentation (see test/mvs/tsthio.c for citations):
 *
 *    tsthio_halt(ucb)       -- SYS1.MACLIB(IOHALT), the no-OFFSET
 *      (HALTCD) expansion: R0 = UCB (common segment) address, R1 =
 *      X'00000001' (IOS HALT I/O option), SVC 33. No documented return
-*      code -- the probe's OWN observation of the read ECB is the result.
+*      code -- the probe's OWN observation of the read ECB is the
+*      result.
 *
-*    tsthio_purge(parmlist) -- OS/VS2 SPL: Data Management (GC26-3830-4,
+*    tsthio_purge(parmlist) -- OS/VS2 SPL: Data Management
+*    (GC26-3830-4,
 *      Rel 3.8), "PURGE Macro Definition": R1 = &parmlist, SVC 16.
-*      Returns R15 (the PURGE return code; meaningful because the caller
+*      Returns R15 (the PURGE return code; meaningful because the
+*      caller
 *      sets byte 0 bit 7 of its 16-byte parameter list).
 *
-*  ENTRY CONVENTION (CLAUDE.md 3): COPY MVSMACS + COPY PDPTOP, FUNHEAD /
+*  ENTRY CONVENTION (CLAUDE.md 3): COPY MVSMACS + COPY PDPTOP, FUNHEAD
+*  /
 *  FUNEXIT, modeled on libc370 @@getclk.asm -- never hand-rolled
 *  STM/BALR/USING. Both entries issue an SVC that manipulates the I/O
 *  supervisor's request-queue/DEB machinery (the same family as
@@ -31,7 +40,8 @@
 *  use FUNHEAD SAVE=,US=NO with a static save area, not the plain leaf
 *  form -- this is a single-task probe, so one shared static area is
 *  safe (no concurrent callers; contrast asm/nsfctcio.asm's per-scb
-*  areas, needed only because the M1-4b I/O subtasks call concurrently).
+*  areas, needed only because the M1-4b I/O subtasks call
+*  concurrently).
 *
          COPY  MVSMACS
          COPY  PDPTOP

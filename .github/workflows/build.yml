@@ -9,6 +9,22 @@ jobs:
   build:
     uses: mvslovers/mbt/.github/workflows/build.yml@main
 
+  # No assembler card may reach column 72.  IFOX00 applies the continuation
+  # rule to COMMENT cards too, so such a card eats the one after it -- and
+  # since mbt#94 that is a severity-4 warning the build rule deliberately
+  # survives, so `make` exits 0 with the card missing from the object.  This
+  # job is the detection that fact removed.  Measured 2026-08-28:
+  # nsfctcio.asm:95 swallowed `DCBD DSORG=PS` (every DCB symbol resolved to 0)
+  # and nsfvsvc.asm dropped `L R3,REQFUNC(,R8)`, the SVC dispatch value.
+  # Needs no toolchain, so it answers in seconds.
+  asm-cards:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: No card reaches column 72
+        run: tools/check-card-columns.sh
+
   # Native gcc host suite (`make test-host`) -- the portable C tests run with
   # the host compiler, no cc370 and no MVS.  The delegated `build` job above
   # only cross-compiles them, so host-only breakage (a non-portable asm()
