@@ -24,7 +24,7 @@
 #include "nsftmr.h"           /* nsftmr_count (armed timers, reported at STATS) */
 
 #include <string.h>
-#include <clibos.h>           /* __super/__prob/__ascb/__xmpost/getmain/loadhi */
+#include <clibos.h>           /* __super/__prob/__issup/__ascb/__xmpost/getmain */
 #include <clibwto.h>          /* wtof                                          */
 #include <cvt.h>              /* CVT, CVTPTR                                   */
 #include <ihascvt.h>          /* SCVT (scvtsvct), SVCTABLE, SVCENTRY           */
@@ -297,6 +297,20 @@ nsfsx_svc_steal(void)
     return 0;
 }
 
+/* The restore itself, with NO key switch and NO message: caller must already
+** be in key 0.  Factored out for issue #79 so the clean path and the recovery
+** path share ONE encoding of the table write -- the b3 rule, applied to the
+** one action whose absence costs an IPL.  Idempotent: g_svc_stolen is the
+** single flag both callers test afterwards to learn whether it happened. */
+static void
+nsfsx_svc_restore_locked(void)
+{
+    if (!g_svc_stolen || !g_svc_slot) return;
+    memcpy(g_svc_slot, g_svc_saved, 8);
+    g_svc_stolen = 0;
+    g_svc_slot   = NULL;
+}
+
 static void
 nsfsx_svc_restore(void)
 {
@@ -304,10 +318,8 @@ nsfsx_svc_restore(void)
 
     if (!g_svc_stolen || !g_svc_slot) return;
     if (__super(PSWKEY0, &savekey)) return;
-    memcpy(g_svc_slot, g_svc_saved, 8);
+    nsfsx_svc_restore_locked();
     __prob(savekey, NULL);
-    g_svc_stolen = 0;
-    g_svc_slot   = NULL;
     wtof("NSF043I SVC %u RESTORED", (unsigned)NSFV_SVCNUM);
 }
 
@@ -591,6 +603,88 @@ nsfsx_ecb(void)
 {
     return (UINT *)&g_wake_ecb;
 }
+
+/* ==========================================================================
+ * nsfsx_recover_quiesce -- the ESTAE-path counterpart of nsfsx_stop (#79).
+ *
+ * WHY THIS EXISTS AT ALL.  Every resource Phase 2 acquired was added to the
+ * clean teardown and to nothing else.  Phase 1 never noticed, because
+ * nsf_shutdown() was COMPLETE when it was written -- it did not break, it
+ * stood still while obligations accumulated underneath it.  The SVC slot is
+ * the one that bites: it lives in the nucleus SVCTABLE, so it outlives the
+ * address space, and nsfsx_start refuses to steal a slot it no longer owns
+ * (correctly -- there is no takeover path by design).  An abend therefore
+ * left NSFS unable to restart until an IPL.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO is in the header, and the reasoning is that
+ * an exit is not a shutdown path: no drain (a 10 s polling loop in a damaged
+ * environment), no unload, no free (a client may be parked in a WAIT inside
+ * that code -- the M5-2b3 rule, unchanged).  Recovery takes the RETAIN posture
+ * unconditionally, which is the same safe-side asymmetry as everywhere else
+ * here: leaking common storage until an IPL is the cheap side; pulling it out
+ * from under a live client is not.
+ *
+ * ORDERING.  The slot restore comes FIRST, and before nsf_shutdown() in the
+ * caller, for two reasons: after mm_shutdown() every pool region is freed, so
+ * anything touching NSF state afterwards is reading released storage; and each
+ * step in a damaged environment is a fresh chance to fault, so the one action
+ * whose absence costs an IPL goes ahead of all of them.
+ *
+ * STATE.  __super skips the MODESET when the task is already supervisor, but
+ * __prob MODESETs to problem state UNCONDITIONALLY -- so the ordinary
+ * __super/__prob pair would drop an exit that was entered supervisor into
+ * problem state on the way back to RTM, a change RTM did not ask for.  This
+ * captures __issup() at entry and returns the task to what it found.
+ * ========================================================================== */
+int
+nsfsx_recover_quiesce(void)
+{
+    unsigned char savekey;
+    int           was_sup;
+
+    /* Nothing installed: an abend before (or during) nsfsx_start.  Say so
+    ** rather than returning a success that was never earned -- CLAUDE.md 8.5,
+    ** "any operation whose absence is indistinguishable from its success". */
+    if (!g_svc_stolen && g_anchor == NULL) {
+        return NSFSX_RQ_IDLE;
+    }
+
+    was_sup = __issup();
+    if (__super(PSWKEY0, &savekey) != 0) {
+        /* No key 0, so the table write is impossible.  The caller turns this
+        ** into the message that names the consequence out loud. */
+        return NSFSX_RQ_NOKEY;
+    }
+
+    nsfsx_svc_restore_locked();     /* FIRST -- see ORDERING above            */
+
+    if (g_anchor != NULL) {
+        /* Mark the anchor dead to any client still holding it, and withdraw
+        ** the published wake-ECB address: it names STC-PRIVATE key-8 storage,
+        ** which dies with this address space, and the routine's key-8 POST
+        ** branch would otherwise aim at it from a surviving client.  Both
+        ** stores are key-0 CSA, hence inside this window.
+        **
+        ** g_anchor is deliberately NOT cleared: the storage stays allocated
+        ** (retain posture), and a live pointer in a dying address space costs
+        ** nothing while a freed one would invite a later free. */
+        g_anchor->flags &= ~NSFV_ANCHOR_ACTIVE;
+        g_anchor->server_ecb_ptr = NULL;
+    }
+
+    /* Return the task to the state it was entered in (see STATE above). */
+    if (was_sup) {
+        (void)__super(savekey, NULL);   /* key back, STAY supervisor          */
+    } else {
+        (void)__prob(savekey, NULL);    /* key back, and back to problem      */
+    }
+
+    /* Report on the FLAG, not on the fact that we ran: the restore is a no-op
+    ** when the slot was never stolen, and "it did not need doing" must not
+    ** read the same as "it was done". */
+    return g_svc_stolen ? NSFSX_RQ_STUCK : NSFSX_RQ_QUIESCED;
+}
+
 
 /* ==========================================================================
  * The Phase-2 STATS supplement (issue #64, step 64-0), hung on the operator's

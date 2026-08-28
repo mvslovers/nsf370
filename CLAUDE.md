@@ -1679,7 +1679,7 @@ source BEFORE the run): the private region IS reused (a different job reported t
 **and byte-identical** `STACK=000D1348 HEAP=00094C68`) but the ECB is not in it, so the overlap
 cannot arise. **G(ii) refuted** (nothing stopped the POST; nothing partners the guard); **G(iii)
 refuted twice**. **TWO ISSUES FELL OUT, filed at Mike's direction, priority his:**
-**#79 (certain, fires on EVERY abend, costs an IPL)** — `nsf_recover` calls `nsf_shutdown()` and
+**#79 (certain, fires on EVERY abend, costs an IPL; **FIXED in PR #84**, below)** — `nsf_recover` calls `nsf_shutdown()` and
 never `nsfsx_stop()`, so an abend leaves **SVC 239 stolen**, the router loaded, the anchor ACTIVE
 and ~139 KB of CSA leaked; `S NSFS` then fails `NSF049E`→`SA0A`. **This contradicts CLAUDE.md §3
 and `nsf_recover`'s own comment** ("a crash must never require a Hercules restart to clean up") —
@@ -1711,7 +1711,8 @@ so **there is no return code the transport could learn from**; the only observab
 read-back, which exists **only when there is something to post**, so it can never serve **the
 sweep**, whose subject is clients that ended with **nothing outstanding**. It could at best
 recover 40-CHK's leaked slot — a client that died *with* a request in flight — and addresses
-nothing in M5-2c1's. #79 and #80 stay open and unpatched; #64 stays open.
+nothing in M5-2c1's. #80 stays open and unpatched and #64 stays open; **#79 was FIXED in PR #84
+(below)** — it was open when this round reported.
 **40-IDENT (what can a recorded identity actually distinguish?) — DONE, live-green, read-only,
 no production code.** Not a milestone step; **M5 stays in progress** and c1 stage b is still with
 Mike. **The answer: something changes, and it is not an identity** — kickoff predictions **I(ii)
@@ -1780,6 +1781,102 @@ the round** — no CSA debt, no IPL owed; the arms used `HANG`/`LEAVE`/`CLEAN` a
 `PARK`/`PARKA` precisely because a parked client leaks `inflight` and forces the retain branch.
 **Zero dumps**, stand left as found. Host **2991 PASS / 0 FAIL** unchanged — a no-regression check
 only. `docs/measurements/40-ident/`. [[nsf370-40-ident-identity-reuse]]
+**#79 (an abend must not cost an IPL) — FIXED, live-green, PR #84. Not a milestone step; M5
+stays in progress and nothing flips**; c1 stage b is still with Mike, and #80/#64 are untouched.
+**The finding was a class, not a missing call:** every resource Phase 2 acquired was added to the
+clean teardown and to **nothing else** — Phase 1 never noticed, because `nsf_shutdown()` was
+COMPLETE when it was written. `docs/measurements/m5-79/audit.md` enumerates all **13** and sorts
+them by the only line that matters: **AS-scoped** (MVS reclaims it at address-space termination —
+recovery need not, and in a damaged environment should not, touch it: the private region, the SVC 99
+device allocations, the I/O subtasks, the OUCB and hence the DONTSWAP) versus **system-scoped**
+(common storage or the nucleus — **nobody reclaims it but us**). Exactly **three** are
+system-scoped: the SVC slot, the router module, the CSA anchor. `nsfsx_recover_quiesce`
+(`NSFSXRQ`) restores the **slot** and clears `ANCHOR_ACTIVE` + `server_ecb_ptr`; it does **NOT**
+drain (a 10 s polling loop in a damaged environment) and does **NOT** free or unload — the M5-2b3
+rule stands unchanged, so **recovery takes the RETAIN posture unconditionally**, and it runs
+**BEFORE** `nsf_shutdown()` because `mm_shutdown()` releases every pool region and the one action
+whose absence costs an IPL belongs ahead of every later step that can fault. **Two things had to be
+fixed to make the gate possible at all:** `nsfsx_svc_restore` returned **silently** when `__super`
+failed (§8.5 in pure form — it made "demonstrate the `__super`-fails posture" *unsatisfiable*), so
+the table write is factored into `nsfsx_svc_restore_locked()` and **both callers share ONE
+encoding** while the countersigned clean path stays byte-for-byte; and **`__prob` MODESETs to
+problem state UNCONDITIONALLY** where `__super` skips the MODESET when already supervisor, so the
+ordinary pair would drop an exit *entered* supervisor into problem state on the way back to RTM —
+`__issup()` is captured at entry and the task returned to what it found. **`OKSWAP` deliberately
+NOT added:** `nsfswap_read` reaches the OUCB **through the ASCB**, which is freed with the address
+space, so there is nothing left to release. **THE EXIT'S STATE IS MEASURED, NOT ASSUMED:** `NSF902I
+RECOVERY ENVIRONMENT: SUP=N AUTH=Y`, identical on **five** abends across **three** modules — an
+ESTAE exit here is entered **problem state, APF-authorised**, which is what makes the slot restore
+possible and the `__prob` return leg correct (the supervisor-entry branch is **unexercised** and
+kept, because it costs one compare and the failure it prevents is silent). **VALIDATED LIVE on
+MVSCE, four arms, exactly one assertion moving:** **B** (fix + a forced `S0C4`) → `NSF903I` →
+`S NSFS` **SUCCEEDS**, `NSF042I SVC 239 STOLEN (EP 00A8B248)` **on the same IPL** — the line #79
+says cannot happen; **B2** (same, injected **inside `evt_mainloop`**, #79's own lifecycle point) →
+same; **C** (**fix reverted, one axis varied**, diff verified) → no `NSF903I` → **FAILS**
+`NSF049E SVC 239 IN USE -- NOT STOLEN`; **D** (**forced `__super` failure**, the 64-3-1 `1 ||`
+short-circuit so `__super` is never called and the slot is *genuinely* not restored) → **`NSF904E
+... RC=2 -- NSFS CANNOT RESTART, AN IPL IS REQUIRED`** then **`NSF901I`** — the **warn-and-continue
+pin holds** on this path too — then the **ORIGINAL** `S0C4` percolates, and the next start's
+`NSF049E` confirms the failure was real and not a message rehearsal. **Deploy-took-effect is
+positive in BOTH directions** (`NSF903I` present ⇒ fixed module; absent *together with* `NSF049E` ⇒
+reverted), so no arm rests on an absence. **THE STRONGEST EVIDENCE WAS FREE, and the technique is
+worth keeping: a retained CSA anchor is readable through `/.dm` AFTER its address space is gone.**
+All four anchors dumped post-mortem — the three quiesced at `flags=00000000` /
+`server_ecb_ptr=00000000`, the reverted one at **`80000000`** / **`000BE0D4`**, which is precisely
+the address that STC's own `NSF041I` published: **a live pointer into the private storage of a dead
+address space, left standing**. Everything else identical across all four (`NSFVANCR`, `version=3`,
+`nslots=0x40`), so the comparison isolates exactly the two words recovery writes. **Row 6 confirmed
+live from a restart that was happening anyway:** every start after an abend read `NSF851I ... NDS=1`,
+never `2` — nothing carries over, so `OKSWAP` at recovery would be a no-op. **A SECOND DEFECT, FOUND
+BY THE GATE AND NOT CAUSED BY IT — issue #83, filed not patched:** recovery never reaches `NSF901I`
+on a stack with devices up, because `nsf_shutdown()` takes a second abend — `A0A`, the SVC 10
+FREEMAIN family (`mm_shutdown()` frees its regions with `free()`), `IEA700I` operands byte-identical
+across all five firings. Narrowed by a **controlled arm IPL #2 handed over for free** (the CTCI came
+back offline, so **one binary** ran with **one variable**): devices **up** ×3 → `A0A`, devices
+**down** ×1 → **no `A0A`, `NSF901I` reached**. That **excludes `NSF902I`** (it ran in the no-`A0A`
+arm) and excludes the key window *more strongly* than arm C did, which only showed the `A0A`
+surviving the quiesce's **removal**. **Mechanism = audit row 7:** recovery does not quiesce devices,
+so `free()` runs while two ATTACHed CTCI I/O subtasks are live on a libc370 heap that is **not
+reentrant across subtasks**; the clean path cannot hit it because `dev_foreach(nsf_quiesce_device)`
+runs first. **Necessary but NOT sufficient** — 40-CHK's STC 1505 abended with devices up and reached
+`NSF901I` — **which is evidence FOR a race, not against one**. **It costs nothing that matters** (the
+pool regions are AS-scoped, and the `A0A` lands **after** `NSF903I`, which is why arm B restarts in
+spite of it), and **the likely fix runs OPPOSITE to "quiesce devices in recovery"** — `dev_shutdown`
+does OPEN/CLOSE/EXCP and joins subtasks, exactly the blocking work an exit must not attempt — and
+toward **not calling `mm_shutdown()` in an exit at all**, since §1 already classifies those regions
+as AS-scoped. So **audit §5's "rows 7 and 8, named and deliberately not fixed here" carries a
+correction**: still no leak, but no longer merely cosmetic. **Regression:** host **2991 PASS / 0
+FAIL** — a **no-regression check only**, since both changed files are MVS-only; cross-build clean (6
+modules + 52 test modules); alias scan **236 unique**, one new (`NSFSXRQ`); `TSTRQXC`/`TSTRQXF`
+**122 PASS CC 0 batch+TSO**; the NSFV round `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH`/`TSTXFW` **484
+PASS CC 0 batch+TSO** (`TSTMVCD` excluded, #53); `S NSFS`/`P NSFS` clean both ways with **`NSF043I
+SVC 239 RESTORED`** — the no-regression check that matters most for the refactor, the clean path
+being the already-countersigned caller — **no `NSF054W`, zero dumps**. **`TSTRQXM` NOT RUN**, and
+the reason is environmental, not a skip: Hercules failed to create the TUN at startup (`HHC00138E
+... Interrupted system call` → **`HHC01463E 0:0501 device initialization failed`**, `devlist`
+**empty**), MVS IPLed without 0500/0501, and 3.8j has no dynamic I/O reconfiguration — re-`attach`
+brings `tun0` up and `devlist` clean but MVS still answers `IEE025I UNIT 500 HAS NO LOGICAL PATHS`;
+only a full Hercules restart recovers it, and **`devinit` must not be used to force it** (it opens a
+SECOND `tun` with the same address and a competing route). It exercises the cross-AS **data** path,
+which this change does not touch. **The temporary abend injections are NOT in the merged diff and
+were never committed.** **Gate-cost lesson for planning:** any arm that must FAIL to restart leaves
+`SVC 239` stolen and costs an IPL, and **arm D must run BEFORE the revert arm** — it needs a clean
+slot to start on. Getting that order wrong cost a second IPL. **ADR-0040 also gains its SECOND
+annotation in this PR** (40-IDENT arm 2, above): a `DEAD` verdict is **transient** — both STC runs
+got the same ASCB *and* ASID and a third start flipped two provably dead clients back to LIVE,
+**reclassified, not reaped** — so `(ASCB, ASID)` is an **address, not an identity**, failing in both
+directions at two scales. **40-IDENT §6's test-vs-production direction is CORRECTED there:** a sweep
+reclaims only what it classifies DEAD and a slot is classifiable DEAD only *inside* the window, so
+fast reuse means the sweep **misses more** — **this stand is the PESSIMISTIC case** and a hit rate
+measured here is a **floor, not a ceiling**. The premise "a busier system gives a longer window" was
+**never measured** and the one datum points the other way (the free entry read `80FDB048`, a
+**free-chain** pointer; under LIFO the just-freed ASID returns first regardless of chain length —
+what arm 2 saw), so the magnitude is unbounded in both directions and the **discriminator is named**
+(free-chain discipline, unmeasured). The **safe-side asymmetry survives and is stated explicitly** —
+reuse can only convert DEAD → LIVE, never LIVE → DEAD, since an ASID is unique among live address
+spaces — and the window only means anything **relative to the sweep period**, the same knob c1 stage
+a stopped on. `docs/measurements/m5-79/`. [[nsf370-m5-79-recovery-teardown]]
+[[nsf370-a0a-recovery-device-subtasks]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
