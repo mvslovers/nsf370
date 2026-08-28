@@ -210,7 +210,7 @@ static void test_dispatch(void)
     s = sock_lookup(desc);
     CHECK(s != NULL, "SOCKET returned a valid descriptor");
     CHECK_EQ((long)g_d.attach, 1L, "SOCKET ran the protocol attach");
-    CHECK(s != NULL && s->owner_ascb == token, "socket scoped to the app token");
+    CHECK(s != NULL && s->apptok == token, "socket scoped to the app token");
 
     /* BIND records the local name and reaches the protocol stub */
     rqe_init(&r, RQ_BIND, desc, 0u);

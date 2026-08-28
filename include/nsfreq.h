@@ -14,10 +14,13 @@
  *   Phase 2 (M5+):   the stack is its own subsystem address space (NSFS) -- the
  *                    request travels via SSI/SVC with a cross-memory POST, and
  *                    `ubuf`/`ulen` describe a KEYED cross-memory move (MVCK /
- *                    MVCSK) out of the client's storage, gated by `owner_ascb`
- *                    on the owning SOCKCB (spec 10.2).
+ *                    MVCSK) out of the client's storage.  That move is gated by
+ *                    the CALLER IDENTITY the transport records in its own slot,
+ *                    never by anything in this block or in the SOCKCB -- see
+ *                    M5-2c1, which renamed SOCKCB.owner_ascb to `apptok`
+ *                    because it has only ever held an app-instance token.
  * Protocols and sockets never learn which transport delivered the block, so the
- * Phase-2 fields (`ubuf`, `ulen`, and the SOCKCB `owner_ascb`) are defined NOW
+ * Phase-2 fields (`ubuf`, `ulen`, and the SOCKCB `apptok`) are defined NOW
  * even though Phase 1 uses `ubuf` only as a same-space pointer -- the layout must
  * not have to change when Phase 2 lands (spec 10.4).
  *
@@ -153,10 +156,10 @@ typedef struct nsfrqe {
                                 /*          carry it (input). Defined out of the */
                                 /*          @56 reserved word at M3-2 -- the     */
                                 /*          64-byte core is UNCHANGED, so the    */
-                                /*          M3 freeze holds (spec 10.4). In      */
-                                /*          Phase 2 the owner identity is        */
-                                /*          transport-supplied (caller ASCB ->   */
-                                /*          SOCKCB.owner_ascb); apptok maps to it */
+                                /*          M3 freeze holds (spec 10.4). It is   */
+                                /*          the SAME value SOCKCB.apptok holds,  */
+                                /*          which is what scopes a socket to its */
+                                /*          app -- NOT an ASCB (M5-2c1)          */
     UINT    rsvd;               /*  4  @60  reserved -> 64-byte frozen core      */
 } NSFRQE;                       /* 64 bytes */
 NSF_SIZE_ASSERT(NSFRQE, 64);

@@ -11,7 +11,7 @@
  * asserts TESTAUTH (__isauth() == 0) reports NOT authorized and NEVER calls
  * clib_apf_setup / any self-authorization SVC.  An unauthorized problem-state
  * program moving a data buffer app->stack->app byte-exact is the Stage-0b
- * deliverable; validation / owner_ascb / hostile-pointer recovery are M5-2.
+ * deliverable; validation / apptok / hostile-pointer recovery are M5-2.
  *
  * What it proves: a byte pattern moves app -> CSA staging -> STC(+1) -> app
  * byte-exact, over the sizes a real ubuf hits (0, 1, < chunk, = chunk, multi-

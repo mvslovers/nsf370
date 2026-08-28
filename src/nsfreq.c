@@ -52,7 +52,7 @@ static NSFECB g_reqecb;
 
 /* ---- app registry (RQ_INITAPI / RQ_TERMAPI scoping) ------------------------
  * A fixed table of app instances. Each RQ_SOCKET stamps the new socket's
- * owner_ascb with the requesting app's token; RQ_TERMAPI destroys every socket
+ * apptok with the requesting app's token; RQ_TERMAPI destroys every socket
  * carrying that token (the mass-teardown path) and frees the slot. The token is
  * (gen<<16)|idx like a socket descriptor, so a stale token never matches a
  * reused slot. Static -- no pool, no runtime allocation (spec 3). */
@@ -235,7 +235,7 @@ static void term_one(SOCKCB *s, void *arg)
 {
     UINT token = *(const UINT *)arg;
 
-    if (s->owner_ascb == token) {
+    if (s->apptok == token) {
         soc_destroy(s);                 /* the ONE teardown checklist (10.5):   */
                                         /* a parked request -> ECONNABORTED     */
     }
@@ -279,7 +279,7 @@ static void do_socket(NSFRQE *r)
         soc_complete(r, NSF_RETERR, NSF_EMFILE);    /* table/pool/attach failed */
         return;
     }
-    s->owner_ascb = r->apptok;                      /* scope it to the app      */
+    s->apptok = r->apptok;                      /* scope it to the app      */
     soc_complete(r, (INT)soc_desc(s), 0);           /* retcode = the descriptor */
 }
 

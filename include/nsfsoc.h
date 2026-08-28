@@ -153,7 +153,7 @@ struct sockcb {
     NSFRQE  *pend_accept;       /*  4  @56  parked blocking ACCEPT              */
     NSFRQE  *pend_connect;      /*  4  @60  parked blocking CONNECT             */
     NSFRQE  *pend_send;         /*  4  @64  parked blocking SEND (TCP, M4-3)    */
-    UINT     owner_ascb;        /*  4  @68  Phase-2 client identity / cleanup   */
+    UINT     apptok;           /*  4  @68  owning app instance (NSFRQE.apptok) */
     STSCTR  *ctr;               /*  4  @72  reserved (global counters, 10.2)    */
 };                              /* 76 bytes */
 NSF_SIZE_ASSERT(SOCKCB, 76);
