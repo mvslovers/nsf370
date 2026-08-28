@@ -190,7 +190,9 @@ Violating one is a review-blocking defect, not a style nit.
   therefore: NO card of any kind, comment or instruction, may reach column 72.**
   Since mbt#94 a warned assembly (RC 4) no longer fails the build, so a
   recurrence is silent again: the `as370 -a=` listing and an old-vs-new object
-  comparison are the gate, not a green build.
+  comparison are the gate, not a green build. **`tools/check-card-columns.sh`
+  is that gate mechanised** (CI job `asm-cards`); it counts BYTES, because a
+  UTF-8 `§` costs two and several cards measured 73 while looking like 72.
 - **`as370` knows five instruction formats and three S-format instructions.** Its
   table is RR/RX/RS/SI/SS plus exactly `IPK`/`SPKA`/`STCK` — there is **no SSE and
   no RRE format at all**. Anything outside that set must be emitted as raw bytes
