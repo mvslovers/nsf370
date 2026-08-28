@@ -626,7 +626,10 @@ static int fake_classify(UINT ascb, UINT asid)
     return g_cls_answer;
 }
 
-/* Does any captured operator line contain `needle`? */
+#ifndef __MVS__
+/* Does any captured operator line contain `needle`?  HOST ONLY: the capture
+ * ring lives in src/nsfmsg_host.c; on MVS the emit seam is a real WTO and
+ * there is nothing to read back. */
 static int cap_contains(const char *needle)
 {
     UINT i, n = nsfmsg_cap_count();
@@ -639,6 +642,7 @@ static int cap_contains(const char *needle)
     }
     return 0;
 }
+#endif /* !__MVS__ */
 
 static void test_app_classify_and_report(void)
 {
@@ -701,7 +705,10 @@ static void test_app_classify_and_report(void)
     CHECK(strcmp(nsfapp_verdict_name(99), "?") == 0,
           "an unrecognised verdict is not trusted into a word");
 
-    /* The report itself: heading, one line per IN-USE slot, and a summary. */
+    /* The report itself: heading, one line per IN-USE slot, and a summary.
+     * HOST ONLY -- see cap_contains. Everything above this point, the red line
+     * included, is asserted on the target too. */
+#ifndef __MVS__
     nsfmsg_cap_reset();
     nsfapp_report();
     CHECK_EQ((long)nsfmsg_cap_count(), 4L,
@@ -727,6 +734,12 @@ static void test_app_classify_and_report(void)
     CHECK_EQ((long)nsfmsg_cap_count(), 2L, "an empty registry reports heading + summary");
     CHECK(cap_contains("NSF816I APP REGISTRY: 0 OF 16 SLOTS IN USE, 0 DEAD"),
           "an empty registry says so");
+#else
+    /* On the target, still release the two instances so the suite's leak gate
+     * sees the registry as it found it. */
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u); r.apptok = tok_live;   nsfreq_dispatch(&r);
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u); r.apptok = tok_phase1; nsfreq_dispatch(&r);
+#endif /* !__MVS__ */
 
     nsfreq_set_classifier(NULL);        /* leave the suite as we found it */
 }
