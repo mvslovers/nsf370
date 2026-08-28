@@ -30,7 +30,7 @@
  * asm() external-symbol aliases (CLAUDE.md 3): scheme NSFSX*, unique:
  *   nsfsx_start NSFSXSTA   nsfsx_stop  NSFSXSTO   nsfsx_ecb   NSFSXECB
  *   nsfsx_drain NSFSXDRN   nsfsx_pending NSFSXPND
- *   nsfsx_stats_extra NSFSXSXT
+ *   nsfsx_stats_extra NSFSXSXT   nsfsx_classify_client NSFSXCLC
  * ========================================================================== */
 
 #ifndef NSFSX_H
@@ -58,6 +58,17 @@ void  nsfsx_stop(void) asm("NSFSXSTO");
  * the ECBLIST is a documented abend (S047 / X'201'), so the SVC routine posts
  * this address instead (ADR-0041 addendum).                                    */
 UINT *nsfsx_ecb(void) asm("NSFSXECB");
+
+/* The ADR-0040 client-death guard asked about a bare caller identity: returns
+ * NSFREQX_CL_LIVE / _DEAD / _UNKNOWN.  Registered with nsfreq_set_classifier
+ * so the portable app registry can ask a question only MVS can answer.
+ *
+ * This is the SECOND consumer of the guard and it reclaims different things:
+ * the drain reaps CSA REQUEST SLOTS at the transport, while the registry
+ * reclaims APP SLOTS AND SOCKETS in the executive.  They share this classifier
+ * and nothing else; keeping the two reclamation paths distinct is deliberate
+ * (M5-2c1). */
+int   nsfsx_classify_client(UINT ascb, UINT asid) asm("NSFSXCLC");
 
 /* One call per executive pass: complete a finished request (copy the result
  * out, re-check client liveness, reply) and/or take a newly arrived one and

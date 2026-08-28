@@ -1592,6 +1592,67 @@ warning naming the condition.
 **#64 STAYS OPEN — mitigated, not fixed, with the investigation deferred rather than closed —
 and (e) STAYS BLOCKED, because the kickoff's condition was "unblocked only if the gate holds"
 and it did not.** [[nsf370-64-3-1-dontswap]]
+**M5-2c1 stage a (the caller identity, the APPS report, and the measurement that
+BLOCKS the sweep) — DONE; stage b NOT STARTED, awaiting Mike.** The first sub-step of
+M5-2c; **M5 stays in progress and no milestone flips.** c1 carries obligation #3 —
+reclaim the sockets of an application that ends without TERMAPI. Reclaiming means
+classifying its owner **DEAD**, and ADR-0040 never reaps an UNKNOWN, so one unmeasured
+fact decides whether the feature can work at all. The round was cut in two on that, and
+stage b did not start. **THE ANSWER IS `LIVE`, which was not one of the three outcomes
+the kickoff anticipated** (DEAD / UNKNOWN / DEAD-after-delay): seven seconds after
+JOB02807 reached OUTPUT CC 0000, and still LIVE at **T+6m31s** (11 polls, **28 slot
+readings, every one LIVE**, `0 DEAD` in every summary). **The reason is that a batch job
+has no address space of its own** — the recorded ASCB is the **INITIATOR's**, and the
+initiator does not terminate when a job ends. **Proven live, not inferred: three
+different jobs reported the SAME `ASCB=00FE7B58 ASID=0006`** (`TSTAPPDC` submitted after
+`MBTTEST` had already reached OUTPUT). So the ASVT entry never goes AVAILABLE and
+**`nsfreqx_classify` is not wrong** — it answers "did that address space end?", and for a
+batch client the answer is no even though the application is gone. **The consequence is
+sharper than "reclaims nothing": because the initiator is REUSED, a recorded identity
+keeps answering LIVE while a DIFFERENT application is running there** — it does not merely
+fail to expire, it stops denoting what it was recorded for. **The failure direction is the
+safe one** (a false LIVE leaks a slot; it never tears down a healthy app's sockets — the
+safe-side asymmetry holding under a condition nobody anticipated). **CANCEL is not a
+second case** (JOB02809, `ABEND S222`, also LIVE — a cancelled job frees its initiator
+exactly as a normal end does), and **the CLEAN control earns the other readings their
+meaning** (TERMAPI released its slot, so "2 of 16 in use" is not a registry that never
+empties). Every reading is **cross-checked against an identity the client WTOs before it
+ends** (`__ascb(0)`, `ASCBASID` at ASCB+X'24'), so no line is about some other address
+space. **Predictions recorded BEFORE the CLEAN/CANCEL arms ran** (`docs/measurements/
+m5-2c1/predictions.md`) — all three fired. **NOT ESTABLISHED, and it is the question a
+follow-up asks: the STC / TSO case.** An STC *is* its own address space and does
+terminate — the case the classifier was built for and the one that matters for M6, since
+**HTTPD and mvsMF are both STCs** — and it was not measured. **`TSTDEATH` does not cover
+it either: its DEAD rows stage a SYNTHETIC identity** (`tstd_free_asid` scans for an ASID
+already marked AVAILABLE), so **no test in this tree has ever watched a real address space
+die.** **Delivered and durable:** the rename `SOCKCB.owner_ascb`→**`apptok`** (it had held
+an app token since M3-2 while its name said ASCB); **the identity travels transport →
+`nsfreq_dispatch_id` → `do_initapi` as a PARAMETER**, recorded at `CLAIMOK` from the
+FLIH's R7 — so **`asm/nsfvsvc.asm` is untouched, the anchor layout does not move, and
+`NSF_SIZE_ASSERT(NSFRQE, 64)` holds** (a request-supplied identity is what the guard must
+never trust); **`F NSFS,APPS`** (`NSF814I`/`NSF815I`/`NSF816I`, in-use slots only, verdict
+as a WORD) — read-only, and the instrument that produced the finding. **The red line is
+enforced in ONE place**, `nsfreq_app_classify`: a zero caller ASCB (every Phase-1 slot)
+answers `NO-ID` and **is never handed to the classifier** — asking "is address space 0
+alive" has no true answer and both answers are bugs. **Phase 1 is unaffected**:
+`nsfreq_dispatch(r)` ≡ `nsfreq_dispatch_id(r, 0, 0)` so all 40-odd direct-call sites are
+unchanged, `src/nsfmain.c` registers neither seam, `F NSF,APPS` stays `NSF808E` and the
+help text does not grow (pinned in TSTOPR against the *unregistered* verb). **Two
+reclamation paths, one classifier** — the drain reaps CSA request slots at the transport,
+this would reclaim app slots and sockets in the executive; they share `nsfreqx_classify`
+and nothing else. Host **2934→2991 PASS / 0 FAIL**, and **all three new scenarios are
+VERIFIED TO DISCRIMINATE** (dropping the identity stores fails 2; dropping the zero-ASCB
+guard fails 6; an unregistered APPS is asserted inert). Cross-build clean (6 modules + 52
+test modules, no warnings); alias scan **235 unique, all ≤ 8 chars**. **A SEPARATE
+BLOCKING FINDING, reported not resolved: the locked rate limit has no clock.** "At most
+once per 100 ticks, no timer" is unsatisfiable — since ADR-0034 *queue empty ⟺ STIMER
+disarmed*, so with nothing armed `nsftmr_wake` is never called and no NSFTMR-derived tick
+advances (64-1: one pass in 259 s). The failure case is not "nobody asks" but **"somebody
+asks after an idle period"**, which is the normal case. Three options are laid out
+(pass-count / `nsf_now()` with a documented constant / a new tick seam); **none chosen —
+Mike's call.** Each LEAVE/CANCEL arm costs one app slot of 16; the round leaked three and
+`P NSFS`/`S NSFS` reset it (**verified**: STC 1505 came up `0 OF 16 SLOTS IN USE`, no
+`NSF054W`, `SVC 239 RESTORED`, stand left clean). `docs/measurements/m5-2c1/`.
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
 [[nsf370-m5-2b3-slot-pool]] [[nsf370-m5-2b4-contention]] [[nsf370-64-1-wake-ecb-reset]] |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | **Project success:** HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |

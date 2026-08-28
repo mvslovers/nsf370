@@ -36,6 +36,16 @@
 static int  g_swapcalls;
 static char g_swaparg[32];
 
+/* APPS verb hook stub (M5-2c1).  Same shape and the same red line: only a
+ * build with a client-liveness classifier may answer this verb, so an
+ * unregistered APPS must be indistinguishable from a typo. */
+static int g_appscalls;
+
+static void apps_stub(void)
+{
+    g_appscalls++;
+}
+
 static void swap_stub(const char *arg)
 {
     size_t n;
@@ -159,6 +169,33 @@ int main(void)
         nsfopr_dispatch("HELP");
         CHECK(cap_has("SRM swappability"),
               "SWAP registered: help text gains the verb");
+
+        /* -- APPS verb: unregistered is INERT (the Phase-1 guarantee) ---- */
+        g_appscalls = 0;
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("APPS");
+        CHECK(g_appscalls == 0, "APPS unregistered: handler not called");
+        CHECK(cap_has("NSF808E"),
+              "APPS unregistered: falls through to NSF808E like any unknown verb");
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("HELP");
+        CHECK(!cap_has("app registry"),
+              "APPS unregistered: help text does not grow");
+
+        nsfopr_set_apps(apps_stub);
+        g_appscalls = 0;
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("apps");
+        CHECK(g_appscalls == 1, "APPS registered: handler called exactly once");
+        CHECK(!cap_has("NSF808E"), "APPS registered: not an unknown command");
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("HELP");
+        CHECK(cap_has("app registry"), "APPS registered: help text gains the verb");
+        nsfopr_set_apps(NULL);
+        g_appscalls = 0;
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("APPS");
+        CHECK(g_appscalls == 0, "APPS deregistered: inert again");
 
         /* Deregister, so the rest of the suite sees the Phase-1 shape. */
         nsfopr_set_swap(NULL);

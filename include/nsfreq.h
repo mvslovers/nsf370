@@ -14,10 +14,13 @@
  *   Phase 2 (M5+):   the stack is its own subsystem address space (NSFS) -- the
  *                    request travels via SSI/SVC with a cross-memory POST, and
  *                    `ubuf`/`ulen` describe a KEYED cross-memory move (MVCK /
- *                    MVCSK) out of the client's storage, gated by `owner_ascb`
- *                    on the owning SOCKCB (spec 10.2).
+ *                    MVCSK) out of the client's storage.  That move is gated by
+ *                    the CALLER IDENTITY the transport records in its own slot,
+ *                    never by anything in this block or in the SOCKCB -- see
+ *                    M5-2c1, which renamed SOCKCB.owner_ascb to `apptok`
+ *                    because it has only ever held an app-instance token.
  * Protocols and sockets never learn which transport delivered the block, so the
- * Phase-2 fields (`ubuf`, `ulen`, and the SOCKCB `owner_ascb`) are defined NOW
+ * Phase-2 fields (`ubuf`, `ulen`, and the SOCKCB `apptok`) are defined NOW
  * even though Phase 1 uses `ubuf` only as a same-space pointer -- the layout must
  * not have to change when Phase 2 lands (spec 10.4).
  *
@@ -153,10 +156,10 @@ typedef struct nsfrqe {
                                 /*          carry it (input). Defined out of the */
                                 /*          @56 reserved word at M3-2 -- the     */
                                 /*          64-byte core is UNCHANGED, so the    */
-                                /*          M3 freeze holds (spec 10.4). In      */
-                                /*          Phase 2 the owner identity is        */
-                                /*          transport-supplied (caller ASCB ->   */
-                                /*          SOCKCB.owner_ascb); apptok maps to it */
+                                /*          M3 freeze holds (spec 10.4). It is   */
+                                /*          the SAME value SOCKCB.apptok holds,  */
+                                /*          which is what scopes a socket to its */
+                                /*          app -- NOT an ASCB (M5-2c1)          */
     UINT    rsvd;               /*  4  @60  reserved -> 64-byte frozen core      */
 } NSFRQE;                       /* 64 bytes */
 NSF_SIZE_ASSERT(NSFRQE, 64);
@@ -187,6 +190,9 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_pending NSFRQPND nsfreq_ecb NSFRQECB
  *   nsfreq_register_proto NSFRQRPT  nsfreq_register_select NSFRQRSL
  *   nsfreq_set_transport NSFRQSXT
+ *   nsfreq_dispatch_id NSFRQDSI     nsfreq_app_info NSFRQAPI
+ *   nsfreq_app_max NSFRQAPM       nsfreq_set_classifier NSFRQSCL
+ *   nsfreq_app_classify NSFRQACL
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -253,5 +259,72 @@ int      nsfreq_pending(void) asm("NSFRQPND");
  * wakes); a parked request (soc_park) is completed later by a protocol callback
  * or by soc_destroy. Exposed for the direct-call tests. */
 void     nsfreq_dispatch(NSFRQE *r) asm("NSFRQDSP");
+
+/* The same dispatch, told WHO asked (M5-2c1).
+ *
+ * `caller_ascb` / `caller_asid` identify the address space the request came
+ * from.  RQ_INITAPI records the pair against the new app instance and nothing
+ * else looks at it, so every other verb behaves identically to nsfreq_dispatch.
+ * The pair is what a later reclamation step classifies through
+ * nsfreqx_classify: an ASCB alone cannot survive ASID reuse.
+ *
+ * WHERE IT COMES FROM, and this is the load-bearing part: the TRANSPORT, never
+ * the request.  In Phase 2 the SVC routine records the caller's ASCB and ASID
+ * in its own CSA slot at the claim, before any client data is staged, and the
+ * STC passes that pair down to here.  A request-supplied identity is exactly
+ * what a liveness guard must never trust, and keeping it out of the NSFRQE is
+ * why the block stays frozen at 64 bytes (ADR-0040, ADR-0041).
+ *
+ * PHASE 1 PASSES ZERO, and that is a supported value, not a degenerate one:
+ * there is no transport and no caller address space, so there is no identity to
+ * record.  nsfreq_dispatch is exactly this call with (0, 0), so the Phase-1
+ * path and every direct-call test are unchanged.  A zero ASCB means "no
+ * identity recorded" and every consumer must treat it as unclassifiable rather
+ * than feeding it to the classifier. */
+void     nsfreq_dispatch_id(NSFRQE *r, UINT caller_ascb,
+                            UINT caller_asid) asm("NSFRQDSI");
+
+/* Read one app-registry slot: 1 and *out filled when `idx` is in use, else 0.
+ * `idx` runs 0 .. NSFREQ_APP_MAX-1 (see nsfreq_app_max); any out-of-range index
+ * is 0, not an error.  Every out-parameter is optional.
+ *
+ * The registry is static and private on purpose; this is the one read window,
+ * so the operator diagnostic and the tests observe exactly what the dispatcher
+ * stored rather than each keeping a shadow copy of it. */
+int      nsfreq_app_info(UINT idx, UINT *token, UINT *ascb,
+                         UINT *asid) asm("NSFRQAPI");
+
+/* How many app-registry slots exist (the bound for nsfreq_app_info). */
+UINT     nsfreq_app_max(void) asm("NSFRQAPM");
+
+/* Register the client-liveness classifier (M5-2c1).  `fn` takes the caller
+ * identity recorded at RQ_INITAPI and returns one of NSFREQX_CL_LIVE / _DEAD /
+ * _UNKNOWN; on MVS the Phase-2 STC registers a wrapper around the ASVT lookup
+ * of ADR-0040.  NULL is the default and the Phase-1 state: no transport, so no
+ * address space to ask about.
+ *
+ * It is a seam rather than a direct call because the ASVT exists only on MVS,
+ * while the app registry and everything that consumes a verdict are portable
+ * and host-tested. */
+void     nsfreq_set_classifier(int (*fn)(UINT ascb,
+                                         UINT asid)) asm("NSFRQSCL");
+
+/* Classify the app instance in slot `idx`.  Returns the registered
+ * classifier's own verdict (NSFREQX_CL_LIVE / _DEAD / _UNKNOWN, which are
+ * 0 / 1 / 2), or one of the two answers that need no classifier:            */
+#define NSFREQ_APPCL_FREE   (-1)    /* the slot holds no app instance        */
+#define NSFREQ_APPCL_NONE   (-2)    /* nothing to ask about, or nobody to ask */
+/*
+ * NSFREQ_APPCL_NONE IS THE RED LINE, AND IT IS ENFORCED HERE SO NO CONSUMER
+ * HAS TO REMEMBER IT.  A slot whose caller ASCB is zero -- every Phase-1 slot,
+ * because nsfreq_dispatch supplies no identity -- is NOT handed to the
+ * classifier at all.  Passing it would be asking "is address space 0 alive?",
+ * a question with no true answer, and answering it either way is a bug: LIVE
+ * would be a fabricated liveness claim, DEAD would authorise tearing down the
+ * sockets of a perfectly healthy Phase-1 application.  The same answer covers
+ * "no classifier registered", because both mean the verdict has no evidence
+ * behind it -- which is exactly what ADR-0040's UNKNOWN row exists to keep
+ * separate from a verdict that does. */
+int      nsfreq_app_classify(UINT idx) asm("NSFRQACL");
 
 #endif /* NSFREQ_H */

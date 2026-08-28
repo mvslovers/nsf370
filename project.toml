@@ -381,7 +381,7 @@ sources = ["test/tstsoc.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt_plat.c",
 [[test]]
 name = "TSTREQ"
 startup = "crt1"
-sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsfapp.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-2 NSFREQ on MVS: the same-AS transport round-trip ------------------
 # MVS-only (host = false): the executive main task runs evt_mainloop with the
@@ -643,6 +643,19 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
+# -- M5-2c1 stage a: the app-death measurement arm (TSTAPPD) -----------------
+# MVS-only (host = false): "the job ended" and the ASVT have no host analog.
+# Drives the situation obligation #3 must reclaim -- an app instance with a
+# socket, left registered by a job that ends without TERMAPI -- so that
+# `F NSFS,APPS` can be asked what the client-death guard says about it.
+# Links the client seam (nsfreqc.c) like TSTRQXM, not the STC.
+[[test]]
+name = "TSTAPPD"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstappd.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+
+
 # -- M5 Stage-0b Step 1: the MVCK (Move with Key) probe (TSTMVCK) ------------
 # MVS-only (host = false): MVCK/SSK/storage keys have no host analog. Settles
 # ADR-0038's open promise (ADR-0039 Step 1): MVCP/MVCS are DAS (absent on base
@@ -860,7 +873,7 @@ sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c",
 name = "NSFS"
 startup = "crt1"
 ac = 1
-sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfswap.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm", "asm/nsfsevt.asm"]
+sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfswap.c", "src/nsfapp.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm", "asm/nsfsevt.asm"]
 
 # -- M3-5 the NSFECHO UDP echo sample (the M3 exit-gate demonstration) ---------
 # The first user-visible NSF program: a UDP echo server over the EZASOKET C API

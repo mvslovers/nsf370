@@ -342,6 +342,34 @@ nsfsx_client_state(const NSFV_SLOT *slot)
                             (const UINT *)asvt->asvtenty);
 }
 
+/* The same guard, asked about a BARE IDENTITY rather than a request slot
+ * (M5-2c1).  The app registry records a caller ASCB/ASID pair at RQ_INITAPI
+ * and outlives every individual request, so a slot pointer is the wrong
+ * question there.
+ *
+ * NEEDS NO KEY WINDOW.  It reads the CVT and the ASVT, which are key-0 SQA/
+ * nucleus storage but not fetch-protected, so a key-8 fetch succeeds
+ * (Stage-0b, ADR-0039; nsfswap_read is the same argument).  That keeps it
+ * callable from the ordinary executive path without widening what runs in
+ * key 0.
+ *
+ * A ZERO ASCB NEVER REACHES HERE: nsfreq_app_classify answers
+ * NSFREQ_APPCL_NONE first.  Should it ever arrive anyway, nsfreqx_classify's
+ * own first row answers UNKNOWN, which reaps nothing. */
+int nsfsx_classify_client(UINT ascb, UINT asid)
+{
+    CVT  *cvt;
+    ASVT *asvt;
+
+    cvt = CVTPTR;
+    if (!cvt) return NSFREQX_CL_UNKNOWN;
+    asvt = (ASVT *)cvt->cvtasvt;
+    if (!asvt) return NSFREQX_CL_UNKNOWN;
+
+    return nsfreqx_classify(ascb, asid, (UINT)asvt->asvtmaxu,
+                            (const UINT *)asvt->asvtenty);
+}
+
 /* Reap a slot whose client the guard proved DEAD: give the in-flight count
  * back, clear the staging, release the slot -- and never post into it.
  *
@@ -1020,7 +1048,13 @@ nsfsx_drain(void)
             ** either way step 1 picks it up, this pass or a later one. */
             g_busy      = 1;
             g_busy_slot = slot;
-            nsfreq_dispatch(&g_priv);
+            /* THE IDENTITY COMES FROM THE SLOT, NOT THE REQUEST (M5-2c1).  The
+            ** SVC routine recorded this pair at CLAIMOK from the FLIH's R7,
+            ** before any client data was staged, so it is the one thing about
+            ** this request that a client cannot influence.  RQ_INITAPI records
+            ** it against the new app instance; every other verb is dispatched
+            ** exactly as before. */
+            nsfreq_dispatch_id(&g_priv, (UINT)slot->req_ascb, slot->req_asid);
         }
     }
 }

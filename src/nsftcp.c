@@ -1391,7 +1391,7 @@ static UINT tcp_pending_children(const TCB *listener)
 
 /* Create the embryonic child socket + TCB for a passive open, reclaiming a
  * TIME_WAIT TCB under pool pressure and retrying once (spec 13.4). Scopes the
- * child to the listener's app (owner_ascb) so RQ_TERMAPI reaps it. Returns the
+ * child to the listener's app (apptok) so RQ_TERMAPI reaps it. Returns the
  * child SOCKCB (its pcb is a fresh TCB), or NULL if the pool is exhausted even
  * after reclaim -- the caller then drops the SYN silently (RFC-conformant). */
 static SOCKCB *tcp_child_create(TCB *listener)
@@ -1404,7 +1404,7 @@ static SOCKCB *tcp_child_create(TCB *listener)
         cs = soc_create(ls->domain, ls->type, ls->proto, ls->ops);
     }
     if (cs != NULL) {
-        cs->owner_ascb = ls->owner_ascb;        /* same app scope (TERMAPI)       */
+        cs->apptok = ls->apptok;        /* same app scope (TERMAPI)       */
     }
     return cs;
 }

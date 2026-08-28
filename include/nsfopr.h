@@ -26,6 +26,7 @@
  * cross-module function pins a unique 8-char linker name. Scheme NSFOP*:
  *   nsfopr_dispatch NSFOPDSP   nsfopr_init NSFOPINI   nsfopr_ecb NSFOPECB
  *   nsfopr_drain NSFOPDRN      nsfopr_set_stats_extra NSFOPSXT
+ *   nsfopr_set_swap NSFOPSWP   nsfopr_set_apps NSFOPAPP
  *   (host-only inject: nsfopr_host_cmd NSFOPHCM   nsfopr_host_stop NSFOPHST) */
 
 /* Route one MODIFY command string to its handler, WTOing NSF8xx replies. Pure C
@@ -62,6 +63,13 @@ void nsfopr_set_stats_extra(void (*fn)(void)) asm("NSFOPSXT");
  * unaffected.  The Phase-2 STC registers nsfswap_op, which probes and controls
  * SRM swappability -- a privileged path the Phase-1 module cannot take. */
 void nsfopr_set_swap(void (*fn)(const char *)) asm("NSFOPSWP");
+
+/* Register an optional APPS verb (M5-2c1).  Same seam shape and the same
+ * reason: NULL (the default) leaves the dispatcher exactly as it was, so
+ * `F NSF,APPS` draws NSF808E and the Phase-1 help text does not grow.  The
+ * Phase-2 STC registers nsfapp_report, which needs a client-liveness
+ * classifier and therefore an address space to classify. */
+void nsfopr_set_apps(void (*fn)(void)) asm("NSFOPAPP");
 
 #if NSF_DEBUG
 /* Host-only injection so a test can drive the operator path through the real

@@ -74,7 +74,7 @@ static int d_accept(SOCKCB *s, NSFRQE *r)
         soc_complete(r, NSF_RETERR, NSF_EMFILE);
         return 0;
     }
-    child->owner_ascb = s->owner_ascb;      /* TERMAPI mass-teardown finds it     */
+    child->apptok = s->apptok;      /* TERMAPI mass-teardown finds it     */
     child->faddr      = PEER_ADDR;
     child->fport      = (USHORT)PEER_PORT;
     child->state      = (UCHAR)SOC_ST_CONNECTED;

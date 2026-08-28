@@ -41,6 +41,7 @@
 #include "nsfstc.h"
 #include "nsfopr.h"
 #include "nsfswap.h"    /* nsfswap_op -- the SWAP verb (Phase 2 only) */
+#include "nsfapp.h"     /* nsfapp_report -- the APPS verb (Phase 2 only) */
 #include "nsfevt.h"
 #include "nsfmsg.h"
 #include "nsfmm.h"
@@ -390,6 +391,16 @@ int main(int argc, char **argv)
      * -- rather than on the startup path -- means a wrong answer cannot break
      * a normal `S NSFS`, and the action is operator-gated and reversible. */
     nsfopr_set_swap(nsfswap_op);
+
+    /* The app registry's liveness guard and its operator report (M5-2c1).
+     * The registry itself is portable and knows nothing about address spaces;
+     * this is where it is given something that can answer "is that client
+     * still alive". Phase 2 only, for the same reason as the verbs above --
+     * src/nsfmain.c registers neither, so `F NSF,APPS` stays NSF808E and a
+     * Phase-1 registry, which records no identities at all, is never asked a
+     * question it has no evidence for. */
+    nsfreq_set_classifier(nsfsx_classify_client);
+    nsfopr_set_apps(nsfapp_report);
 
     /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */
     __estae(ESTAE_CREATE, (void *)nsf_recover, NULL);
