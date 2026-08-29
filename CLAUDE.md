@@ -2005,7 +2005,8 @@ existing window widened, `asm/nsfvsvc.asm` untouched, anchor layout unmoved, `AN
 `S0C4` + 2 client `S222`). Host **2991 PASS / 0 FAIL** unchanged — a no-regression check
 only. `docs/measurements/80-chk/`.
 **80-FIX (the receive lands in private storage, not in CSA) — DONE, live-green in all
-four arms. It FIXES #80's fault; closing the issue is Mike's.** Not a milestone step;
+four arms, COUNTERSIGNED by Mike (PR #86 merged). It FIXES #80's fault; closing the issue
+is Mike's and #80 stays OPEN.** Not a milestone step;
 **M5 stays in progress and nothing flips** — c1 stage b is still with Mike, and #64/#83
 are untouched. The executive dispatched requests whose `ubuf` pointed straight at the CSA
 slot's staging buffer — `SP=241`, **key 0** — while running in its own **key 8**, so any
