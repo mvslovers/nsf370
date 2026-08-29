@@ -679,6 +679,67 @@ int main(void)
         CHECK_EQ((long)csa[64] & 0xFF, 0x11L,
                  "the out direction also writes nothing past its count");
 
+        /* NO CROSS-CLIENT RESIDUE ESCAPES THE LANDING AREA.
+         *
+         * g_land is ONE buffer shared by sequential clients, so the question
+         * a reviewer will ask is whether client B's copy OUT can carry bytes
+         * client A left behind.  It cannot, and the reason is structural: the
+         * copy in and the copy out use the SAME count on the SAME slot, so
+         * the range copied out is exactly the range the copy in just
+         * overwrote.  Modelled here end to end rather than argued, because
+         * "nothing escapes" is a property and an inspection is not a proof.
+         *
+         * Sizing the copy out by the moved count instead would ALSO be safe
+         * -- but it is not available without a per-verb table (retcode is a
+         * descriptor for SOCKET/ACCEPT), which is what the always-copy
+         * decision excluded.  So this property is what carries it. */
+        {
+            static char slotA[NSFREQX_CHUNK];
+            static char slotB[NSFREQX_CHUNK];
+            UINT nA = 2048u, nB = 512u;   /* A uses the whole chunk, B a slice */
+            unsigned j;
+            int leaked = 0;
+
+            for (j = 0u; j < NSFREQX_CHUNK; j++) {
+                slotA[j] = (char)0xAA;    /* client A's staged content         */
+                slotB[j] = (char)0xBB;    /* client B's staged content         */
+                land[j]  = (char)0x00;
+            }
+
+            /* --- request A: copy in, the op writes 100 bytes, copy out --- */
+            (void)nsfreqx_land_copy(land, slotA, nA);
+            for (j = 0u; j < 100u; j++) land[j] = (char)0x11;   /* the op      */
+            (void)nsfreqx_land_copy(slotA, land, nA);
+
+            /* --- request B: a SHORTER request reusing the same landing area */
+            (void)nsfreqx_land_copy(land, slotB, nB);
+            for (j = 0u; j < 256u; j++) land[j] = (char)0x22;   /* the op      */
+            (void)nsfreqx_land_copy(slotB, land, nB);
+
+            /* B's slot must contain the op's bytes then B's OWN content --
+             * and not one byte of A's 0xAA anywhere in the copied range. */
+            for (j = 0u; j < nB; j++) {
+                char want = (j < 256u) ? (char)0x22 : (char)0xBB;
+                if (slotB[j] != want) { leaked = 1; break; }
+            }
+            CHECK(!leaked,
+                  "a short request's slot holds the op's bytes then its OWN"
+                  " staged content -- no previous client's bytes");
+
+            leaked = 0;
+            for (j = 0u; j < NSFREQX_CHUNK; j++) {
+                if (slotB[j] == (char)0xAA) { leaked = 1; break; }
+            }
+            CHECK(!leaked,
+                  "NOT ONE byte of the previous client survives into this"
+                  " client's slot (the residue stays per-slot, not global)");
+
+            /* A's own tail is its own staged content, exactly as it was
+             * before a landing area existed -- the scope did not widen. */
+            CHECK_EQ((long)slotA[2047] & 0xFF, 0xAAL,
+                     "the long request's tail is still its OWN staged content");
+        }
+
         CHECK_EQ((long)nsfreqx_land_copy(land, csa, 0u), 0L,
                  "land_copy(0) moves nothing -- the zero-byte receive");
         CHECK_EQ((long)nsfreqx_land_copy(NULL, csa, 10u), 0L,

@@ -2051,10 +2051,31 @@ in, the residue is the client's OWN staged content, exactly as today; **without 
 would be the PREVIOUS client's, handed across address spaces.** The comment at the copy
 site carries the alternative and the three conditions that would make it the right trade
 (measured cost, the predicate in ONE place, a host test pinning it against the verb list).
+**THE ONE-IN-FLIGHT INVARIANT IS ASSERTED WHERE IT IS RELIED ON, not next to the
+declaration:** `g_priv` and `g_land` are each ONE object, safe only because
+`nsfreqx_actionable` gates DISPATCH on `!busy` — a gate one function away from the copy
+site. Concurrent service is a named open item (ADR-0042 §10), and if it lands, two clients
+interleaving in one landing area is **wrong data with no fault and no abend** — this
+project's most expensive failure class. The dispatch site therefore checks and declines
+(**`NSF056E`** — a FREE number, deliberately not a second `NSF054`, which already means the
+unrelated retain-branch condition; two conditions separated only by the severity letter
+cannot be described as one in a message list nor grepped apart by an operator).
+**THE COPY-OUT IS SIZED BY `xlen`, DELIBERATELY**, and the comment at the site says why,
+because the moved count *looks* available two lines away in `retcode`: (1) **there is no
+verb-independent moved count** — `retcode` is a byte count for SEND/RECV (`nsftcp.c:656`)
+but the **socket descriptor** for ACCEPT (`nsftcp.c:1121`) and SOCKET (`nsfreq.c:342`), so
+sizing by it means a per-verb table, the very thing always-copy excluded; and (2) **it would
+not narrow the residue anyway** — both copies use the same expression on the same slot
+(`xlen` is written once at staging and cleared at release), so the range copied OUT is
+exactly the range the copy IN just filled with THIS client's own content, and what a
+previous client left in `g_land` lives beyond it and is never read. **The residue's scope
+stays per-slot, as before the landing area existed — it does NOT widen to global** — and
+that is **pinned in TSTREQX, not argued**: removing the copy-in (modelling the
+direction-aware alternative) turns those two assertions red.
 **PHASE 1 IS STRUCTURALLY UNTOUCHED, which is a positive check and not the host suite:**
 neither `src/nsfsx.c` nor `src/nsfreqx.c` is in the `NSF` module's source list, and
 `src/nsfmain.c` references neither (**0 hits**) — the code cannot be reached there. Host
-**2991→3004** (TSTREQX 137→150) is a **no-regression check only**, since both changed files
+**2991→3007** (TSTREQX 137→153) is a **no-regression check only**, since both changed files
 are MVS-only. **Offline gates:** the new assertions **verified to discriminate** (removing
 the clamp → 2 FAIL); **ASan+UBSan clean** on TSTREQX, and ASan **verified to watch this
 exact buffer** (the unbounded copy reports at `nsfreqx.c:31 in NSFRXLCP`); 6 modules + 53
@@ -2099,9 +2120,12 @@ different router EP each time — the retained-module evidence); and **#83's `A0
 fire with devices UP**, `NSF901I` reached, corroborating the m5-79 reading that devices-up
 is necessary but not sufficient. **DOES NOT ESTABLISH:** the **inline** (rxq-dequeue)
 completion shape, still **reasoned, not run** (`udp_complete_recv`'s header states it is
-shared with the parked path); **`SELECT` across the boundary** — cited as the
-both-directions verb and true of `nsfsel.c:166`, but **no test drives a cross-AS SELECT**,
-so the argument stands while the exercise does not; whether the faulting `MVC` suppresses
+shared with the parked path); **`SELECT` across the boundary** — no test drives a
+cross-AS SELECT, but note its SHAPE: it is not a gap in the argument but an INSTANCE of it —
+**a second, untested path of exactly #80's class that the fix covers without anyone having
+had to know it existed**, which is the retrospective justification for always-copy (under a
+direction table, correctness there would have rested on a row nobody would have written,
+because nobody thought of it). What is unestablished is the *exercise*, not the coverage; whether the faulting `MVC` suppresses
 or terminates; recovery from the dangling state (`req_state` stuck, `inflight` leaked — still the open M5-2 item
 ADR-0039 names); or anything about #64/#83. ADR-0041 annotated append-only with the false
 sentence quoted; ADR-0039 carries a pointer to the read-in side.

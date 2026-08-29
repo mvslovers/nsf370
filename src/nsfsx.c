@@ -1040,7 +1040,34 @@ nsfsx_drain(void)
         ** the SAME count asm/nsfvsvc.asm's RQEOUT reloads from SLXLEN for its
         ** own read-out, so what reaches the client is byte-for-byte what it
         ** was before the landing area existed.  The fix moves WHERE the
-        ** protocol layer writes; it changes no observable result. */
+        ** protocol layer writes; it changes no observable result.
+        **
+        ** xlen HERE IS DELIBERATE, NOT AN OVERSIGHT.  The moved count looks
+        ** like it is two lines away in g_priv.retcode; it is not usable, for
+        ** two independent reasons.
+        **
+        **   1. THERE IS NO VERB-INDEPENDENT MOVED COUNT AT THIS SITE.
+        **      retcode is a byte count for SEND/RECV (nsftcp.c 656) and the
+        **      SOCKET DESCRIPTOR for ACCEPT (nsftcp.c 1121) and SOCKET
+        **      (nsfreq.c 342), and 0 for BIND.  Sizing by it means knowing
+        **      which verbs return counts -- a per-verb table, which is exactly
+        **      what the always-copy decision excluded and exactly the kind of
+        **      table that is wrong for a verb added later.  See the copy-IN
+        **      site below for the same argument at length.
+        **
+        **   2. IT WOULD NOT NARROW THE RESIDUE ANYWAY, because the copy in
+        **      already bounds it.  Both copies use this same expression on
+        **      this same slot (xlen is written once at staging and cleared at
+        **      release -- nothing moves it in between), so the range copied
+        **      out is EXACTLY the range the copy in just filled with THIS
+        **      client's own staged content.  Every byte that goes back is
+        **      therefore either written by the op or the client's own.  What
+        **      a previous client left in g_land lives beyond that range and is
+        **      never read by this copy.  So the tail of slot->stage holds this
+        **      client's own data, exactly as it did before the landing area
+        **      existed -- the residue's scope is per-slot, not global.
+        **      Pinned in TSTREQX rather than left as reasoning, because "no
+        **      cross-client bytes escape" is a property, not an inspection. */
         (void)nsfreqx_land_copy(slot->stage, g_land, slot->xlen);
 
         nsfreqx_result_out((NSFRQE *)slot->rqe, &g_priv);
@@ -1199,7 +1226,7 @@ nsfsx_drain(void)
         __prob(savekey, NULL);
 
         if (busyviol)
-            wtof("NSF054E DISPATCH DECLINED -- A REQUEST IS ALREADY IN"
+            wtof("NSF056E DISPATCH DECLINED -- A REQUEST IS ALREADY IN"
                  " SERVICE (ONE PRIVATE NSFRQE, ADR-0042 10)");
         else if (corrupt == 1)
             wtof("NSF052E SLOT RQE GUARD CLOBBERED -- REQUEST REAPED,"

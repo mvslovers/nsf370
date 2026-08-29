@@ -712,6 +712,23 @@ It would become the right trade given all three of: measured evidence that the c
 the direction predicate in **one** place, and a host test pinning it against the verb list.
 The comment at the copy site carries this, so the alternative is not rediscovered as if new.
 
+**And `SELECT` is worth more than a caveat — it is the retrospective justification.** It is
+a both-directions verb (`nsfsel.c:166`) that **no test drives across the boundary**, which
+makes it *a second, untested path of exactly #80's class*. The fix covers it **without
+anyone having had to know it existed.** Under the direction-aware alternative, correctness
+there would have depended on `SELECT` appearing in a table that nobody would have written
+today — because nobody thought of it, which is the whole reason it is untested. That is why
+the always-copy decision is not a matter of taste, and it is the argument a later reader
+will need when this copy shows up in a profile.
+
+The consequence for the residue is pinned rather than argued (TSTREQX): the copy in and the
+copy out use the **same count on the same slot**, so the range copied out is exactly the
+range the copy in just overwrote with **this** client's staged content. No byte a previous
+client left in `g_land` can reach another client's slot — the residue's scope stays
+per-slot, as it was before the landing area existed, and it does not widen to global.
+Removing the copy in — modelling the direction-aware alternative — turns those assertions
+red, which is what makes this a demonstration rather than an inspection.
+
 ### Two properties worth stating
 
 **The change is semantically transparent for well-formed requests — and a deliberate
@@ -749,12 +766,11 @@ Still **reasoned, not run**, and named here so a reader does not infer otherwise
 
 - the **inline** (rxq-dequeue) completion shape — `udp_complete_recv`'s own header states
   it is shared by the parked and rxq-dequeue paths;
-- **`SELECT` across the boundary.** It is cited above as the verb whose direction is
-  *both*, and that citation is a true statement about `src/nsfsel.c:166` used to show the
-  direction table would have been wrong on day one — but **nothing in TSTRQXM or TSTRQXR
-  drives a cross-AS SELECT**, and M4-5 already recorded the Phase-2 item array as needing a
-  keyed move. The argument does not depend on the verb having been exercised; the verb
-  having been exercised is simply not something this round establishes.
+- **`SELECT` across the boundary.** Nothing in TSTRQXM or TSTRQXR drives a cross-AS
+  `SELECT`, and M4-5 already recorded the Phase-2 item array as needing a keyed move. Note
+  the shape of this one: it is **not** a gap in the argument but an instance of it — an
+  untested both-directions path that the always-copy decision covers anyway (§ above). What
+  is unestablished is the *exercise*, not the coverage.
 
 Nothing in this ADR's subject moved: anchor layout unchanged, `NSFV_ANCHOR_VER` stays 3,
 **NSFRQE stays frozen at 64 bytes**, `asm/nsfvsvc.asm` untouched, `MOVEOUT` remains the only
