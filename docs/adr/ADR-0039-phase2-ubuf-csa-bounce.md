@@ -823,3 +823,35 @@ carries the open promise, and Stage-0b closes it.
   unchanged — `asm/*.asm` never compiles on host and the new test is `host = false`, so the
   host suite is a no-regression check here and evidence of nothing else.
   No dumps anywhere in the round; `SVC 239` stolen and restored by both STCs.
+
+---
+
+## Pointer (80-FIX): the read-in side of the key doctrine
+
+This ADR owns the **key-window doctrine** — the write-out side, where the *transport*
+stores into caller-supplied addresses and must borrow the caller's key to do it (`MOVEOUT`,
+M5-2b1; the `XFER` path, M5-2c0).
+
+There is a second exposure, and it is not on this side. In Phase 2 the executive dispatched
+requests whose `ubuf` pointed at the CSA staging buffer this ADR defines — key 0 — while the
+executive itself runs in **key 8**. A protocol op that *writes* its result through `ubuf`
+therefore performed a key-8 store into key-0 storage and took `S0C4`; reads succeeded,
+because CSA is not fetch-protected, which is exactly why every path exercised for a
+milestone was a read and nothing noticed. Measured in **80-CHK** (issue #80) on UDP, and on
+TCP in **80-FIX**.
+
+**The fix is not another key window**, and deliberately so: the store is made by the
+protocol layer, which this design keeps ignorant of address spaces, CSA and keys (ADR-0003).
+Widening the doctrine to reach it would have meant teaching that layer about keys. Instead
+`ubuf` is rewritten to a **private landing area** and the staged chunk is copied in and out
+inside key windows that already existed, giving the rule:
+
+> **CSA never appears as a writable target in the protocol layer.** It may be read there;
+> anything the protocol layer writes into is private storage, and the crossing into CSA
+> happens in one place, under a key window, in the executive.
+
+Sizing on both sides is the same clamped `xlen` that `RQEOUT` reloads from `SLXLEN`, so the
+change is **semantically transparent** — it moves where the protocol layer writes and
+changes no observable result. See **ADR-0041**, annotation *"the receive lands in private
+storage"*, which owns the detail; nothing in this ADR's own subject changed —
+`asm/nsfvsvc.asm` is untouched and the staging buffer stays key 0.

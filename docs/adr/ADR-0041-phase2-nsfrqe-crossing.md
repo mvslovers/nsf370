@@ -657,3 +657,131 @@ completion shape. TCP reaches the same `buf_copyout` through the same rewritten 
 and `udp_complete_recv`'s own header states it is shared by the parked and rxq-dequeue
 paths — so the inline shape and TCP are the same store *by construction*, but they were
 reasoned, not run.
+
+---
+
+## Annotation (80-FIX): the receive lands in private storage, and §2's table row is corrected
+
+Category 4 above is **closed**. `ubuf` in the dispatched copy no longer points into CSA at
+all, and the rule that replaces it is the durable part of this change:
+
+> **CSA never appears as a writable target in the protocol layer.** It may be *read* there
+> — the anchor is not fetch-protected — but anything the protocol layer writes into is
+> **private storage**, and the crossing into CSA happens in **one place**, under a key
+> window, in the executive.
+
+### The sentence that is now false
+
+§2's table row read, verbatim:
+
+> | `ubuf`@20 | the **caller-AS** buffer address | `&anchor->stage[0]` — the CSA staging buffer |
+
+and the prose under it read:
+
+> **`ubuf`** must be rewritten because a caller-AS pointer dereferenced from the STC's
+> address space reads the wrong space entirely. The staging buffer is the only address that
+> means the same thing on both sides.
+
+The *first* half stays true and is the whole reason hop 2 rewrites the field. The second
+half — **"The staging buffer is the only address that means the same thing on both sides"**
+— was wrong, and wrong in the direction that cost a milestone. There is a second such
+address: **STC-private storage**, which means the same thing on both sides for the only
+party that dereferences it, namely the executive. It differs from the staging buffer in the
+one respect that turned out to matter — it is **key 8**, so the executive can write it.
+
+`ubuf` is now rewritten to `&g_land[0]`, a static landing area in `src/nsfsx.c` sized
+`NSFV_XFER_CHUNK`, and the staged chunk is copied **in** before dispatch and **out** after
+completion.
+
+### Why the copy runs in both directions
+
+A send only *reads* `ubuf`, and a key-8 read of the anchor is permitted, so a
+direction-aware version could skip the copy for sends. Deliberately not taken:
+
+1. **A direction table is a thing that can be wrong**, and being wrong for a verb added
+   later brings the fault back silently on a path nobody tests — which is literally how #80
+   came to exist. `SELECT` is *already* a verb whose direction is **both**: `src/nsfsel.c`
+   reads the item array through `ubuf` and writes each item's `ready` back through it. The
+   table would have had an awkward row on the day it was written.
+2. **`g_land` is one buffer shared by sequential clients.** A recv of 2048 returning 10
+   bytes copies the clamped `xlen` back — 10 real bytes and the rest residue. *With* the
+   copy in, that residue is the client's **own** staged content, exactly as before. Without
+   it, it would be the **previous client's**, handed across address spaces.
+
+It would become the right trade given all three of: measured evidence that the copy costs,
+the direction predicate in **one** place, and a host test pinning it against the verb list.
+The comment at the copy site carries this, so the alternative is not rediscovered as if new.
+
+**And `SELECT` is worth more than a caveat — it is the retrospective justification.** It is
+a both-directions verb (`nsfsel.c:166`) that **no test drives across the boundary**, which
+makes it *a second, untested path of exactly #80's class*. The fix covers it **without
+anyone having had to know it existed.** Under the direction-aware alternative, correctness
+there would have depended on `SELECT` appearing in a table that nobody would have written
+today — because nobody thought of it, which is the whole reason it is untested. That is why
+the always-copy decision is not a matter of taste, and it is the argument a later reader
+will need when this copy shows up in a profile.
+
+The consequence for the residue is pinned rather than argued (TSTREQX): the copy in and the
+copy out use the **same count on the same slot**, so the range copied out is exactly the
+range the copy in just overwrote with **this** client's staged content. No byte a previous
+client left in `g_land` can reach another client's slot — the residue's scope stays
+per-slot, as it was before the landing area existed, and it does not widen to global.
+Removing the copy in — modelling the direction-aware alternative — turns those assertions
+red, which is what makes this a demonstration rather than an inspection.
+
+### Two properties worth stating
+
+**The change is semantically transparent for well-formed requests — and a deliberate
+narrowing for malformed ones.** Both copies are sized by the same clamped `xlen` that
+`asm/nsfvsvc.asm`'s `RQEOUT` already reloads from `SLXLEN` for its own read-out, so for
+every request the SVC routine can legitimately produce (its own move already clamps) what
+reaches the client is byte-for-byte what it was before the landing area existed: this moves
+*where* the protocol layer writes and changes no observable result. For a **corrupted or
+hostile** `xlen` it is more than transparent — `priv->ulen` is now
+`nsfreqx_stage_len(slot->xlen)` rather than the raw word, so the protocol op receives a
+clamped length where before it received the inflated one and overread `stage[]`. Stating
+this separately because the transparency framing alone would hide a real improvement.
+
+**The executive now owns the bound.** `xlen` arrives from a CSA slot an unauthorised client
+wrote. Before, an inflated value made the *protocol layer* overrun `stage[]` into the next
+slot; now it bounds a `memcpy` into the STC's own private storage. Both copies therefore go
+through **`nsfreqx_land_copy`**, whose bound is the existing, host-pinned
+`nsfreqx_stage_len` — one expression, not a second `if` that can drift (the
+`nsfreqx_reap_ok` / `nsfreqx_actionable` precedent). The helper is deliberately
+**direction-neutral**: the same call serves both copies, so the pure half never learns a
+direction at all.
+
+### What is measured, and what is not
+
+| | before the fix | after the fix |
+|---|---|---|
+| UDP, data | `S0C4` (80-CHK, and again in this round's arm 4) | completes, `n=256` byte-exact |
+| UDP, zero bytes | completes | completes — the fix repaired the path, did not disable it |
+| TCP, data | **`S0C4` — measured, not reasoned** | completes, `n=256` byte-exact |
+
+TCP was reasoned in 80-CHK and is now **measured on both sides** (`test/mvs/tstrqxr.c`
+`PARM='ARMT'`), which matters because TCP is the path HTTPD and mvsMF would use at M6.
+
+Still **reasoned, not run**, and named here so a reader does not infer otherwise:
+
+- the **inline** (rxq-dequeue) completion shape — `udp_complete_recv`'s own header states
+  it is shared by the parked and rxq-dequeue paths;
+- **`SELECT` across the boundary.** Nothing in TSTRQXM or TSTRQXR drives a cross-AS
+  `SELECT`, and M4-5 already recorded the Phase-2 item array as needing a keyed move. Note
+  the shape of this one: it is **not** a gap in the argument but an instance of it — an
+  untested both-directions path that the always-copy decision covers anyway (§ above). What
+  is unestablished is the *exercise*, not the coverage.
+
+Nothing in this ADR's subject moved: anchor layout unchanged, `NSFV_ANCHOR_VER` stays 3,
+**NSFRQE stays frozen at 64 bytes**, `asm/nsfvsvc.asm` untouched, `MOVEOUT` remains the only
+assembler running under a borrowed key, and the C / EZASOKET / EZASMI surfaces are unchanged
+— apps relink only. No key window was added to the protocol layer, and none of `nsfudp.c`,
+`nsfbuf.c`, `nsftcp.c`, `nsfsoc.c` or `nsfsel.c` contains `__super` / `__prob` / `SPKA` /
+`PSWKEY0`: that ignorance is the design (ADR-0003), and it is what makes the rule above true
+by construction rather than by care.
+
+Two alternatives were considered and **rejected on blast radius**, recorded so they are not
+proposed again: running the protocol completion under key 0 (arbitrary protocol code in key
+0 puts the whole system within reach of any protocol bug), and making the staging area key 8
+(it would work for the executive and open it to every unauthorised client — trading a fault
+for a security hole).

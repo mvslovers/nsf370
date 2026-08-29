@@ -27,13 +27,21 @@ S0C4 on the second reply and this peer simply never hears from the guest again.
 That is a successful run, not a failure, so the exit code below reports what
 actually happened rather than pass/fail.
 
+TCP MODE (--tcp, 80-FIX Stage A / Stage C): the same probe one transport over.
+The guest is the ACTIVE opener; this peer accepts ONE connection, waits --delay,
+and sends --len pattern bytes, so the guest's nsf_recv is a data-returning
+receive that reaches the identical store through the TCP path
+(nsftcp.c -> buf_copyout -> memcpy) instead of the UDP one. TCP is what HTTPD
+and mvsMF would use at M6, which is why it is measured rather than reasoned.
+
 Usage:
-    python3 recvkey_peer.py [host] [port] [--len N] [--delay S]
+    python3 recvkey_peer.py [host] [port] [--len N] [--delay S] [--tcp]
 
     host    bind address (default 192.168.200.2 -- the CTCI host peer)
     port    listen port  (default 3004 -- matches tstrqxr.c PEER_PORT)
     --len   payload bytes in the second reply (default 256)
     --delay seconds to wait before each reply (default 3)
+    --tcp   TCP mode: accept one connection and send --len bytes
 """
 import socket
 import sys
@@ -44,11 +52,49 @@ def pat(i):
     return (i * 7 + (i >> 5) + 0x23) & 0xFF
 
 
+def tcp_mode(host, port, payload, delay):
+    """Accept ONE connection and send `payload` after `delay`.
+
+    The delay is the same discipline as the UDP path: it puts the guest
+    provably inside its recv when the data arrives, so the parked completion
+    path runs with no guest-side timing.
+    """
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, port))
+    srv.listen(1)
+    srv.settimeout(300)
+    print("TCP peer on %s:%d -- will send %d bytes after %.1fs"
+          % (host, port, len(payload), delay), flush=True)
+
+    try:
+        conn, who = srv.accept()
+    except socket.timeout:
+        print("TIMEOUT waiting for the guest to connect", flush=True)
+        srv.close()
+        return 2
+    print("connected from %s:%d" % (who[0], who[1]), flush=True)
+
+    time.sleep(delay)                   # guest is parked in recv by now
+    conn.sendall(payload)
+    print("  sent %d-byte payload (the arm)" % len(payload), flush=True)
+
+    # Hold the connection open briefly so a surviving guest can read it all
+    # before we FIN; a dead guest simply never reads.
+    time.sleep(delay)
+    conn.close()
+    srv.close()
+    print("RESULT: payload sent -- read the MVS console for the verdict",
+          flush=True)
+    return 0
+
+
 def main():
     host = "192.168.200.2"
     port = 3004
     length = 256
     delay = 3.0
+    tcp = False
 
     args = sys.argv[1:]
     pos = []
@@ -60,6 +106,9 @@ def main():
         elif args[i] == "--delay":
             delay = float(args[i + 1])
             i += 2
+        elif args[i] == "--tcp":
+            tcp = True
+            i += 1
         else:
             pos.append(args[i])
             i += 1
@@ -69,6 +118,9 @@ def main():
         port = int(pos[1])
 
     payload = bytes(pat(i) for i in range(length))
+
+    if tcp:
+        return tcp_mode(host, port, payload, delay)
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

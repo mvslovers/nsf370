@@ -112,6 +112,10 @@
 #define RECV_LEN   512
 #define DATA_LEN   256                  /* one whole MVC piece, and > 0        */
 
+/* TCP arm (80-FIX): a separate port so the two peers never collide, and the
+ * guest is the ACTIVE opener -- samples/host/recvkey_peer.py --tcp. */
+#define TCP_PORT   3005
+
 /* CC 20: the gate could not run.  Distinct from 0 (ran and passed) and 1 (ran
  * and failed) so a run that never reached the arm cannot be read as evidence
  * about it -- CLAUDE.md 8.5. */
@@ -136,6 +140,76 @@ static int trigger(int s, const NSF_SOCKADDR_IN *peer, const char *what)
     return nsf_sendto(s, msg, 2, 0, peer, (INT)sizeof(*peer));
 }
 
+/* ==========================================================================
+ * THE TCP ARM (80-FIX Stage A / Stage C)
+ *
+ * The same store, one transport over.  A data-returning cross-AS TCP RECV
+ * reaches buf_copyout -> memcpy through src/nsftcp.c instead of src/nsfudp.c,
+ * and the target is the same rewritten r->ubuf.  TCP is the path HTTPD and
+ * mvsMF would use at M6, so it is MEASURED on both sides of the fix rather
+ * than reasoned from "it reaches the identical instruction".
+ *
+ * Deliberately NOT a second control: the zero-byte control belongs to the UDP
+ * arm, where a zero-length datagram is a real thing a peer can send.  A TCP
+ * recv returning 0 means EOF, which is a different path, not the same call
+ * with the memcpy elided.
+ * ========================================================================== */
+static int run_tcp_arm(int *pndata)
+{
+    NSF_SOCKADDR_IN peer;
+    int s, rc;
+    int ndata = -1;
+
+    memset(&peer, 0, sizeof(peer));
+    peer.sin_family = NSF_AF_INET;
+    peer.sin_port   = TCP_PORT;
+    peer.sin_addr   = PEER_IP;
+
+    s = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+    CHECK(s >= 0, "TCP SOCKET across the boundary");
+    if (s < 0) return 0;
+
+    wtof("TSTRQXR: TCP -- CONNECT issued");
+    rc = nsf_connect(s, &peer, (INT)sizeof(peer));
+    if (rc != 0) {
+        printf("  NOTE: CONNECT failed rc=%d errno=%d -- is recvkey_peer.py"
+               " --tcp running?\n", rc, (int)nsf_lasterrno());
+    }
+    CHECK_EQ((long)rc, 0L, "TCP CONNECT across the boundary");
+    if (rc != 0) return 0;
+    wtof("TSTRQXR: TCP -- CONNECTED");
+
+    /* THE ARM.  The peer holds the payload back, so this recv is PARKED when
+     * the data arrives: the parked completion path, no guest-side timing. */
+    memset(g_rx, 0, sizeof(g_rx));
+    wtof("TSTRQXR: TCP ARM -- DATA RECV ISSUED (len=%d, expecting %d bytes)",
+         (int)RECV_LEN, (int)DATA_LEN);
+    ndata = nsf_recv(s, g_rx, RECV_LEN, 0);
+
+    /* If the store faults in the STC, control never reaches this line. */
+    wtof("TSTRQXR: TCP ARM -- DATA RECV RETURNED n=%d errno=%d",
+         ndata, (int)nsf_lasterrno());
+    *pndata = ndata;
+
+    /* TCP is a STREAM: a short read is legal and is NOT a failure of the
+     * store.  What the arm is about is that the receive completed at all and
+     * that what it did deliver is byte-exact. */
+    CHECK(ndata > 0, "the data-returning TCP receive completed with data");
+    if (ndata > 0) {
+        int ok = 1;
+        unsigned i;
+        for (i = 0u; i < (unsigned)ndata; i++) {
+            if ((unsigned char)g_rx[i] != pat(i)) { ok = 0; break; }
+        }
+        CHECK(ok, "every received TCP byte is byte-exact (the store ran)");
+        wtof("TSTRQXR: TCP ARM -- payload byte-exact=%d n=%d", ok, ndata);
+    }
+
+    rc = nsf_close(s);
+    CHECK_EQ((long)rc, 0L, "TCP CLOSE across the boundary");
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     NSF_SOCKADDR_IN me, peer, from;
@@ -143,6 +217,7 @@ int main(int argc, char **argv)
     int  nzero = -1, ndata = -1;
     INT  fromlen;
     unsigned i;
+    int  tcpmode = 0;
 
     /* OPT-IN, AND THE DEFAULT MUST NOT EVEN TOUCH THE TRANSPORT.
      *
@@ -174,7 +249,14 @@ int main(int argc, char **argv)
         return XR_CC_GATE_SKIPPED;
     }
 
-    wtof("TSTRQXR: 80-CHK CROSS-AS RECEIVE KEY PROBE START");
+    /* MODE.  'ARM' drives the UDP arm (80-CHK, unchanged); 'ARMT' drives the
+     * TCP arm (80-FIX).  strcmp, not strncmp: the opt-in guard above accepts
+     * any "ARM*" so that a mistyped PARM still reports what it saw rather than
+     * silently selecting a mode nobody asked for. */
+    tcpmode = (strcmp(argv[1], "ARMT") == 0);
+
+    wtof("TSTRQXR: 80-CHK CROSS-AS RECEIVE KEY PROBE START (%s)",
+         tcpmode ? "TCP" : "UDP");
     printf("=== TSTRQXR -- 80-CHK: cross-AS receive, key-0 CSA store ===\n");
 
     CHECK_EQ((long)__isauth(), 0L,
@@ -192,6 +274,16 @@ int main(int argc, char **argv)
     /* ---- every call from here executes in the NSFS address space ---------- */
     rc = nsf_initapi(0, "TCPIP   ", "NSF     ", "TSTRQXR ", NULL);
     CHECK(rc >= 0, "INITAPI across the boundary");
+
+    if (tcpmode) {
+        skipped = 0;                    /* the arm is committed                */
+        (void)run_tcp_arm(&ndata);
+        rc = nsf_termapi();
+        CHECK_EQ((long)rc, 0L, "TERMAPI across the boundary");
+        wtof("TSTRQXR: TCP RUN COMPLETE -- data=%d", ndata);
+        printf("  TCP data recv = %d\n", ndata);
+        return mbt_test_summary("TSTRQXR");
+    }
 
     s = nsf_socket(NSF_AF_INET, NSF_SOCK_DGRAM, 0);
     CHECK(s >= 0, "SOCKET (datagram) across the boundary");

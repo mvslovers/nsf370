@@ -22,9 +22,22 @@
 //* retained SVC router) until the next IPL.  Read NSF055I's "LARGEST FREE
 //* BLOCK NOW" at each S NSFS to track it.
 //*
+//* TWO ARMS, selected by PARM:
+//*
+//*   PARM='ARM'   UDP (80-CHK).  Zero-byte control then the data arm.
+//*                peer: python3 recvkey_peer.py 192.168.200.2 3004 --len 256
+//*
+//*   PARM='ARMT'  TCP (80-FIX).  The same store through src/nsftcp.c -- the
+//*                path HTTPD and mvsMF would use at M6, so it is measured on
+//*                both sides of the fix rather than reasoned.
+//*                peer: python3 recvkey_peer.py 192.168.200.2 3005 --tcp
+//*                                             --len 256
+//*
+//* AFTER THE FIX both arms are expected to COMPLETE; before it, both abend.
+//*
 //* PREREQUISITES:
 //*   S NSFS
-//*   python3 samples/host/recvkey_peer.py 192.168.200.2 3004 --len 256
+//*   the peer for the arm you are running (above)
 //*
 //ARM     EXEC PGM=TSTRQXR,PARM='ARM',REGION=8M
 //STEPLIB  DD DSN=IBMUSER.NSF370.V0R1M0D.TESTLIB,DISP=SHR

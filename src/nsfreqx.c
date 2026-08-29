@@ -21,6 +21,18 @@ UINT nsfreqx_stage_len(UINT ulen)
 }
 
 /* -------------------------------------------------------------------------- */
+UINT nsfreqx_land_copy(void *dst, const void *src, UINT xlen)
+{
+    UINT n = nsfreqx_stage_len(xlen);
+
+    if (dst == NULL || src == NULL || n == 0u) {
+        return 0u;
+    }
+    memcpy(dst, src, (size_t)n);
+    return n;
+}
+
+/* -------------------------------------------------------------------------- */
 void nsfreqx_slot_in(NSFRQE *slot, const NSFRQE *caller)
 {
     if (slot == NULL || caller == NULL) {

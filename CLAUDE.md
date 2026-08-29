@@ -2004,6 +2004,132 @@ existing window widened, `asm/nsfvsvc.asm` untouched, anchor layout unmoved, `AN
 (`IEA995I` 0 against `IEF450I` 4 as the positive control — itself the right number: 2 NSFS
 `S0C4` + 2 client `S222`). Host **2991 PASS / 0 FAIL** unchanged — a no-regression check
 only. `docs/measurements/80-chk/`.
+**80-FIX (the receive lands in private storage, not in CSA) — DONE, live-green in all
+four arms. It FIXES #80's fault; closing the issue is Mike's.** Not a milestone step;
+**M5 stays in progress and nothing flips** — c1 stage b is still with Mike, and #64/#83
+are untouched. The executive dispatched requests whose `ubuf` pointed straight at the CSA
+slot's staging buffer — `SP=241`, **key 0** — while running in its own **key 8**, so any
+verb that WRITES its result through `ubuf` performed a key-8 store into key-0 storage and
+took `S0C4`. **`ubuf` now points at a private landing area** (`g_land`, static,
+`NSFV_XFER_CHUNK`, beside `g_priv` because there is exactly ONE private NSFRQE in flight —
+ADR-0042 §10), and the staged chunk is copied **in** before dispatch and **out** after
+completion, both inside key windows that **already existed**. `MOVEOUT` remains the only
+assembler running under a borrowed key. **THE RULE, which is the durable part: CSA never
+appears as a writable target in the protocol layer** — it may be READ there (the anchor is
+not fetch-protected), but anything the protocol layer writes into is private storage and
+the crossing happens in ONE place, under a key window, in the executive. **No key window
+was added to the protocol layer** and none of `nsfudp.c`/`nsfbuf.c`/`nsftcp.c`/`nsfsoc.c`/
+`nsfsel.c` contains `__super`/`__prob`/`SPKA`/`PSWKEY0` (**0 in all five, checked**) —
+that ignorance is the design (ADR-0003) and is what makes the rule true *by construction*
+rather than by care. Two alternatives are **recorded as rejected on blast radius** so they
+are not proposed again: protocol completion under key 0, and a key-8 staging area (which
+trades a fault for a security hole). **SEMANTICALLY TRANSPARENT for well-formed requests — and a
+deliberate NARROWING for malformed ones:** both copies are sized by the same clamped
+`xlen` that `asm/nsfvsvc.asm`'s `RQEOUT` **already** reloads from `SLXLEN` for its own
+read-out, so for every request the SVC routine can legitimately produce (its move already
+clamps) what reaches the client is byte-for-byte what it was before — the fix moves WHERE
+the protocol layer writes and changes no observable result. But `priv->ulen` is now
+`nsfreqx_stage_len(slot->xlen)` rather than the raw word, so a **corrupted or hostile**
+`xlen` reaches the protocol op CLAMPED where before it arrived inflated and overread
+`stage[]` — stated separately because the transparency framing alone hides a real
+improvement. **THE EXECUTIVE NOW OWNS
+THE BOUND:** `xlen` arrives from a CSA slot an *unauthorised* client wrote, and after the
+fix it bounds a `memcpy` into the STC's OWN private storage (before, an inflated value
+overran `stage[]` into the next slot — a different blast radius, not a smaller one). Both
+copies therefore go through **`nsfreqx_land_copy`** (`NSFRXLCP`), whose bound is the
+existing host-pinned `nsfreqx_stage_len` — one expression, not a second `if` that can
+drift (the `nsfreqx_reap_ok`/`nsfreqx_actionable` precedent) — and it is **direction-
+neutral**, the same call serving both copies so the pure half never learns a direction.
+**ALWAYS COPY, BOTH WAYS, though sends do not need it** (a key-8 read of the anchor is
+permitted): a direction table is a thing that can be WRONG, and being wrong for a verb
+added later brings the fault back silently on a path nobody tests — literally how #80 came
+to exist — and **`SELECT` is ALREADY a both-directions verb** (`nsfsel.c:166` reads the
+item array through `ubuf` and writes each item's `ready` back), so the table would have had
+an awkward row the day it was written; and **`g_land` is ONE buffer shared by sequential
+clients**, so a recv of 2048 returning 10 copies the clamped `xlen` back — with the copy
+in, the residue is the client's OWN staged content, exactly as today; **without it, it
+would be the PREVIOUS client's, handed across address spaces.** The comment at the copy
+site carries the alternative and the three conditions that would make it the right trade
+(measured cost, the predicate in ONE place, a host test pinning it against the verb list).
+**THE ONE-IN-FLIGHT INVARIANT IS ASSERTED WHERE IT IS RELIED ON, not next to the
+declaration:** `g_priv` and `g_land` are each ONE object, safe only because
+`nsfreqx_actionable` gates DISPATCH on `!busy` — a gate one function away from the copy
+site. Concurrent service is a named open item (ADR-0042 §10), and if it lands, two clients
+interleaving in one landing area is **wrong data with no fault and no abend** — this
+project's most expensive failure class. The dispatch site therefore checks and declines
+(**`NSF056E`** — a FREE number, deliberately not a second `NSF054`, which already means the
+unrelated retain-branch condition; two conditions separated only by the severity letter
+cannot be described as one in a message list nor grepped apart by an operator).
+**THE COPY-OUT IS SIZED BY `xlen`, DELIBERATELY**, and the comment at the site says why,
+because the moved count *looks* available two lines away in `retcode`: (1) **there is no
+verb-independent moved count** — `retcode` is a byte count for SEND/RECV (`nsftcp.c:656`)
+but the **socket descriptor** for ACCEPT (`nsftcp.c:1121`) and SOCKET (`nsfreq.c:342`), so
+sizing by it means a per-verb table, the very thing always-copy excluded; and (2) **it would
+not narrow the residue anyway** — both copies use the same expression on the same slot
+(`xlen` is written once at staging and cleared at release), so the range copied OUT is
+exactly the range the copy IN just filled with THIS client's own content, and what a
+previous client left in `g_land` lives beyond it and is never read. **The residue's scope
+stays per-slot, as before the landing area existed — it does NOT widen to global** — and
+that is **pinned in TSTREQX, not argued**: removing the copy-in (modelling the
+direction-aware alternative) turns those two assertions red.
+**PHASE 1 IS STRUCTURALLY UNTOUCHED, which is a positive check and not the host suite:**
+neither `src/nsfsx.c` nor `src/nsfreqx.c` is in the `NSF` module's source list, and
+`src/nsfmain.c` references neither (**0 hits**) — the code cannot be reached there. Host
+**2991→3007** (TSTREQX 137→153) is a **no-regression check only**, since both changed files
+are MVS-only. **Offline gates:** the new assertions **verified to discriminate** (removing
+the clamp → 2 FAIL); **ASan+UBSan clean** on TSTREQX, and ASan **verified to watch this
+exact buffer** (the unbounded copy reports at `nsfreqx.c:31 in NSFRXLCP`); 6 modules + 53
+test modules cross-link clean, no warnings; alias scan **258 unique, all ≤ 8** (one new,
+`NSFRXLCP`); `asm/`, `include/nsfvsvc.h` and `include/nsfreq.h` **byte-identical to main**
+— anchor layout unmoved, `ANCVERNO` 3, **NSFRQE frozen at 64 B**, no runtime allocation.
+**VALIDATED LIVE on MVSCE** (real 0500/0501, MTU 1500, unauthorised client), **four arms,
+one axis**: **STAGE A, before the fix** — the TCP arm (`test/mvs/tstrqxr.c` `PARM='ARMT'`,
+a second opt-in mode on the existing probe, peer extended with `--tcp`; deliberately NO
+zero-byte control on TCP, where a 0 return means EOF and is a different path) reproduced
+the fault, `TCP ARM -- DATA RECV ISSUED` present and `RETURNED` **absent**, `NSF900E`→
+`NSF902I`→`NSF903I`→`NSF901I`, `IEF450I NSFS ABEND S0C4`; retained anchor read back through
+`/.dm` (eyecatcher `NSFVANCR` as the instrument's positive control): `served=36`, slot 0
+`req_state=PENDING` — the **dispatch**-fault shape, distinct from the write-out fault's
+DONE, now confirmed on TCP rather than assumed — `xfunc=6`, **`xlen=512`** (non-zero, which
+forecloses "a zero-length no-op masquerading as the fault"), `reply_ecb=809DE6E0` (parked,
+never POSTed), `inflight` leaked at 1. **So TCP is MEASURED on both sides** — 80-CHK had
+reasoned it. **STAGE C, after the fix:** UDP data **completes** `n=256 payload
+byte-exact=1` **CC 0000** (this was the `S0C4`); UDP zero-byte **still completes** `n=0` —
+what proves the fix repaired the path rather than disabling it; TCP data **completes**
+`n=256` byte-exact **CC 0000**, the identical call that faulted in Stage A, same test
+binary, only the module changed. **REVERTED arm** (one axis: the two call sites in
+`nsfsx.c`, `nsfreqx_land_copy` left in place so only its USE differs) → **the `S0C4`
+returns**, with the same positive anchor signature read back (`served=6`, slot 0
+`PENDING`, `xlen=512`, `inflight=1`) so the arm never rests on an absence — the zero-byte
+control completing in **both** states is what makes it exactly one assertion moving. Then
+**RESTORED** → green again, source `git diff` identical to the committed fix.
+**Deploy-took-effect is positive in both directions:** a data-returning receive completing
+is **impossible** on the unfixed module, and the reverted arm is carried by the abend PLUS
+the anchor read, never by a missing line. **Regression:** `TSTRQXC`/`TSTRQXF` **CC 0
+batch+TSO** (8/8, 53/53); `TSTRQXM` **batch CC 0 32/32** with the host peer verifying
+**9353 bytes byte-exact** (TSO FAIL by design — the one-shot listener consumed by the batch
+run, `CONNECT errno=61` + its dependent `CLOSE`; batch is the gate, the TSTTCPW precedent);
+NSFV round `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH`/`TSTXFW` **484 PASS CC 0 batch+TSO**
+(`TSTMVCD` excluded, #53). **Zero dumps** (`IEA995I` 0 against a non-zero `IEF450I` as the
+positive control). **CSA budget computed up front rather than discovered** (the two
+faulting arms cost ~139 KB each): `794624 → 655360 → 516096`, both steps exactly −139264
+as predicted, against 137272 needed contiguous — **no mid-round IPL required**, and none
+taken. **Two free data points, neither designed for here:** #79 held in the field on a
+NATURAL abend both times (`S NSFS` succeeded on the same IPL, a different anchor and a
+different router EP each time — the retained-module evidence); and **#83's `A0A` did NOT
+fire with devices UP**, `NSF901I` reached, corroborating the m5-79 reading that devices-up
+is necessary but not sufficient. **DOES NOT ESTABLISH:** the **inline** (rxq-dequeue)
+completion shape, still **reasoned, not run** (`udp_complete_recv`'s header states it is
+shared with the parked path); **`SELECT` across the boundary** — no test drives a
+cross-AS SELECT, but note its SHAPE: it is not a gap in the argument but an INSTANCE of it —
+**a second, untested path of exactly #80's class that the fix covers without anyone having
+had to know it existed**, which is the retrospective justification for always-copy (under a
+direction table, correctness there would have rested on a row nobody would have written,
+because nobody thought of it). What is unestablished is the *exercise*, not the coverage; whether the faulting `MVC` suppresses
+or terminates; recovery from the dangling state (`req_state` stuck, `inflight` leaked — still the open M5-2 item
+ADR-0039 names); or anything about #64/#83. ADR-0041 annotated append-only with the false
+sentence quoted; ADR-0039 carries a pointer to the read-in side.
+[[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
 [[nsf370-a0a-recovery-device-subtasks]]
 [[nsf370-m5-stage0a-prime-status]] [[nsf370-m5-stage0b-status]] [[nsf370-m5-stage0c-status]]
