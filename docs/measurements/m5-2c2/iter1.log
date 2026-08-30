@@ -1,0 +1,14 @@
+=== BOUNDARIES (common vs private), and the control on them ===
+  CVT       01D048
+  GDA       FFFFC0   (CVT+X'230')
+  PASTRT    090000   PASIZE 00950000 (9536 KB)
+  private area window: [090000 .. 9E0000)
+  CONTROL: GDA+8 CSAPQEP -> PQE FFFF50  PQESIZE 2113536 (2064 KB)  PQEREGN 9E0000
+           64-3-0 measured CSA = 2064 KB -> REPRODUCES
+
+=== 16:25:41  ASCBs ===
+  000000  NOT AN ASCB (no eyecatcher) -- skipped
+# asid=12 recorded_ascb=FF8E68 asvt=FDAE08 maxu=32 entry@FDB044
+    0.1s 16:25:41 entry=00FF8E68 ascb=FF8E68 -> LIVE
+    4.9s 16:25:46 entry=80FDB048 ascb=FDB048 -> DEAD-row2-avail
+  101.1s final -> DEAD-row2-avail
