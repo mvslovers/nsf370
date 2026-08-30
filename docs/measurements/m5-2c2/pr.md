@@ -82,7 +82,10 @@ present — impossible on any earlier build). CTCI 0500/0501 up, ping 3/3 0 % lo
   verdict (b)**. All the risk lives in (a), and what it races is address-space *starts*, not
   wall time — the verdict held `DEAD` through all 158 s here only because the stand was
   idle. Had an address space started in any of those windows the identity would have
-  resurrected to LIVE and the STC would have POSTed into a dead one (40-CHK's leaked slot).
+  resurrected to LIVE — the address space is not dead, it has been **re-occupied** — and the
+  guard would have permitted the POST. It lands in the **CSA** reply ECB (`SLRECB`), which
+  nobody is waiting on, and the slot and `inflight` leak permanently: retain branch, IPL.
+  **No corruption** (40-CHK measured exactly that).
 
 ## What removal costs, per row
 

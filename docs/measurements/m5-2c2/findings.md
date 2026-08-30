@@ -145,8 +145,12 @@ production nothing bounds it — a peer that never sends leaves the guard never 
 stale and unexamined, followed by a bounded (≤1 s) verdict (b).** The risk lives entirely in
 (a), and what it races is address-space *starts*, not wall time — the verdict stayed
 `DEAD-row2-avail` through all 158 s here only because the stand was idle. Had an address
-space started in any of those windows, the identity would have resurrected to LIVE and the
-STC would have POSTed into a dead address space — 40-CHK's permanently leaked slot.
+space started in any of those windows, the identity would have resurrected to LIVE — the address space is not dead, it has been
+**re-occupied**, which is the point — and the guard would have permitted the POST. The
+consequence is 40-CHK's, reached by another route: the reply ECB lives in the **CSA slot**
+(`SLRECB`, `asm/nsfvsvc.asm:173`; the WAIT takes its address at line 771), **not** in the
+client's private storage, so the POST lands in a CSA word nobody is waiting on and the slot
+and `inflight` leak permanently — retain branch, IPL. **No corruption.**
 
 **The rate, and why a percentage would mislead.** Every kill was classified DEAD and acted
 on, the ASVT entry flipping to `AVAIL` within ~1 s of the ABEND every time. But the window

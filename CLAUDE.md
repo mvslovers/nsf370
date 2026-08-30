@@ -2351,8 +2351,13 @@ through the anchor). **THE RATE IS EVENT-BOUNDED, NOT TIME-BOUNDED** — ASID 12
 100 s with nothing else starting and returned to LIVE only when another AS was deliberately
 started — **and for the transport path it is worse: that guard has NO PERIOD** (above) — the verdict held
 `DEAD` through all 158 s only because the stand was idle; had an AS started in any of those
-windows the identity would have resurrected and the STC would have POSTed into a dead address
-space (40-CHK's leak). **Filed as a comment on #88, not as a c2 subject and not a new issue** —
+windows the identity would have resurrected — the AS is not dead, it has been **RE-OCCUPIED** —
+and the guard would have permitted the POST. **The reply ECB is in the CSA slot (`SLRECB`), NOT
+the client's private storage**, so it lands in a CSA word nobody waits on and slot + `inflight`
+leak permanently (retain branch, IPL) — 40-CHK's outcome by another route, and **NOT
+corruption**, which is the thing 40-CHK measured away and a loose phrasing would reopen. **The
+fix direction that follows is LOOK EARLIER, NOT FASTER** — the verdict is already ≤1 s; all the
+risk is in the unbounded interval before anyone looks. **Filed as a comment on #88, not as a c2 subject and not a new issue** —
 same root: `(ASCB, ASID)` is an address, and checking it later than it was recorded may be
 checking something else. **§1.3 — the verb and the fields are DIFFERENT CHANGES.**
 The verb is a dispatch branch, the `ORPHIN` block, the `ORPHRET` return and `TSTDEATH`
