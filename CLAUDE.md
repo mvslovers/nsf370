@@ -2312,8 +2312,8 @@ because nobody thought of it). What is unestablished is the *exercise*, not the 
 or terminates; recovery from the dangling state (`req_state` stuck, `inflight` leaked — still the open M5-2 item
 ADR-0039 names); or anything about #64/#83. ADR-0041 annotated append-only with the false
 sentence quoted; ADR-0039 carries a pointer to the read-in side.
-**M5-2c2 stage a (what retiring `ORPHAN` costs) — DONE, live-green, docs-only; the
-decision is Mike's and nothing is retired.** The first half of M5-2c's obligation #4;
+**M5-2c2 stage a (what retiring `ORPHAN` costs) — DONE, live-green, docs-only,
+maintainer-countersigned (PR #90 merged); the decision is Mike's and nothing is retired.** The first half of M5-2c's obligation #4;
 **M5 stays in progress and no milestone flips.** A mapping round: no verb retired, no field
 removed, no test scenario removed, no recommendation — `git status` shows exactly one added
 path, so *anchor unmoved, `ANCVERNO` 3, `NSFRQE` frozen at 64 B* is a property of the diff
@@ -2394,7 +2394,11 @@ redeployed — a previous `--only` had replaced TESTLIB, so the first `S TSTAPPD
 RESTORED`, **no `NSF054W`**, **zero dumps** against 9 deliberate `S222` cancels as the positive
 control. Host **3342 PASS / 0 FAIL** before and after — a no-regression check only. **Does NOT
 establish:** whether row 3 is reachable on any other stand; the reuse window in general; the
-TSO client class; or whether the retirement should happen. `docs/measurements/m5-2c2/`.
+TSO client class; or whether the retirement should happen. `docs/measurements/m5-2c2/`. **The no-period finding is FILED AS A COMMENT ON #88**, in the
+usable form the countersign asked for — the verdict half is already ≤1 s, so **the direction of
+any fix is LOOK EARLIER, NOT FASTER**. **Nothing is closed:** #88 deferred, **#67 and #87 open**,
+**obligation #4 UNDISCHARGED** — retiring the verb and deciding the fields are two separate
+questions, and §3b is why.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
