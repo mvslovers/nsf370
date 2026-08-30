@@ -31,6 +31,7 @@
  *   nsfsx_start NSFSXSTA   nsfsx_stop  NSFSXSTO   nsfsx_ecb   NSFSXECB
  *   nsfsx_drain NSFSXDRN   nsfsx_pending NSFSXPND
  *   nsfsx_stats_extra NSFSXSXT   nsfsx_classify_client NSFSXCLC
+ *   nsfsx_set_sweep_notify NSFSXSSN
  *   nsfsx_recover_quiesce NSFSXRQ
  * ========================================================================== */
 
@@ -111,6 +112,15 @@ UINT *nsfsx_ecb(void) asm("NSFSXECB");
  * and nothing else; keeping the two reclamation paths distinct is deliberate
  * (M5-2c1). */
 int   nsfsx_classify_client(UINT ascb, UINT asid) asm("NSFSXCLC");
+
+/* Register the app-registry sweep's per-reclaim console line, NSF057I,
+ * and the per-sweep summary NSF058I that carries the best-effort caveat
+ * (M5-2c1 stage b, ADR-0045).  A one-line wrapper rather than exporting the
+ * handler itself, so the WTO text stays private to this file and the STC's
+ * init reads as a list of registrations.  Phase 1 never calls it, so a
+ * reclaim there -- which cannot happen anyway, having no identity to classify
+ * -- would in any case be silent. */
+void  nsfsx_set_sweep_notify(void) asm("NSFSXSSN");
 
 /* One call per executive pass: complete a finished request (copy the result
  * out, re-check client liveness, reply) and/or take a newly arrived one and

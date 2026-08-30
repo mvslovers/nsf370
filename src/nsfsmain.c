@@ -467,6 +467,7 @@ int main(int argc, char **argv)
      * Phase-1 registry, which records no identities at all, is never asked a
      * question it has no evidence for. */
     nsfreq_set_classifier(nsfsx_classify_client);
+    nsfsx_set_sweep_notify();           /* NSF057I per reclaim (ADR-0045)      */
     nsfopr_set_apps(nsfapp_report);
 
     /* 6. ESTAE from init onward (ADR-0006): recovery uses the same teardown. */

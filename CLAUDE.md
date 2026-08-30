@@ -1705,6 +1705,188 @@ asks after an idle period"**, which is the normal case. Three options are laid o
 Mike's call.** Each LEAVE/CANCEL arm costs one app slot of 16; the round leaked three and
 `P NSFS`/`S NSFS` reset it (**verified**: STC 1505 came up `0 OF 16 SLOTS IN USE`, no
 `NSF054W`, `SVC 239 RESTORED`, stand left clean). `docs/measurements/m5-2c1/`.
+**M5-2c1 stage b (the sweep, shipped best-effort and named that way) — host + cross-link
++ alias scan DONE; the live gate is NOT run.** The second half of the first sub-step of
+M5-2c; **M5 stays in progress and no milestone flips.** Stage a stopped on a measurement,
+and the measurement decided what this could be: **client liveness is not soundly
+detectable on 3.8j**, so the sweep reclaims a narrow class and nothing else
+(**ADR-0045**, new rather than an ADR-0040 annotation — Mike's call, asked and answered).
+**A batch client is NEVER reclaimed, ever** (its recorded ASCB is the **initiator's**, and
+an initiator does not end when a job ends — a normal end and a `CANCEL` both read `LIVE`);
+an **STC client is reclaimed only if the check wins the race against ASID reuse** (40-IDENT:
+both runs took the same ASCB *and* ASID, and a third start flipped two provably dead clients
+back to `LIVE` — **reclassified, not reaped**). So **`TERMAPI` REMAINS THE CONTRACT**, and
+it is **never described as a replacement for TERMAPI** — not in the code, the operator
+message, the ADR or this file. **Mike's position is recorded as his:** an explicit TERMAPI contract is
+**too fragile**, because it moves the robustness onto the client and the client is precisely
+the component whose misbehaviour creates the problem; a TCP/IP stack must protect itself
+implicitly. This is an **interim measure** accepted so the stack can be seen working, and
+the real design is deferred to **issue #88**. **What makes shipping defensible is the
+safe-side asymmetry, and it is one-directional:** a false `LIVE` leaks a slot; a false `DEAD`
+**cannot arise from reuse**, because an ASID is unique among the address spaces that are
+alive — reuse converts `DEAD → LIVE` only. **THE SAME ASYMMETRY IS WHY THE LIVE GATE NEEDS
+ITS OWN INSTRUMENT:** a run reclaiming nothing is **not automatically a failure**, so
+`NSF057I` is emitted **at the moment of a reclaim** — the only point at which the evidence
+still exists — to separate *"saw DEAD and acted"* from *"saw LIVE because the ASID had been
+re-taken"*; `F NSFS,APPS` cannot, because by the time it renders the evidence is gone or
+overwritten. **BUT THAT MESSAGE ALONE LEAVES THE EXPECTED CASE AMBIGUOUS, and the gap was
+found in review rather than by a test:** *swept, everything read LIVE* and *never swept at
+all* are BOTH silent, and "never swept" is the likely default (64-1: one pass in 259 s on an
+idle executive). So the sweep keeps two counters — reported through the STATS **supplement**
+as `NSF817I APPSWEEP SWEEPS=n RECLAIMED=m`, deliberately **NOT** `sts_register` counters,
+because the NSFS build already registers ~46 and `sts_render`'s fixed **512-byte** buffer
+truncates the rendered block well before the end of the list, so a counter added there could
+be one that never reaches the console (evidence that silently does not exist; the supplement
+is emitted *after* that block precisely so it cannot be pushed out). A live arm then reads
+`SWEEPS=12 RECLAIMED=0` against `SWEEPS=0` with no reasoning about where in a pass the
+operator drain runs — but **`SWEEPS` counts BOTH triggers**, so arm 1 must read it with no
+INITAPI traffic in flight or treat it as a **ceiling**. **MESSAGE NUMBERS ARE 0xx, NOT 8xx:** the reclaim (`NSF057I`) and the
+per-sweep summary (`NSF058I`) are EXECUTIVE actions and sit with their siblings
+`NSF050I`/`NSF051W`; 814–816 and `NSF817I` are things an operator ASKED for. Numbering the
+sweep with the operator verb that merely reports it would conflate the two reclamation paths
+in the place a reader looks first. **`NSF058I` carries the caveat**, and is emitted from
+**inside the sweep through a seam of its own** — written first as the periodic caller's own
+line it **silently exempted the on-demand trigger**, which is the LOUDEST burst there is (a
+full table at INITAPI, up to 64 reclaims) and exactly where an operator most needs it; a
+summary covering the quiet path and not the loud one is worse than none, because it reads as
+complete. **Found in review, fixed structurally, and pinned** (`test_sweep_summary_both_
+triggers`; reverting to the call-site shape fails **4**). It carries the caveat because
+"RECLAIMED" reads to an operator as authoritative cleanup — and its width was **measured, not estimated**:
+the Hercules console truncates near **107** characters and eats the **TAIL**, the natural
+phrasing came to **127**, so it would have kept the reassuring half and dropped every word
+that qualifies it. The caveat leads and the count sits inside it, at 103. **Two triggers, ONE implementation, the cap as a parameter** — periodic from
+`nsfsx_drain`, and on demand from `do_initapi` when the app table is full (retry **once**:
+if the sweep found nothing the table is genuinely full of live clients and EMFILE is the
+true answer). `min_secs == 0` bypasses the limiter and is **not a special case in the code**
+— a zero interval has always elapsed. **THE CLOCK IS REAL SECONDS BEHIND A NEW SEAM
+(`nsf_elapsed_ge`, `src/nsftime_plat.c` / `src/nsftime_plat_host.c`, C on BOTH sides).**
+Not ticks: ADR-0034's *queue empty ⟺ STIMER disarmed* means no NSFTMR tick advances with
+nothing armed (64-1: one pass in 259 s), so a tick limiter would never see its interval
+elapse **after an idle period** — precisely the pass that matters. Not a timer: that
+reintroduces the idle floor ADR-0043 established is not required. It is **pure** (both
+timestamps are parameters, no clock read), which is what makes the boundary host-testable
+exactly, and it **rounds LATE, never early**. **WHAT THE TEN SECONDS DOES NOT PROMISE**, said
+at the constant and in the header: it bounds the interval *between sweeps*, not the latency
+to a reclaim — a sweep happens only on a pass, and a pass only when something uses the stack.
+Honest form: *no sooner than ten seconds after the last sweep, and not until the stack is
+used again.* **THE TWO CALL SITES LOOK CONTRADICTORY AND THE RECONCILIATION IS NOW WRITTEN DOWN** (a
+reviewer stops there otherwise): the periodic caller stands down while `g_busy`, yet
+`do_initapi` calls the same function from *inside* dispatch, where `g_busy` is set **by
+construction**. Safe for two DIFFERENT unwritten reasons, both now at that call site — in
+Phase 2 because ADR-0042 §10 permits exactly ONE request in flight and it is this INITAPI,
+which owns no socket and parks on nothing; in Phase 1 because no classifier is registered, so
+nothing is ever DEAD. **The Phase-2 half of that argument DIES if concurrent service lands**
+(a named open item), and whoever implements it must revisit this call site and not only the
+drain. **PLACEMENT WAS THREE DECISIONS, NOT A FALL-OUT.** (1) `nsfsx_drain`, not
+`nsfreq_drain` — `evt_set_request` wires exactly ONE drain per build, so a Phase-1-drain
+sweep would never run in Phase 2 at all; it also makes **"Phase 1 sweeps nothing"
+STRUCTURAL** (`src/nsfmain.c` does not reach the code, registers no classifier and no
+notify) rather than a property of the zero identity. (2) **AFTER step 0, never in front of
+it** — the wake-ECB reset's argument is positional (64-1's two orderings), and inserting a
+block ahead of a first-position invariant is the `asm/nsfvsvc.asm` fall-through bug in C.
+(3) **It stands down while `g_busy`** — the in-service request may be PARKED on a socket
+owned by one of these very apps, so reclaiming would `soc_destroy` it and complete `g_priv`
+from inside a scan, under the step-1 path that owns the `g_busy`/`g_busy_slot` bookkeeping
+(M5-2b4's shape: a scan reaping the in-service slot from under the executive). **No key
+window** — the registry is STC-private key 8 and the classifier only READS the CVT/ASVT
+(common, not fetch-protected; stage a ran this exact path live from `F NSFS,APPS`). **The
+notify is a SEAM, not an `nsfmsg` call:** ~20 builds link `src/nsfreq.c` without NSFMSG, and
+a WTO is invisible to a host test — the reclaim, identity included, is exactly what a test
+must observe. **The identity is captured BEFORE `app_free`** along with the token, because
+`app_free` bumps the generation *and* zeroes the identity — reading either afterwards
+notifies `ASCB=0 ASID=0`, which is the one thing a live run needs to read. (**That was a real
+bug I wrote and the tests caught**; the "capture after free" revert fails 2.) **A CONTRACT
+CONFLICT THE TESTS FOUND, resolved in the header rather than bent in the test:** *"a future
+`since` answers 0"* and *"secs == 0 is always 1"* both cover a backwards timestamp — the
+future rule now **wins** (a timestamp that cannot be believed is not a measurement), and the
+two platforms are documented as differing on exactly that input **by RESOLUTION**, since MVS
+cannot see a sub-second step backwards at all. **Gates:** host **3007 → 3342 PASS / 0 FAIL**,
+and the new assertions are **verified to discriminate** — widening the reclaim predicate to
+LIVE-only fails **14**, capturing the identity after `app_free` fails **2**, making the
+limiter always-elapsed fails **2**, removing the on-demand sweep fails **4**, breaking the
+host seam's sub-second borrow fails **2**, counting a SKIPPED sweep as having looked —
+the exact lie the counters exist to prevent — fails **3**, and returning the summary to the
+periodic call site fails **4**. **A POSITIVE CHECK THAT THE `[host].replace` SWAP TOOK
+EFFECT falls out of the seam's own test and is worth naming:** every portable assertion in
+`test_elapsed_seam` was chosen to answer the same under both conversions, but the guarded
+sub-second borrow case does **not** — `since={100,5}, now={110,4}` is 0 on the host and 1
+under the MVS arithmetic — so a green host suite proves the **host** implementation is the
+one under test, rather than `nsftime_plat.c` having been compiled natively and passed
+anyway. Cross-build clean (**6 modules + 53 test
+modules**, cc370/as370/ld370, no warnings); alias scan **239 unique, all ≤ 8 chars** (four
+new: `NSFELAPS`/`NSFRQAPS`/`NSFRQSSN`/`NSFSXSSN`); **NSFRQE still frozen at 64 B**, anchor
+layout unmoved, `ANCVERNO` 3, `asm/` untouched — apps relink only. **§7.6 ANSWERED, and it
+found a DIFFERENT wall than the one asked about:** `F NSFS,APPS` does **not** truncate —
+worst-case `NSF815I` is **64 columns** against `NSFMSG_LINE` 128 and wto()'s 124-column
+split, and it does not share `F NSFS,STATS`'s `char buf[512]` wall because each slot is its
+own WTO (at 64 slots: **66 WTOs**, a console flood, not a truncation). What *is* a wall is
+the **host** capture ring — `src/nsfmsg_host.c` `CAP_MAX = 64`, and it drops **NEWER** lines
+— so with 64 slots in use the `NSF816I` summary is line 66 and is evicted. Reported, **not
+fixed** (§4), and it is why stage b's tests read the registry through `nsfreq_app_info`
+rather than through the report. **VALIDATED LIVE on MVSCE** (STC 1629/1633/1635, real
+0500/0501, MTU 1500), and the deploy-took-effect check had to be a NEW SHAPE because this
+round adds no field to an existing line: **`NSF817I APPSWEEP` present at all** is the proof
+(impossible on the old module), and its complement is what carried the revert arm.
+**ARM 1 (periodic), both halves quoted** — `SYS2.PROCLIB(TSTAPPDS)` `P=HANG` gives a dying
+STC that announces its own identity, so no reading is about some other address space.
+BEFORE (client alive): `SLOT 2 TOKEN=00010002 ASCB=00FF8D18 ASID=000C LIVE`, `3 OF 64 SLOTS
+IN USE`, `NSFSOC opens 3 closes 0`, `SWEEPS=19 RECLAIMED=0`. `C TSTAPPDS` → `IEF450I ...
+ABEND S222 ... 06.23.29`, and **ONE SECOND LATER** `NSF057I APP SLOT 2 (TOKEN=00010002
+ASCB=00FF8D18 ASID=000C) RECLAIMED` + `NSF058I ... 1 APP SLOT(S)`. AFTER: `2 OF 64 SLOTS IN
+USE`, **`NSFSOC opens 3 closes 1`**, `SWEEPS=25 RECLAIMED=1`. `D A,L` at 06.22.30 and
+06.24.09 is the **identical set** (7 jobs, 3 initiators) — nothing started, so the run
+measures the sweep and not ASID reuse. **Passes came from the STC's own idle heartbeat** (no
+external traffic, no address space started); the table was never full, so `do_initapi` never
+swept and all 25 sweeps are periodic — an exact count, not the ceiling the counter would
+otherwise be. **THE BATCH LIMITATION IS CONFIRMED AT SCALE, and it is the round's clearest
+picture of what this feature is NOT:** 63 ended batch clients — every `TSTAPPD` step of a
+61-step filler job plus the two earlier runs — all report the **same** initiator identity
+`ASCB=00FD0F18 ASID=0008` and every one reads **LIVE**, `0 DEAD`, reclaimed never. **ARM 2
+(on demand), before and after.** BEFORE: with the registry at `64 OF 64` and everything
+LIVE, **260 INITAPI attempts across two jobs every one returned `ERRNO=24` (EMFILE)** — and
+`SWEEPS` moved 46 → 125 across a 9-second job whose periodic share is ~1, so **the ~60 extra
+sweeps are one on-demand scan per refused INITAPI**: the scan demonstrably runs BEFORE the
+refusal. AFTER: with a 200-step job still running (a step attempts INITAPI every ~0.045 s
+against a 10 s periodic interval), `C TSTAPPDS` at 06.32.50 drew `NSF057I APP SLOT 63
+(TOKEN=0002003F ...) RECLAIMED` **in the same second**, and the slot came back as
+**`SLOT 63 TOKEN=0003003F ASCB=00FD0F18 ASID=0008`** — generation **3** and the INITIATOR's
+identity, i.e. a step of that job was granted the reclaimed slot. **Attribution stated
+honestly:** the same-second timing makes the on-demand path overwhelmingly likely rather
+than certain (a periodic sweep landing in that second is ~10 %), and it is the sweep-count
+evidence above that independently establishes the on-demand scan runs at all. **THE REVERT
+TEST, THREE STATES, ONE ASSERTION MOVING** — and the reverted arm is also the gate's own
+control for §2.3, because it RENDERS the "defect" signature deliberately: with the periodic
+call removed (`if (0 && !g_busy)`, one axis) the module reports **`SWEEPS=0` after 66 s with
+`EVTPASSES=663`** — impossible on the fixed module, so the revert is confirmed POSITIVELY
+and not by a missing line — and 46 s after the same cancel the slot reads **`DEAD` and still
+`1 OF 64 SLOTS IN USE` with `NSFSOC closes 0`**: the classifier saw DEAD, the socket was
+never freed, and nothing acted because nothing swept. Restored → `SWEEPS` climbs again and
+the same stimulus reclaims (`closes 1`). **PHASE 1 VERIFIED LIVE, not assumed:** `S NSF`
+starts clean (`NSF000I`→`NSF210I/211I`→`NSF001I`, no abend), `F NSF,APPS` still draws
+**`NSF808E UNKNOWN COMMAND APPS`** — the structural red line on the machine — and a 20-ping
+regression is **20/20, 0 % loss** (0.581/0.878/1.304 ms). Regression on the restored module:
+`TSTRQXC`/`TSTRQXF` **122 PASS CC 0 batch+TSO** (and 132 with `TSTAPPD` earlier in the
+round); **ZERO dumps** (`IEA995I` 0, against five `IEF450I S222` that are exactly the five
+deliberate `TSTAPPDS` cancels — the positive control); no `NSF900E`/`NSF903I`; `SVC 239`
+stolen and restored across every recycle; registry left at `0 OF 64`, stand as found.
+**§2.6 ANSWERED ON A REAL CONSOLE:** one `F NSFS,APPS` at a full registry is **exactly 66
+WTOs** (1 heading + 64 slots + 1 summary), longest line **61 columns**, nothing truncated —
+an operational consequence of 16 → 64 that appeared in no trade-off, and worth knowing
+before someone issues it on a busy stack.
+**THE DEPLOYED PHASE-1 MODULE AND `main` HAVE PARTED COMPANY, WHICH IS THE HALF THAT GOES
+MISSING:** "inert, no redeploy needed" is true, and so is "any `NSF` deployed before this
+change predates it" — the module links the changed `src/nsfreq.c` and the new
+`src/nsftime_plat.c`, so its bytes differ even though its behaviour does not. On mvsdev it
+WAS redeployed and verified above; anywhere else it has not been. `NSFREQ_APP_MAX` at 64 **buys
+time and fixes nothing**, now said at the constant with a pointer to #88. **"PHASE 1
+UNTOUCHED" IS A BEHAVIOURAL CLAIM, NOT A BYTE-LEVEL ONE:** the `NSF` module links the changed
+`src/nsfreq.c` and the new `src/nsftime_plat.c`, and `do_initapi`'s full-table path now runs a
+64-slot scan there before returning `EMFILE` — reclaiming nothing, since no classifier is
+registered and every Phase-1 slot has a zero identity. Observable behaviour is unchanged and
+`S NSF` need not be redeployed (the M3-2 precedent), but the module is **not** byte-for-byte
+identical and the unqualified claim is not made. A **mass reclaim is also a burst** inside one
+run-to-completion pass — up to 64 × (`soc_foreach` + a WTO) at a full table; bounded, once,
+and the pass a reader should picture.
 **40-CHK (does the ADR-0040 guard protect anything for a batch client?) — DONE, live-green,
 docs-only. It fixes nothing; the answer is NO.** Not a milestone step; **M5 stays in progress**
 and c1 stage b is still with Mike. Stage a proved a batch job runs in a **reused initiator**, so

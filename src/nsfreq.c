@@ -26,6 +26,11 @@
 #include "nsfthr.h"             /* nsfthr_post / nsfthr_wait (the POST seam)   */
 #include "nsfevtp.h"            /* NSFECB (requestECB + the app completion ecb)*/
 #include "nsftrc.h"
+#include "nsftime.h"           /* nsf_now + nsf_elapsed_ge: the sweep's clock */
+#include "nsfreqx.h"           /* NSFREQX_CL_* -- the verdicts, macros only:
+                                * no function from nsfreqx.c is called here, so
+                                * this adds no link dependency (nsfapp.c does
+                                * the same). */
 
 /* ---- transport: request queue + requestECB --------------------------------
  * g_reqxq is the CS-safe MPSC handoff (producers = app subtasks; consumer = the
@@ -65,7 +70,13 @@ static NSFECB g_reqecb;
  * outstanding, and the socket table is NSFSOC_MAX_DEFAULT = 64. At 16 this
  * registry was the tighter bound -- a 17th client could claim a CSA slot and
  * reach the dispatcher, only to be refused at INITAPI. Costs 12 bytes a slot,
- * so the whole table is 768 bytes static. */
+ * so the whole table is 768 bytes static.
+ *
+ * IT BUYS TIME AND FIXES NOTHING.  Raising a bound does not reclaim a slot; it
+ * only means more clients can leak one before the wall is hit.  What actually
+ * fills this table is applications that end without TERMAPI, and the sweep
+ * below reclaims those only for the narrow class it can prove dead -- never a
+ * batch client.  The real answer is deferred to issue #88. */
 #define NSFREQ_APP_MAX   64
 
 typedef struct appreg {
@@ -80,6 +91,34 @@ typedef struct appreg {
 } APPREG;
 
 static APPREG g_apptab[NSFREQ_APP_MAX];
+
+/* Sweep state (M5-2c1 stage b, ADR-0045). The stamp of the last sweep that
+ * actually RAN, and the per-reclaim notification seam.
+ *
+ * {0,0} means "never swept" and is deliberately a LONG time ago on both
+ * platforms (nsftime.h), so the first call sweeps rather than waiting out an
+ * epoch. NOT a timer: arming one would keep the STIMER permanently armed and
+ * reintroduce the idle floor ADR-0043 established is not needed. */
+static NSFTIME g_lastsweep;
+static void  (*g_sweepnotify)(UINT idx, UINT token, UINT ascb, UINT asid);
+static void  (*g_sweepsummary)(int reclaimed);
+
+/* Sweep counters, and they are the THIRD STATE FOR A WHOLE RUN (CLAUDE.md 8.5).
+ * A sweep that reclaims nothing is SILENT, and so is a sweep that never
+ * happened -- yet they mean opposite things: "looked, everything was alive"
+ * (expected, and the normal case, since a batch client always reads LIVE) vs
+ * "no pass, or a request was in service, or the interval had not elapsed".
+ * Without these a null live run is uninterpretable, which is exactly what
+ * ADR-0045 3 says the gate must avoid.
+ *
+ * PLAIN COUNTERS, NOT sts_register.  The NSFS build already registers ~46
+ * counters and sts_render's fixed 512-byte buffer truncates the rendered reply
+ * well before the end of the list, so a counter added here could be one that
+ * never reaches the console -- evidence that silently does not exist. They are
+ * reported through the STATS SUPPLEMENT instead (nsfsx_stats_extra), which
+ * emits its own WTO lines after the rendered block and cannot be pushed out. */
+static UINT g_sweeps_run;               /* sweeps that actually LOOKED         */
+static UINT g_slots_reclaimed;          /* app slots reclaimed, cumulative     */
 
 /* ---- protocol table (proto -> PROTOPS, for RQ_SOCKET) ---------------------- */
 #define NSFREQ_PROTO_MAX  4
@@ -131,6 +170,12 @@ void nsfreq_init(void)
     g_reqecb = 0u;
     g_xtransport = NULL;                /* Phase 1 until a transport registers */
     g_classify   = NULL;                /* ... and until one supplies a guard  */
+    g_sweepnotify  = NULL;              /* ... and until one wants to be told  */
+    g_sweepsummary = NULL;
+    g_lastsweep.hi = 0u;                /* "never swept" -> the first call runs */
+    g_lastsweep.lo = 0u;
+    g_sweeps_run      = 0u;
+    g_slots_reclaimed = 0u;
     for (i = 0u; i < NSFREQ_APP_MAX; i++) {
         g_apptab[i].inuse = 0u;
         g_apptab[i].ascb  = 0u;
@@ -242,6 +287,17 @@ void nsfreq_set_classifier(int (*fn)(UINT ascb, UINT asid))
     g_classify = fn;
 }
 
+void nsfreq_set_sweep_notify(void (*fn)(UINT idx, UINT token, UINT ascb,
+                                        UINT asid))
+{
+    g_sweepnotify = fn;
+}
+
+void nsfreq_set_sweep_summary(void (*fn)(int reclaimed))
+{
+    g_sweepsummary = fn;
+}
+
 int nsfreq_app_classify(UINT idx)
 {
     UINT ascb = 0u;
@@ -288,6 +344,53 @@ static void do_initapi(NSFRQE *r, UINT caller_ascb, UINT caller_asid)
     UINT token = app_alloc(caller_ascb, caller_asid);
 
     if (token == 0u) {
+        /* THE SECOND TRIGGER (ADR-0045).  The table is full, which is exactly
+         * the moment a leaked slot costs something, so look for dead clients
+         * NOW rather than waiting out the periodic interval -- 0 bypasses the
+         * limiter.  Same function as the periodic caller, the cap as its
+         * parameter: two paths that can drift is what this milestone has
+         * already paid for once.
+         *
+         * THIS SWEEPS WHILE A REQUEST IS IN SERVICE, WHICH THE PERIODIC CALLER
+         * DELIBERATELY WILL NOT DO -- so say why it is safe HERE, because the
+         * two call sites look contradictory otherwise.  We are inside the
+         * dispatch of this very request, so in Phase 2 g_busy is set BY
+         * CONSTRUCTION and the periodic guard could never be satisfied at this
+         * point; the guard exists to stop a scan from destroying a socket that
+         * a DIFFERENT, parked request is waiting on, and there cannot be one:
+         *
+         *   Phase 2 -- ADR-0042 10 permits exactly ONE request in flight, and
+         *     it is this INITAPI, which owns no socket and parks on nothing.
+         *   Phase 1 -- no classifier is registered, so no slot is ever DEAD
+         *     and the scan reclaims nothing whatever else is outstanding.
+         *
+         * THE PHASE-2 HALF OF THAT ARGUMENT DIES IF CONCURRENT SERVICE LANDS
+         * (a named open item in ADR-0042 10): a second in-flight request could
+         * then be parked on a socket this scan destroys.  Whoever implements
+         * concurrent service must revisit this call site, not just the drain.
+         *
+         * "BYPASSES THE LIMITER" IS NOT QUITE "ALWAYS RUNS", and the gap is
+         * worth one sentence because the obvious reading is the wrong one.
+         * A zero interval has always elapsed, so it defeats the RATE LIMIT --
+         * but nsftime.h gives the unbelievable-timestamp rule precedence over
+         * secs == 0, so a `since` LATER than now answers 0 whatever interval
+         * was asked for, and this call returns SKIPPED without looking.
+         *
+         * That needs the clock to have gone BACKWARDS since the last sweep:
+         * unreachable on MVS, where nsf_now is STCK and monotonic, and
+         * reachable on the host, whose gettimeofday reading can step back.
+         * The cost is small and self-correcting -- this INITAPI refuses with
+         * EMFILE where it might have reclaimed, and the next one works -- and
+         * the rule earning it is right: a timestamp that cannot be believed is
+         * not a measurement. Recorded rather than repaired.
+         *
+         * Retry ONCE.  If the sweep reclaimed nothing the table is genuinely
+         * full of live applications and EMFILE is the true answer; looping
+         * would just be the same scan again. */
+        (void)nsfreq_app_sweep(0u);
+        token = app_alloc(caller_ascb, caller_asid);
+    }
+    if (token == 0u) {
         soc_complete(r, NSF_RETERR, NSF_EMFILE);    /* no free app slot         */
         return;
     }
@@ -318,6 +421,96 @@ static void do_termapi(NSFRQE *r)
     soc_foreach(term_one, &r->apptok);
     app_free((UINT)idx);
     soc_complete(r, NSF_RETOK, 0);
+}
+
+/* ---- the best-effort reclamation sweep (M5-2c1 stage b, ADR-0045) ---------
+ *
+ * The contract, the limits and the reason this ships as best-effort are in
+ * nsfreq.h; what follows is only how it does it.
+ *
+ * IT REUSES do_termapi's MACHINERY EXACTLY -- soc_foreach(term_one) then
+ * app_free -- because a client that died IS an application that never got to
+ * call TERMAPI, and it must die through the same checklist.  A second teardown
+ * path here would be a second thing to keep correct (spec 10.5).
+ *
+ * THE TOKEN IS CAPTURED BEFORE app_free, exactly as do_termapi captures it: the
+ * free bumps the slot generation, so a token read afterwards matches no socket
+ * and the sweep would silently reclaim the slot while leaking every socket on
+ * it.  Both statements below depend on that order.
+ *
+ * TWO CALLERS, ONE IMPLEMENTATION.  The executive drain passes the periodic
+ * interval; do_initapi passes 0 when the table is full.
+ */
+int nsfreq_app_sweep(UINT min_secs)
+{
+    NSFTIME now;
+    UINT    i;
+    int     reclaimed = 0;
+
+    nsf_now(&now);
+    if (!nsf_elapsed_ge(&g_lastsweep, &now, min_secs)) {
+        return NSFREQ_SWEEP_SKIPPED;    /* did NOT look -- see the header      */
+    }
+    g_lastsweep = now;                  /* stamped for a sweep that RAN only   */
+    g_sweeps_run++;                     /* ... and counted on the same terms   */
+
+    for (i = 0u; i < NSFREQ_APP_MAX; i++) {
+        UINT token;
+        UINT ascb;
+        UINT asid;
+
+        if (!g_apptab[i].inuse) {
+            continue;
+        }
+        /* Through nsfreq_app_classify, never g_classify: that function is
+         * where the zero-identity red line lives, so a Phase-1 slot (no
+         * identity, hence no verdict) is NONE here and is never reclaimed.
+         * UNKNOWN is not reclaimed either -- ADR-0040's rule survives contact
+         * with the sweep, and DEAD is the only verdict that acts. */
+        if (nsfreq_app_classify(i) != NSFREQX_CL_DEAD) {
+            continue;
+        }
+
+        /* ALL THREE captured BEFORE app_free, not just the token: app_free
+         * bumps the generation AND zeroes the identity, so reading either
+         * afterwards reports a slot that names nobody -- a notification of
+         * ASCB=0 ASID=0, which is precisely the identity a live run needs to
+         * read to tell a reclaim from a reuse. */
+        token = app_token(i);
+        ascb  = g_apptab[i].ascb;
+        asid  = g_apptab[i].asid;
+
+        soc_foreach(term_one, &token);
+        app_free(i);
+        reclaimed++;
+        g_slots_reclaimed++;
+
+        if (g_sweepnotify != NULL) {
+            /* After the reclaim, so the message describes something that has
+             * already happened rather than something about to be attempted. */
+            g_sweepnotify(i, token, ascb, asid);
+        }
+    }
+    /* THE SUMMARY IS A PROPERTY OF THE SWEEP, NOT OF ONE CALLER.  It was
+     * briefly the periodic caller's own line, and that silently exempted the
+     * OTHER trigger -- a full table at INITAPI, which is the LOUDEST and most
+     * consequential burst there is (up to 64 reclaims at once) and the one an
+     * operator most needs the caveat beside.  Emitting it here means the two
+     * triggers cannot drift, which is the same rule the sweep itself is built
+     * on: one function, two callers.
+     *
+     * Only when something was actually reclaimed -- an empty sweep would be a
+     * line every ten seconds, forever. */
+    if (reclaimed > 0 && g_sweepsummary != NULL) {
+        g_sweepsummary(reclaimed);
+    }
+    return reclaimed;
+}
+
+void nsfreq_sweep_stats(UINT *sweeps, UINT *reclaimed)
+{
+    if (sweeps    != NULL) *sweeps    = g_sweeps_run;
+    if (reclaimed != NULL) *reclaimed = g_slots_reclaimed;
 }
 
 static void do_socket(NSFRQE *r)
