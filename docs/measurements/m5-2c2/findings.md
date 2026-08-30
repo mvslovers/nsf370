@@ -33,7 +33,7 @@ from the FLIH, not one it was handed — be arranged into this row?
 | row | condition | producible by a real client | logic host-side | wiring live **after** removal |
 |---|---|---|---|---|
 | 1 LIVE | ASID assigned, ASCB matches | **yes**, constantly | yes | **yes** — every cross-AS test |
-| 2 DEAD (avail bit) | ASVT entry `AVAIL` | **yes** — 9 of 9 kills | yes | **yes** — app sweep n=8, transport **n=1** |
+| 2 DEAD (avail bit) | ASVT entry `AVAIL` | **yes** — 14 of 14 kills | yes | **yes** — app sweep n=13, transport **n=6** |
 | 3 DEAD (ASCB mismatch) | ASID assigned, ASCB differs | **no** — 0 of 9 reuses | yes | **no**, and not coverable |
 | 4a UNKNOWN | `req_ascb == 0` | **no** | yes | **no** (only `ORPHAN` drives it) |
 | 4b UNKNOWN | `asvt_enty == NULL \|\| maxu == 0` | **no** — STC-side, not a client property | yes | no (never was) |
@@ -101,38 +101,62 @@ The completing datagram is required: M5-2b4 established that the drain scan **sk
 in-service slot**, so a parked request is never reaped by the periodic scan; only the
 completion path's guard looks at it.
 
-**The ledger, so the counts reconcile.** 9 real STC clients were killed. All 9 were
-reclaimed by the **app sweep** (`NSF057I`), which is why the closing
-`NSF817I APPSWEEP … RECLAIMED=9` reads 9. Exactly one of those 9 — the `PARK` run — also
-had a published **transport** request outstanding, and that one produced the `NSF050I`
-transport reap and the closing `REAPED=1`. So: app-sweep path **n = 8** plus the PARK run;
-**transport path n = 1**.
+**The ledger, so the counts reconcile.** 14 real STC clients were killed across two NSFS
+instances. All 14 were reclaimed by the **app sweep** (`NSF057I`). Six of them also had a
+published **transport** request outstanding — the one `PARK` run of the first session plus
+the five of the addendum — and each produced an `NSF050I` transport reap. The second
+instance closed at `REAPED=5` (transport) and `RECLAIMED=5` (app sweep), which is its five
+`PARK` runs counted once on each path.
 
-**And the transport datum is n = 1, which matters because it is the path `ORPHAN`
-rehearses.** The app-sweep evidence is plentiful but it is not the path `TSTDEATH`'s rows
-live on. The claim "a real client can drive the transport guard to row 2" rests on a single
-observation, cleanly instrumented but single.
+**Transport-path hit rate: 6 of 6.** Every run proved the request genuinely outstanding
+first, by the conjunction 40-CHK established rather than by `PENDING` alone
+(`NSF813I BUSY=1 BUSYSLOT=0 INFLIGHT=1`), and every run ended
+`NSF050I CLIENT DEAD (ASCB=00FF8E68 ASID=000C) -- REQUEST REAPED`.
+
+### The two intervals, which are not the same kind of thing
+
+The first session reported ~16 s between the `ABEND` and the `NSF050I` and offered it as
+evidence that the transport guard has no period. **That number was mostly the arm's own
+choice of when to send the completing datagram, and repeating the arm would have measured
+the script rather than the system.** The addendum therefore *varies* that gap deliberately
+and reports the interval in two parts:
+
+| run | (a) ABEND → datagram | (b) datagram → `NSF050I` | verdict at send | reaped |
+|---|---|---|---|---|
+| p5   | 12 s  | **1 s**  | DEAD-row2-avail | yes |
+| p20  | 28 s  | **≤1 s** | DEAD-row2-avail | yes |
+| p45  | 52 s  | **≤1 s** | DEAD-row2-avail | yes |
+| p90  | 97 s  | **1 s**  | DEAD-row2-avail | yes |
+| p150 | 158 s | **≤1 s** | DEAD-row2-avail | yes |
+
+*(MVS console time + 7 h = host local time, verified this round. Console resolution is one
+second, so "≤1 s" means the send and the `NSF050I` fell in the same console second.)*
+
+**(b) is the system measurement and it is tight: ≤1 s in all five.** Once a completing event
+exists, the STC classifies and reaps essentially immediately.
+
+**(a) is not a system property at all** — it is when the peer happens to send, and it was
+set here to five values spanning 12 s to 158 s, all of which the arm chose. That spread is
+the demonstration, and it is a stronger one than any single figure: **the guard did not look
+until the request completed, at every gap, up to 158 s after the client had died.** In
+production nothing bounds it — a peer that never sends leaves the guard never looking.
+
+**So the exposure decomposes as: an unbounded interval (a) during which the identity is
+stale and unexamined, followed by a bounded (≤1 s) verdict (b).** The risk lives entirely in
+(a), and what it races is address-space *starts*, not wall time — the verdict stayed
+`DEAD-row2-avail` through all 158 s here only because the stand was idle. Had an address
+space started in any of those windows, the identity would have resurrected to LIVE and the
+STC would have POSTed into a dead address space — 40-CHK's permanently leaked slot.
 
 **The rate, and why a percentage would mislead.** Every kill was classified DEAD and acted
 on, the ASVT entry flipping to `AVAIL` within ~1 s of the ABEND every time. But the window
 is **event-bounded, not time-bounded**: with nothing else starting, ASID 12 stayed `AVAIL`
-for the full 100 s of the first watch, and returned to LIVE only when another address space
-was deliberately started. So the check races **address-space starts**, not wall time, and a
-rate quoted without the start rate attached is not transferable.
-
-**For the transport path it is worse than that, and this is the sharper form of the same
-insight: the transport guard has no period at all.** The sweep looks every 10 s; the
-transport guard looks *when the request completes*, which is the client's or the peer's
-business and is unbounded. In this round's own datum there were **~16 s** between the
-`ABEND S222` (9.36.35) and the `NSF050I` (9.36.51), and the guard looked only because a
-datagram was sent. Had another address space started in that gap, the identity would have
-resurrected to LIVE and the STC would have POSTed into a dead address space — 40-CHK's
-permanently leaked slot. So the transport exposure is **completion latency vs. start rate**,
-with completion latency unbounded, not "sweep period vs. start rate".
-
-Direction, carried from `m5-79` rather than re-derived: fast reuse means the check **misses
-more**, and this stand is the **pessimistic** case (three initiators, near-empty STC ASID
-range, LIFO free chains). A hit rate measured here is a **floor**.
+for the full 100 s of the first watch and for the full 158 s of `p150`, and returned to LIVE
+only when another address space was deliberately started. So the check races
+**address-space starts**, not wall time, and a rate quoted without the start rate attached
+is not transferable. Direction, carried from `m5-79` rather than re-derived: fast reuse
+means the check **misses more**, and this stand is the **pessimistic** case — a hit rate
+measured here is a **floor**.
 
 ### Row 3 — DEAD, ASID reused with a different ASCB: **not produced, not once**
 
@@ -245,13 +269,31 @@ A new client meeting an old router would therefore have `rqeimg` and `slot` read
 offsets, silently, with the eyecatcher check passing. That is the same hazard class
 `ANCVERNO` was introduced for, in a structure that has no equivalent guard.
 
+**What would have to be true for that to bite, and how likely it is.** The hazard needs an
+application or test module **linked before** the layout change and **run after** it — a
+client and a router from different sides of the change, alive at the same time. Two things
+bear on how realistic that is, and they point in the same direction: client modules are
+linked separately from `NSF.LINKLIB` (test clients live in TESTLIB, applications in their
+own libraries), and the deploy runbook replaces **only** `NSF.LINKLIB`. So nothing in the
+normal flow rebuilds the clients when the router moves, and the mismatch is the *default*
+outcome of a router-only deploy rather than an unlucky one. It is also silent by
+construction: the eyecatcher still matches, so there is no complaint to notice.
+
+Against that: the window is a rebuild away from closing — `make test-mvs` relinks every test
+client, so a full round leaves them consistent — and the two fields most exposed
+(`rqeimg`, `slot`) are written and read within a single request, so a mismatch shows up as a
+wrong slot index or a wrong image address rather than as latent corruption.
+
+Both directions stated; which of the two options in §3b is worth paying is the decision this
+round does not make.
+
 **The two costs, stated flatly.** Verb gone / offsets unchanged: no field moves, no assert
 changes, no skew hazard, and the two fields remain as dead reserved words. Verb gone /
 fields removed: 7 fields move, 8 offset asserts and 7 asm EQUs change, two production
 fields (`rqeimg`, `slot`) shift, and the move lands in a structure that has no version
 check — so it is a layout change of the kind `ANCVERNO` exists to catch elsewhere, and
-would want an equivalent guard introduced in the same change. Which of those is worth
-paying is the decision this round does not make.
+would want an equivalent guard introduced in the same change (precondition and likelihood
+immediately above).
 
 **The churn is shared with the rest of the probe set.** `SLOT` / `QUERY` / `UNSTAGE` carry
 the identical *"SCAFFOLDING, DUE OUT IN M5-2c — a SECURITY item, not hygiene"* header, and

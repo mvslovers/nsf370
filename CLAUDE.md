@@ -2325,8 +2325,16 @@ INFLIGHT=1` (the 40-CHK conjunction, since `PENDING` alone does not prove outsta
 `C TSTAPPDS` → the completing datagram → **`NSF050I CLIENT DEAD (ASCB=00FF8E68 ASID=000C) --
 REQUEST REAPED`**, `BUSY=0 INFLIGHT=0 REAPED=1`. **The ledger, so the counts reconcile:** 9
 real STC kills, all 9 reclaimed by the app sweep (`NSF057I`, closing `RECLAIMED=9`); exactly
-one also carried a transport request, so **app-sweep n=8, transport n=1** — and the claim that
-matters rests on that single observation, which is said rather than averaged away.
+six also carried a transport request, so **app-sweep n=13, transport n=6** — the transport DEAD
+path is **6 of 6**, each proving the request outstanding first by the 40-CHK conjunction.
+**THE DEATH→VERDICT INTERVAL DECOMPOSES AND ONLY HALF IS A SYSTEM PROPERTY:** the first
+session's ~16 s was mostly the arm's own choice of when to send the completing datagram, so
+repeating it would have measured the script — the addendum VARIES that gap (12/28/52/97/**158** s)
+and reports two parts. **(b) datagram→`NSF050I` is ≤1 s in all five** (the real measurement:
+once a completing event exists the STC reaps immediately); **(a) ABEND→datagram is not a system
+property at all** — the guard did not look until the request completed, at every gap, **158 s
+after the client had died**. So the exposure is an **unbounded (a)** in which the identity is
+stale and unexamined, then a **bounded (≤1 s) verdict (b)**; all the risk is in (a).
 **WHAT IT COSTS IS LIVE WIRING FOR THE TWO ROWS A REAL CLIENT CANNOT REACH.** **Row 4 is FOUR
 branches, not one** (`req_ascb==0`, no ASVT, `req_asid==0`, `req_asid>maxu`) and `ORPHAN`
 drives only the first — the row's live coverage was already 1-in-4; none is producible by a
@@ -2341,11 +2349,12 @@ reply POST (`src/nsfv.c:427`), so every boundary-crossing test is a witness (`TS
 are **pruned** from that list — instruction-level probes that self-auth and never rendezvous
 through the anchor). **THE RATE IS EVENT-BOUNDED, NOT TIME-BOUNDED** — ASID 12 stayed `AVAIL`
 100 s with nothing else starting and returned to LIVE only when another AS was deliberately
-started — **and for the transport path it is worse: that guard has NO PERIOD.** It looks when
-the request completes, which took **~16 s** here and is unbounded, so the exposure is
-*completion latency vs. address-space start rate*, not "sweep period vs. start rate"; had an AS
-started in that gap the identity would have resurrected and the STC would have POSTed into a
-dead address space (40-CHK's leak). **§1.3 — the verb and the fields are DIFFERENT CHANGES.**
+started — **and for the transport path it is worse: that guard has NO PERIOD** (above) — the verdict held
+`DEAD` through all 158 s only because the stand was idle; had an AS started in any of those
+windows the identity would have resurrected and the STC would have POSTed into a dead address
+space (40-CHK's leak). **Filed as a comment on #88, not as a c2 subject and not a new issue** —
+same root: `(ASCB, ASID)` is an address, and checking it later than it was recorded may be
+checking something else. **§1.3 — the verb and the fields are DIFFERENT CHANGES.**
 The verb is a dispatch branch, the `ORPHIN` block, the `ORPHRET` return and `TSTDEATH`
 scenarios 1-4 (scenario 5, a real-identity LIVE control, survives) — and the list is
 **exhaustive** because `ORPHIN` stages `xfunc = FNECHO`, so no C-side code ever sees `ORPHAN`
@@ -2357,7 +2366,11 @@ validates a **layout-invariant** eyecatcher only (line 344), while `ANCVERNO` (l
 the **anchor** — the router↔STC contract — not the client↔router one, and those are separately
 linked modules that skew exactly the way §5 documents. The probe fields are not contiguous
 either (`rqeimg` sits between them), so the churn is shared with `SLOT`/`QUERY`/`UNSTAGE`. Both
-costs reported, neither recommended. **Consequence to name: `TSTDEATH` is part of the standing
+costs reported, neither recommended. **§3b carries its counterweight**: the skew needs a client linked BEFORE and run AFTER the
+change, and the runbook replaces only `NSF.LINKLIB` while clients link separately — so the
+mismatch is the DEFAULT outcome of a router-only deploy, silent by construction; against that,
+`make test-mvs` relinks every test client, and the two exposed fields are written and read
+within one request. **Consequence to name: `TSTDEATH` is part of the standing
 444/484 Stage-0 figure**, so retiring scenarios 1-4 changes that baseline and the round protocol
 must be restated with it. **#67 read from the issue rather than inherited, and it is sharper
 than the summary:** stranding needs **no forged dead identity** — the `ACT_DISPATCH` arm strands

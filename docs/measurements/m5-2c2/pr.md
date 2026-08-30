@@ -54,15 +54,22 @@ reachable with or without `ORPHAN`.
 Deployed build confirmed as c1's by the positive check c1 established (`NSF817I APPSWEEP`
 present — impossible on any earlier build). CTCI 0500/0501 up, ping 3/3 0 % loss.
 
-- **Row 2 is producible by a real client and the guard acts on it.** 9 real STC clients
-  killed; the ASVT entry flipped to `AVAIL` within ~1 s of the ABEND every time. All 9
-  reclaimed via the **app sweep** (`NSF057I`, closing `RECLAIMED=9`).
-- **The transport path — the one `ORPHAN` rehearses — n = 1, and it is new.** A `PARK` run
-  with a genuinely outstanding request (`BUSY=1 BUSYSLOT=0 INFLIGHT=1`, the conjunction
-  40-CHK established) was cancelled and then completed over the wire:
-  `NSF050I CLIENT DEAD (ASCB=00FF8E68 ASID=000C) -- REQUEST REAPED`, then
-  `BUSY=0 INFLIGHT=0 REAPED=1`. First time in this tree the transport guard's DEAD path has
-  been driven by a real address-space death, with no forged identity anywhere.
+- **Row 2 is producible by a real client and the guard acts on it.** 14 real STC clients
+  killed across two NSFS instances; the ASVT entry flipped to `AVAIL` within ~1 s of the
+  ABEND every time. All 14 reclaimed via the **app sweep** (`NSF057I`).
+- **The transport path — the one `ORPHAN` rehearses — 6 of 6, and it is new.** Each `PARK`
+  run proved the request genuinely outstanding first (`BUSY=1 BUSYSLOT=0 INFLIGHT=1`, the
+  conjunction 40-CHK established), was cancelled, then completed over the wire:
+  `NSF050I CLIENT DEAD (ASCB=00FF8E68 ASID=000C) -- REQUEST REAPED` every time. **First time
+  in this tree the transport guard's DEAD path has been driven by a real address-space
+  death**, with no forged identity anywhere.
+- **The death→verdict interval decomposes, and only half of it is a system property.** The
+  first session's ~16 s was mostly the arm's own choice of when to send the completing
+  datagram, so the addendum *varied* that gap — 12 / 28 / 52 / 97 / **158** s — and reports
+  the two parts separately. **(b) datagram → `NSF050I` is ≤ 1 s in all five**: once a
+  completing event exists the STC classifies and reaps immediately. **(a) ABEND → datagram
+  is not a system property at all** — it is when the peer happens to send, and the guard did
+  not look until then, at every gap, **up to 158 s after the client had died**.
 - **Row 3 was not produced once, in 9 reuses.** Every reuse restored the **identical**
   `(ASCB=00FF8E68, ASID=000C)` pair. The continuous trace is
   `LIVE → DEAD-row2-avail → LIVE` with the same ASCB — a **false LIVE**, which is exactly
@@ -70,23 +77,35 @@ present — impossible on any earlier build). CTCI 0500/0501 up, ping 3/3 0 % lo
   about the row, not about `ORPHAN`: it is untestable live either way.
 - **Every identity was cross-checked** against the client's own WTO before use; no reading
   is about some other address space.
-- **The transport guard has no period.** ~16 s elapsed between the `ABEND` and the
-  `NSF050I`, and it looked only because a datagram was sent. The exposure is *completion
-  latency vs. address-space start rate*, with completion latency unbounded — not "sweep
-  period vs. start rate".
+- **The transport guard has no period.** The exposure is therefore an **unbounded interval
+  (a)** in which the identity is stale and unexamined, followed by a **bounded (≤1 s)
+  verdict (b)**. All the risk lives in (a), and what it races is address-space *starts*, not
+  wall time — the verdict held `DEAD` through all 158 s here only because the stand was
+  idle. Had an address space started in any of those windows the identity would have
+  resurrected to LIVE and the STC would have POSTed into a dead one (40-CHK's leaked slot).
 
 ## What removal costs, per row
 
 | row | producible by a real client | logic host-side | wiring live after removal |
 |---|---|---|---|
 | 1 LIVE | yes, constantly | yes | **yes** — every crossing test |
-| 2 DEAD (avail) | yes — 9 of 9 | yes | **yes** — app sweep n=8, transport n=1 |
-| 3 DEAD (mismatch) | **no** — 0 of 9 | yes | no, and not coverable |
+| 2 DEAD (avail) | yes — 14 of 14 | yes | **yes** — app sweep n=13, transport **n=6** |
+| 3 DEAD (mismatch) | **no** — 0 of 9 reuses | yes | no, and not coverable |
 | 4a/b/c/d UNKNOWN | **no** (4a only via `ORPHAN`) | yes | no |
 
 Lost: live wiring for **row 3** and **row 4a** — and the only live source of an
 `NSF051W` / `HELD` observation. M5-2b3's `NSF050I`/`NSF051W` against NSFS were themselves
 `ORPHAN`-driven and are **not** independent coverage.
+
+**Two framings that make the decision small.** **Row 3 is not a cost of removal at all**:
+0 of 9 reuses produced it, every reuse restored the identical `(00FF8E68, 000C)` pair, and
+what this stand produces is a **false LIVE** — exactly the case row 3 exists to catch.
+Untestable live with or without `ORPHAN`. **And row 4 was never one row**: four branches,
+`ORPHAN` drives one, so its live coverage was 1 in 4 rather than 1 in 1.
+
+So what retiring `ORPHAN` actually costs is **row 4a's live wiring proof, plus row 2 moving
+from a deterministic forge to a racy real induction** — against a classifier whose logic is
+host-pinned throughout.
 
 ## Verb vs fields (§1.3), both costs, no recommendation
 
