@@ -123,8 +123,12 @@ tstd_orphan(void *ascb, UINT asid)
 
     tstd_req_init(&req, NSFV_REQ_ORPHAN);
     req.token = 0x0C0C0000u;
-    req.pascb = ascb;
-    req.pasid = asid;
+    /* M5-2c2 stage b: ORPHAN is RETIRED and these two words are reserved.
+     * They are still populated deliberately -- the routine must reject the
+     * retired verb whatever the block contains, so a fully-formed request is
+     * the stronger probe of the rejection path. */
+    req.rsvd_pascb = ascb;
+    req.rsvd_pasid = asid;
     nsfv_svc_issue(&req);
     return req.rc;
 }

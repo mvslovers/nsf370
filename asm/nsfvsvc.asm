@@ -233,7 +233,7 @@ ANCVERNO EQU   3                  NSFV_ANCHOR_VER
 *  request functions + MVCK copy constants (mirror nsfvsvc.h)
 FNECHO   EQU   1
 FNXFER   EQU   2
-FNORPH   EQU   3                  probe: stage + POST, no WAIT
+FNORPH   EQU   3                  RETIRED (M5-2c2 b): rejected
 FNQUERY  EQU   4                  probe: report anchor state
 FNUNSTG  EQU   5                  probe: release a held slot
 FNRQE    EQU   6                  M5-2a: carry an NSFRQE (ADR-0041)
@@ -377,6 +377,16 @@ NSFVGO   DS    0H
 *  observe -- so they branch out ahead of the claim below.
 *----------------------------------------------------------------------
          L     R3,REQFUNC(,R8)    request function
+*  RETIRED VERB (M5-2c2 stage b).  FNORPH stored a request-supplied
+*  identity into the slot verbatim: a forged identity taken from an
+*  unauthorised caller, and the half of obligation #4 this discharges.
+*  Rejected HERE, ahead of the claim, so a retired verb costs NO slot
+*  and NO in-flight count -- true by position, not by argument.
+*  The code is NOT reused.  Rejecting it by name also beats deleting
+*  the test alone, which would let FNORPH fall through to the ECHO
+*  default and be serviced as an ordinary ECHO.
+         C     R3,=A(FNORPH)      retired -> reject, claim nothing
+         BE    BADFUNC
          C     R3,=A(FNQUERY)
          BE    DOQUERY
          C     R3,=A(FNUNSTG)
@@ -495,8 +505,6 @@ UINCLP   LR    R4,R3
          L     R3,REQFUNC(,R8)             request function
          C     R3,=A(FNXFER)               XFER?
          BE    XFERIN                      yes -> write-in + xlen
-         C     R3,=A(FNORPH)               ORPHAN (probe)?
-         BE    ORPHIN                      yes -> stage probe identity
          C     R3,=A(FNRQE)                RQE (M5-2a)?
          BE    RQEIN                       yes -> stage ubuf + NSFRQE
 *  ECHO: stage the token.  Set xfunc = ECHO so an ECHO after an XFER is
@@ -574,40 +582,6 @@ WRINEND  DS    0H
 *  a probe that never issues an XFER: it took a live TSTUBUF hang.  Do
 *  not
 *  "clean up" these branches.
-*----------------------------------------------------------------------
-*  ORPHAN (Stage-0c probe only, ADR-0040 8).  Stages the request
-*  exactly as
-*  ECHO does, EXCEPT that the client identity comes from the request
-*  block
-*  (pascb/pasid) and is stored VERBATIM -- that is the whole point: the
-*  probe
-*  hands the STC an identity naming an address space that is not there,
-*  so the
-*  guard has something to classify DEAD.  The caller then returns
-*  WITHOUT
-*  waiting (see PSTOK), so the in-flight decrement is skipped by
-*  construction,
-*  which is exactly what a client that died mid-request leaves behind.
-*----------------------------------------------------------------------
-ORPHIN   DS    0H
-         XC    SLRECB(4,R7),SLRECB(R7)     reply_ecb = 0
-         L     R3,REQTOKN(,R8)             read caller token
-         ST    R3,SLTOKEN(,R7)             stage token
-         LA    R3,FNECHO
-         ST    R3,SLXFUNC(,R7)             transform stays ECHO
-*  OVERWRITE the identity the claim recorded: the probe hands the STC
-*  an
-*  identity naming an address space that is not there, so the guard has
-*  something to classify DEAD.  This is the ONE place a
-*  request-supplied
-*  identity is used, and it is scaffolding due out in M5-2c.
-         L     R3,REQPASC(,R8)             probe ASCB
-         ST    R3,SLRASCB(,R7)             stored VERBATIM
-         L     R3,REQPASI(,R8)             probe ASID
-         ST    R3,SLASID(,R7)              stored VERBATIM
-         LA    R3,STPEND
-         ST    R3,SLSTATE(,R7)             publish PENDING
-         B     DOPOST                      EXPLICIT: never fall through
 *----------------------------------------------------------------------
 *  RQE write-in (M5-2a, ADR-0041).  Carries a real request across: the
 *  user
@@ -755,9 +729,6 @@ PSTOK    DS    0H
 *  this
 *  caller neither waits for the reply nor gives the in-flight count
 *  back.
-         L     R3,REQFUNC(,R8)    request function
-         C     R3,=A(FNORPH)
-         BE    ORPHRET
 *----------------------------------------------------------------------
 *  WAIT for the reply on the key-0 CSA reply ECB, supervisor state, key
 *  0.
@@ -1110,19 +1081,18 @@ SLOTADX  BR    R15
 *  these
 *  verbs are reachable by an unauthorised client.
 *
-*  ORPHRET is the no-WAIT return; DOQUERY reports ONE slot's state plus
-*  the
+*  ORPHAN was retired in M5-2c2 stage b: it was the one place a
+*  REQUEST-SUPPLIED identity was stored verbatim, which is exactly what
+*  the guard must never trust from a real client.  Its code is now
+*  rejected ahead of the claim (see FNORPH at the pre-claim chain).
+*
+*  DOQUERY reports ONE slot's state plus the
 *  global counters to a client that cannot read CSA itself; DOUNSTG
 *  releases
 *  a named slot the STC declined to release; DOSLOT compare-and-swaps a
 *  named
 *  slot's state so a test can pre-claim.
 *----------------------------------------------------------------------
-ORPHRET  DS    0H                 orphan: no WAIT, no decrement
-         SLR   R3,R3
-         ST    R3,REQRC(,R8)      caller rc = OK
-         SLR   R15,R15
-         BR    R14
 *
 *  QUERY: req.slot names the slot whose state to report; the counters
 *  are
@@ -1236,6 +1206,16 @@ WGONE    DS    0H                 anchor freed: inflight is gone
 *
 BADANC   DS    0H                 anchor bad (our caller): write rc
          LA    R15,RCCORR
+         ST    R15,REQRC(,R8)
+         BR    R14
+*
+*  Retired verb (M5-2c2 stage b).  The pointer is trusted here -- the
+*  eyecatcher was checked -- so the rc goes into the CALLER'S BLOCK and
+*  not only R15.  BADREQ would leave req.rc at whatever the client
+*  initialised it to, which is indistinguishable from "the SVC never
+*  ran" (CLAUDE.md 8.5).  A client must be able to SEE the rejection.
+BADFUNC  DS    0H                 retired verb: write rc
+         LA    R15,RCINVAL
          ST    R15,REQRC(,R8)
          BR    R14
 *
