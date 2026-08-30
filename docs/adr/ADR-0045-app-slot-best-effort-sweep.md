@@ -90,9 +90,26 @@ feature with these limits defensible, and it is the same asymmetry ADR-0040 is b
 **The consequence for the live gate follows from this and is not a matter of taste**: a run in
 which nothing is reclaimed is **not automatically a failure** — it may mean the ASID was reused
 before the check. The gate must therefore separate *"the sweep saw `DEAD` and did not act"* (a
-defect) from *"the sweep saw `LIVE` because the ASID had been re-taken"* (expected). `NSF817I`
+defect) from *"the sweep saw `LIVE` because the ASID had been re-taken"* (expected). `NSF057I`
 exists for that: it is emitted at the moment of a reclaim, which is the only point at which the
 evidence still exists.
+
+**That message alone is not enough, and the gap is the expected case.** `NSF057I` proves "saw
+`DEAD` and acted". It cannot separate the other two, because both are *silent*: **swept, and
+everything read `LIVE`** (reuse, or a batch client — expected) from **never swept at all** (no
+executive pass, a request in service, or the interval not elapsed) — and "never swept" is the
+likely default, since 64-1 measured one pass in 259 s on an idle executive. `F NSFS,APPS`
+does not close it either: `DEAD` + the slot still in use + no `NSF057I` reads identically for
+a defect and for a pass that never happened. So the sweep keeps two counters, reported through
+the STATS **supplement** as `NSF817I APPSWEEP SWEEPS=n RECLAIMED=m`, and a live arm reads
+`SWEEPS=12 RECLAIMED=0` against `SWEEPS=0` without anyone having to reason about where in a
+pass the operator drain runs relative to the sweep.
+
+They are **not** `sts_register` counters, and that is a measured constraint rather than a
+preference: the NSFS build already registers ~46 counters and `sts_render` fills a fixed
+512-byte buffer, so the rendered block truncates well before the end of the list — a counter
+added there could be one that never reaches the console, which is evidence that silently does
+not exist. The supplement is emitted *after* that block for exactly this reason.
 
 ## 4. Why a real-time interval, and not ticks or a timer
 
@@ -168,7 +185,24 @@ operator verb, in problem state key 8.
 link NSFMSG at all, so a direct WTO would force ~20 source-list changes and drag the operator
 console into a portable file. And a WTO is **invisible to a host test**, whereas the reclaim —
 including the identity the slot was carrying — is exactly what a test must be able to observe.
-Phase 2 registers a wrapper that emits `NSF817I`; `NULL` is the default and the Phase-1 state.
+Phase 2 registers a wrapper that emits `NSF057I`, and a per-sweep summary `NSF058I` carrying
+the count **and the caveat**; `NULL` is the default and the Phase-1 state.
+
+**The numbers are 0xx, not 8xx, and that is the point of them.** These are *executive* actions
+— the drain reclaiming storage — so they sit with their siblings `NSF050I` / `NSF051W`, which
+the same file emits when the transport reaps a CSA request slot. The app-registry **operator
+report** is 814–816 and the sweep's STATS supplement is `NSF817I`, because those are things an
+operator asked for. §5 insists the two reclamation paths are not conflated; numbering the sweep
+with the operator verb that merely reports it would conflate them where a reader looks first.
+
+**`NSF058I` carries the caveat because "RECLAIMED" reads as authoritative cleanup to an
+operator**, and the honest reading is that most dead clients are not reclaimed at all. It is
+emitted once per sweep that reclaimed something — never per slot (64 lines in the mass-reclaim
+case) and never on an empty sweep (a line every ten seconds, forever). Its width was
+**measured, not estimated**: the Hercules console truncates around 107 characters and eats the
+**tail**, and the natural phrasing came to 127 — the console would have kept the reassuring
+half and dropped every word that qualifies it. So the caveat leads and the count sits inside
+it, at 103.
 
 The identity is captured **before** `app_free`, along with the token: `app_free` bumps the
 generation *and* zeroes the identity, so reading either afterwards reports a slot that names
@@ -196,6 +230,17 @@ relink-only still holds); then `TERMAPI` from an ESTAE exit for ecosystem client
   slot. Said at the constant, pointing at #88.
 - The rate limiter's state is one `NSFTIME` in `src/nsfreq.c`, reset by `nsfreq_init`, so a
   fresh stack sweeps on its first pass ({0,0} is deliberately "long ago" on both platforms).
+- **A mass reclaim is a burst inside one run-to-completion pass.** The realistic path is a
+  full table at `INITAPI`: up to 64 × (`soc_foreach` over the socket table + a `NSF057I` WTO),
+  plus one `NSF058I`. Bounded, and it happens once — the slots are free afterwards — but it is
+  the pass a reader should picture, not the steady-state one.
+- **"Phase 1 is untouched" is a behavioural claim, not a byte-level one.** The `NSF` module
+  links the changed `src/nsfreq.c` and the new `src/nsftime_plat.c`, and `do_initapi`'s
+  full-table path now runs a 64-slot scan there before returning `EMFILE`. It reclaims
+  nothing, because no classifier is registered and every Phase-1 slot has a zero identity, and
+  Phase 1 registers no notify — so the observable behaviour is unchanged and `S NSF` need not
+  be redeployed (the M3-2 precedent). The module is not byte-for-byte identical, and saying so
+  plainly is cheaper than a reader discovering it.
 - **Not established by this step:** anything about issue #88's eventual design; the TSO client
   class, still unmeasured; and the live behaviour of the periodic trigger under a real ASID
   reuse race, which the gate measures but cannot bound.

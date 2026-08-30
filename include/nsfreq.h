@@ -193,7 +193,7 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_dispatch_id NSFRQDSI     nsfreq_app_info NSFRQAPI
  *   nsfreq_app_max NSFRQAPM       nsfreq_set_classifier NSFRQSCL
  *   nsfreq_app_classify NSFRQACL   nsfreq_app_sweep NSFRQAPS
- *   nsfreq_set_sweep_notify NSFRQSSN
+ *   nsfreq_set_sweep_notify NSFRQSSN   nsfreq_sweep_stats NSFRQSWS
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -383,5 +383,22 @@ int      nsfreq_app_sweep(UINT min_secs) asm("NSFRQAPS");
  * changes nothing but the silence. */
 void     nsfreq_set_sweep_notify(void (*fn)(UINT idx, UINT token, UINT ascb,
                                             UINT asid)) asm("NSFRQSSN");
+
+/* How many sweeps have RUN, and how many app slots they have reclaimed in
+ * total.  Either out-parameter may be NULL.
+ *
+ * THIS IS THE THIRD STATE FOR A WHOLE LIVE RUN, not a statistic.  A sweep that
+ * reclaims nothing is silent and so is a sweep that never happened, and the
+ * two mean opposite things -- "looked, everything was alive" (the expected
+ * case, since a batch client always reads LIVE) against "no executive pass, or
+ * a request was in service, or the interval had not elapsed".  Reading
+ * `sweeps` separates them, and without it a null run cannot be interpreted at
+ * all: not a defect, not a success, just quiet.
+ *
+ * Deliberately NOT sts_register counters -- see the definitions: the rendered
+ * STATS reply truncates at a fixed 512-byte buffer well before the end of the
+ * current counter list, so these are reported through the STATS SUPPLEMENT,
+ * which is emitted after that block and cannot be pushed out of it. */
+void     nsfreq_sweep_stats(UINT *sweeps, UINT *reclaimed) asm("NSFRQSWS");
 
 #endif /* NSFREQ_H */

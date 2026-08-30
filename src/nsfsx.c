@@ -419,9 +419,43 @@ nsfsx_client_state(const NSFV_SLOT *slot)
  * at the moment it happened. */
 static void nsfsx_sweep_notify(UINT idx, UINT token, UINT ascb, UINT asid)
 {
-    wtof("NSF817I APP SLOT %u (TOKEN=%08X ASCB=%08X ASID=%04X) RECLAIMED"
+    wtof("NSF057I APP SLOT %u (TOKEN=%08X ASCB=%08X ASID=%04X) RECLAIMED"
          " -- CLIENT ADDRESS SPACE GONE",
          (unsigned)idx, (unsigned)token, (unsigned)ascb, (unsigned)asid);
+}
+
+/* THE 0xx RANGE, NOT 8xx, AND THAT IS THE POINT OF THE NUMBERS.  These two are
+ * EXECUTIVE actions -- the drain reclaiming storage -- and they sit with their
+ * siblings NSF050I / NSF051W, which this same file emits when the transport
+ * reaps a CSA request slot.  The app-registry OPERATOR REPORT is 814-816 and
+ * the sweep's STATS supplement is NSF817I, because those are things an
+ * operator ASKED for.  ADR-0045 5 insists the two reclamation paths are not
+ * conflated; numbering the sweep with the operator verb it is merely reported
+ * by would conflate them in the place a reader looks first. */
+
+/* Emitted once per sweep that reclaimed something -- never per slot, which
+ * would be 64 lines in the mass-reclaim case, and never on a sweep that found
+ * nothing, which would be a line every ten seconds forever.
+ *
+ * IT CARRIES THE CAVEAT, and that is a requirement rather than politeness: to
+ * an operator "RECLAIMED" reads as authoritative cleanup, and the honest
+ * reading is that most dead clients are NOT reclaimed -- a batch client never
+ * is.  A message that implies otherwise licenses exactly the conclusion
+ * ADR-0045 exists to prevent. */
+static void nsfsx_sweep_summary(int reclaimed)
+{
+    if (reclaimed <= 0) {
+        return;
+    }
+    /* 103 CHARACTERS AT THE WIDEST, AND THAT IS MEASURED, NOT ESTIMATED.  The
+     * Hercules console truncates around 107 and eats the TAIL (see NSF813I
+     * below) -- so the caveat leads and the count sits inside it.  Written the
+     * obvious way round, "... RECLAIMED n SLOTS -- BEST-EFFORT ONLY, ..." came
+     * to 127 and the console would have kept the reassuring half and dropped
+     * every word that qualifies it. */
+    wtof("NSF058I BEST-EFFORT SWEEP RECLAIMED %d APP SLOT(S) -- BATCH CLIENTS"
+         " NEVER; TERMAPI STILL REQUIRED (#88)",
+         reclaimed);
 }
 
 void nsfsx_set_sweep_notify(void)
@@ -853,6 +887,25 @@ nsfsx_stats_extra(void)
          (g_anchor != NULL) ? (unsigned)g_anchor->exhausted  : 0u,
          (g_anchor != NULL) ? (unsigned)g_anchor->collisions : 0u,
          (g_anchor != NULL) ? (unsigned)g_anchor->reaped     : 0u);
+
+    /* THE APP-REGISTRY SWEEP, AND SWEEPS IS THE FIELD THAT MATTERS (ADR-0045).
+     * RECLAIMED alone cannot be read: 0 is both "looked, everything was alive"
+     * -- the EXPECTED answer, since a batch client always classifies LIVE --
+     * and "never looked", which would be a defect.  SWEEPS separates them, and
+     * a live run that reports RECLAIMED=0 is only interpretable beside it.
+     *
+     * HERE RATHER THAN AS sts_register COUNTERS, deliberately: the rendered
+     * counter block above is built in a fixed 512-byte buffer and truncates
+     * well before the end of the current ~46-counter list, so a counter added
+     * there might never reach the console at all.  This supplement is emitted
+     * after that block precisely because it cannot be pushed out of it. */
+    {
+        UINT sweeps = 0u, reclaimed = 0u;
+
+        nsfreq_sweep_stats(&sweeps, &reclaimed);
+        wtof("NSF817I APPSWEEP SWEEPS=%u RECLAIMED=%u",
+             (unsigned)sweeps, (unsigned)reclaimed);
+    }
 }
 
 /* Is any slot carrying a published request OTHER THAN THE ONE IN SERVICE?
@@ -1095,7 +1148,7 @@ nsfsx_drain(void)
      * from problem state key 8 -- stage a ran exactly this path live from the
      * F NSFS,APPS operator verb). */
     if (!g_busy) {
-        (void)nsfreq_app_sweep(NSFSX_SWEEP_SECS);
+        nsfsx_sweep_summary(nsfreq_app_sweep(NSFSX_SWEEP_SECS));
     }
 
     /* ---- 1. Finish the completed request ----------------------------------

@@ -102,6 +102,23 @@ static APPREG g_apptab[NSFREQ_APP_MAX];
 static NSFTIME g_lastsweep;
 static void  (*g_sweepnotify)(UINT idx, UINT token, UINT ascb, UINT asid);
 
+/* Sweep counters, and they are the THIRD STATE FOR A WHOLE RUN (CLAUDE.md 8.5).
+ * A sweep that reclaims nothing is SILENT, and so is a sweep that never
+ * happened -- yet they mean opposite things: "looked, everything was alive"
+ * (expected, and the normal case, since a batch client always reads LIVE) vs
+ * "no pass, or a request was in service, or the interval had not elapsed".
+ * Without these a null live run is uninterpretable, which is exactly what
+ * ADR-0045 3 says the gate must avoid.
+ *
+ * PLAIN COUNTERS, NOT sts_register.  The NSFS build already registers ~46
+ * counters and sts_render's fixed 512-byte buffer truncates the rendered reply
+ * well before the end of the list, so a counter added here could be one that
+ * never reaches the console -- evidence that silently does not exist. They are
+ * reported through the STATS SUPPLEMENT instead (nsfsx_stats_extra), which
+ * emits its own WTO lines after the rendered block and cannot be pushed out. */
+static UINT g_sweeps_run;               /* sweeps that actually LOOKED         */
+static UINT g_slots_reclaimed;          /* app slots reclaimed, cumulative     */
+
 /* ---- protocol table (proto -> PROTOPS, for RQ_SOCKET) ---------------------- */
 #define NSFREQ_PROTO_MAX  4
 
@@ -155,6 +172,8 @@ void nsfreq_init(void)
     g_sweepnotify = NULL;               /* ... and until one wants to be told  */
     g_lastsweep.hi = 0u;                /* "never swept" -> the first call runs */
     g_lastsweep.lo = 0u;
+    g_sweeps_run      = 0u;
+    g_slots_reclaimed = 0u;
     for (i = 0u; i < NSFREQ_APP_MAX; i++) {
         g_apptab[i].inuse = 0u;
         g_apptab[i].ascb  = 0u;
@@ -325,6 +344,24 @@ static void do_initapi(NSFRQE *r, UINT caller_ascb, UINT caller_asid)
          * parameter: two paths that can drift is what this milestone has
          * already paid for once.
          *
+         * THIS SWEEPS WHILE A REQUEST IS IN SERVICE, WHICH THE PERIODIC CALLER
+         * DELIBERATELY WILL NOT DO -- so say why it is safe HERE, because the
+         * two call sites look contradictory otherwise.  We are inside the
+         * dispatch of this very request, so in Phase 2 g_busy is set BY
+         * CONSTRUCTION and the periodic guard could never be satisfied at this
+         * point; the guard exists to stop a scan from destroying a socket that
+         * a DIFFERENT, parked request is waiting on, and there cannot be one:
+         *
+         *   Phase 2 -- ADR-0042 10 permits exactly ONE request in flight, and
+         *     it is this INITAPI, which owns no socket and parks on nothing.
+         *   Phase 1 -- no classifier is registered, so no slot is ever DEAD
+         *     and the scan reclaims nothing whatever else is outstanding.
+         *
+         * THE PHASE-2 HALF OF THAT ARGUMENT DIES IF CONCURRENT SERVICE LANDS
+         * (a named open item in ADR-0042 10): a second in-flight request could
+         * then be parked on a socket this scan destroys.  Whoever implements
+         * concurrent service must revisit this call site, not just the drain.
+         *
          * Retry ONCE.  If the sweep reclaimed nothing the table is genuinely
          * full of live applications and EMFILE is the true answer; looping
          * would just be the same scan again. */
@@ -393,6 +430,7 @@ int nsfreq_app_sweep(UINT min_secs)
         return NSFREQ_SWEEP_SKIPPED;    /* did NOT look -- see the header      */
     }
     g_lastsweep = now;                  /* stamped for a sweep that RAN only   */
+    g_sweeps_run++;                     /* ... and counted on the same terms   */
 
     for (i = 0u; i < NSFREQ_APP_MAX; i++) {
         UINT token;
@@ -423,6 +461,7 @@ int nsfreq_app_sweep(UINT min_secs)
         soc_foreach(term_one, &token);
         app_free(i);
         reclaimed++;
+        g_slots_reclaimed++;
 
         if (g_sweepnotify != NULL) {
             /* After the reclaim, so the message describes something that has
@@ -431,6 +470,12 @@ int nsfreq_app_sweep(UINT min_secs)
         }
     }
     return reclaimed;
+}
+
+void nsfreq_sweep_stats(UINT *sweeps, UINT *reclaimed)
+{
+    if (sweeps    != NULL) *sweeps    = g_sweeps_run;
+    if (reclaimed != NULL) *reclaimed = g_slots_reclaimed;
 }
 
 static void do_socket(NSFRQE *r)

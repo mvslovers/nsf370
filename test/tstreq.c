@@ -912,6 +912,57 @@ static void test_sweep_rate_limit(void)
     CHECK_EQ((long)nsfreq_app_sweep(10u), 0L, "a fresh registry sweeps at once");
 }
 
+/* THE COUNTERS ARE THE THIRD STATE FOR A WHOLE LIVE RUN, so they are pinned
+ * like one: what must be true is that a sweep which LOOKED is distinguishable
+ * from one that never happened, when both reclaim nothing and both are
+ * silent. */
+static void test_sweep_counters(void)
+{
+    UINT sweeps = 99u, reclaimed = 99u;
+
+    reset_req();
+    nsfreq_set_classifier(NULL);
+
+    nsfreq_sweep_stats(&sweeps, &reclaimed);
+    CHECK_EQ((long)sweeps, 0L, "a fresh registry has run no sweeps");
+    CHECK_EQ((long)reclaimed, 0L, "... and reclaimed nothing");
+
+    /* A sweep that RUNS and finds nothing still counts as having looked --
+     * this is the distinction the whole field exists for. */
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 0L, "a sweep runs, reclaims nothing");
+    nsfreq_sweep_stats(&sweeps, &reclaimed);
+    CHECK_EQ((long)sweeps, 1L, "a sweep that found nothing STILL counts as run");
+    CHECK_EQ((long)reclaimed, 0L, "and reclaimed nothing");
+
+    /* A sweep the limiter turned away must NOT count -- otherwise the field
+     * says "we looked" when nothing looked, which is the failure it exists to
+     * prevent. */
+    CHECK_EQ((long)nsfreq_app_sweep(10u), (long)NSFREQ_SWEEP_SKIPPED,
+             "the limiter turns the next one away");
+    nsfreq_sweep_stats(&sweeps, &reclaimed);
+    CHECK_EQ((long)sweeps, 1L, "a SKIPPED sweep does not count as having looked");
+
+    /* Both out-parameters are optional. */
+    nsfreq_sweep_stats(NULL, NULL);
+    nsfreq_sweep_stats(&sweeps, NULL);
+    CHECK_EQ((long)sweeps, 1L, "sweeps alone reads the same");
+    nsfreq_sweep_stats(NULL, &reclaimed);
+    CHECK_EQ((long)reclaimed, 0L, "reclaimed alone reads the same");
+
+    /* And a reclaim moves BOTH -- cumulative, not per-sweep. */
+    g_cls_calls  = 0u;
+    g_cls_answer = NSFREQX_CL_LIVE;
+    g_dead_ascb  = 0x00E0E0E0u;
+    nsfreq_set_classifier(fake_sweep_cls);
+    CHECK(app_init_id(0x00E0E0E0u, 0x0050u) != 0u, "a client that will die");
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 1L, "the sweep reclaims it");
+    nsfreq_sweep_stats(&sweeps, &reclaimed);
+    CHECK_EQ((long)sweeps, 2L, "the run count advanced");
+    CHECK_EQ((long)reclaimed, 1L, "the reclaim count advanced");
+
+    nsfreq_set_classifier(NULL);
+}
+
 static void test_sweep_reclaims(void)
 {
     UINT tok_dead, tok_live, tok_p1;
@@ -1080,6 +1131,7 @@ int main(void)
     test_app_classify_and_report();
     test_elapsed_seam();
     test_sweep_rate_limit();
+    test_sweep_counters();
     test_sweep_reclaims();
     test_sweep_on_initapi_full();
 #ifndef __MVS__

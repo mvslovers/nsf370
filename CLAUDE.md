@@ -1726,10 +1726,28 @@ safe-side asymmetry, and it is one-directional:** a false `LIVE` leaks a slot; a
 **cannot arise from reuse**, because an ASID is unique among the address spaces that are
 alive — reuse converts `DEAD → LIVE` only. **THE SAME ASYMMETRY IS WHY THE LIVE GATE NEEDS
 ITS OWN INSTRUMENT:** a run reclaiming nothing is **not automatically a failure**, so
-`NSF817I` is emitted **at the moment of a reclaim** — the only point at which the evidence
+`NSF057I` is emitted **at the moment of a reclaim** — the only point at which the evidence
 still exists — to separate *"saw DEAD and acted"* from *"saw LIVE because the ASID had been
 re-taken"*; `F NSFS,APPS` cannot, because by the time it renders the evidence is gone or
-overwritten. **Two triggers, ONE implementation, the cap as a parameter** — periodic from
+overwritten. **BUT THAT MESSAGE ALONE LEAVES THE EXPECTED CASE AMBIGUOUS, and the gap was
+found in review rather than by a test:** *swept, everything read LIVE* and *never swept at
+all* are BOTH silent, and "never swept" is the likely default (64-1: one pass in 259 s on an
+idle executive). So the sweep keeps two counters — reported through the STATS **supplement**
+as `NSF817I APPSWEEP SWEEPS=n RECLAIMED=m`, deliberately **NOT** `sts_register` counters,
+because the NSFS build already registers ~46 and `sts_render`'s fixed **512-byte** buffer
+truncates the rendered block well before the end of the list, so a counter added there could
+be one that never reaches the console (evidence that silently does not exist; the supplement
+is emitted *after* that block precisely so it cannot be pushed out). A live arm then reads
+`SWEEPS=12 RECLAIMED=0` against `SWEEPS=0` with no reasoning about where in a pass the
+operator drain runs. **MESSAGE NUMBERS ARE 0xx, NOT 8xx:** the reclaim (`NSF057I`) and the
+per-sweep summary (`NSF058I`) are EXECUTIVE actions and sit with their siblings
+`NSF050I`/`NSF051W`; 814–816 and `NSF817I` are things an operator ASKED for. Numbering the
+sweep with the operator verb that merely reports it would conflate the two reclamation paths
+in the place a reader looks first. **`NSF058I` carries the caveat**, because "RECLAIMED"
+reads to an operator as authoritative cleanup — and its width was **measured, not estimated**:
+the Hercules console truncates near **107** characters and eats the **TAIL**, the natural
+phrasing came to **127**, so it would have kept the reassuring half and dropped every word
+that qualifies it. The caveat leads and the count sits inside it, at 103. **Two triggers, ONE implementation, the cap as a parameter** — periodic from
 `nsfsx_drain`, and on demand from `do_initapi` when the app table is full (retry **once**:
 if the sweep found nothing the table is genuinely full of live clients and EMFILE is the
 true answer). `min_secs == 0` bypasses the limiter and is **not a special case in the code**
@@ -1744,7 +1762,15 @@ exactly, and it **rounds LATE, never early**. **WHAT THE TEN SECONDS DOES NOT PR
 at the constant and in the header: it bounds the interval *between sweeps*, not the latency
 to a reclaim — a sweep happens only on a pass, and a pass only when something uses the stack.
 Honest form: *no sooner than ten seconds after the last sweep, and not until the stack is
-used again.* **PLACEMENT WAS THREE DECISIONS, NOT A FALL-OUT.** (1) `nsfsx_drain`, not
+used again.* **THE TWO CALL SITES LOOK CONTRADICTORY AND THE RECONCILIATION IS NOW WRITTEN DOWN** (a
+reviewer stops there otherwise): the periodic caller stands down while `g_busy`, yet
+`do_initapi` calls the same function from *inside* dispatch, where `g_busy` is set **by
+construction**. Safe for two DIFFERENT unwritten reasons, both now at that call site — in
+Phase 2 because ADR-0042 §10 permits exactly ONE request in flight and it is this INITAPI,
+which owns no socket and parks on nothing; in Phase 1 because no classifier is registered, so
+nothing is ever DEAD. **The Phase-2 half of that argument DIES if concurrent service lands**
+(a named open item), and whoever implements it must revisit this call site and not only the
+drain. **PLACEMENT WAS THREE DECISIONS, NOT A FALL-OUT.** (1) `nsfsx_drain`, not
 `nsfreq_drain` — `evt_set_request` wires exactly ONE drain per build, so a Phase-1-drain
 sweep would never run in Phase 2 at all; it also makes **"Phase 1 sweeps nothing"
 STRUCTURAL** (`src/nsfmain.c` does not reach the code, registers no classifier and no
@@ -1767,11 +1793,12 @@ CONFLICT THE TESTS FOUND, resolved in the header rather than bent in the test:**
 `since` answers 0"* and *"secs == 0 is always 1"* both cover a backwards timestamp — the
 future rule now **wins** (a timestamp that cannot be believed is not a measurement), and the
 two platforms are documented as differing on exactly that input **by RESOLUTION**, since MVS
-cannot see a sub-second step backwards at all. **Gates:** host **3007 → 3190 PASS / 0 FAIL**,
+cannot see a sub-second step backwards at all. **Gates:** host **3007 → 3204 PASS / 0 FAIL**,
 and the new assertions are **verified to discriminate** — widening the reclaim predicate to
 LIVE-only fails **14**, capturing the identity after `app_free` fails **2**, making the
-limiter always-elapsed fails **2**, removing the on-demand sweep fails **4**, and breaking
-the host seam's sub-second borrow fails **2**. Cross-build clean (**6 modules + 53 test
+limiter always-elapsed fails **2**, removing the on-demand sweep fails **4**, breaking the
+host seam's sub-second borrow fails **2**, and counting a SKIPPED sweep as having looked —
+the exact lie the counters exist to prevent — fails **3**. Cross-build clean (**6 modules + 53 test
 modules**, cc370/as370/ld370, no warnings); alias scan **239 unique, all ≤ 8 chars** (four
 new: `NSFELAPS`/`NSFRQAPS`/`NSFRQSSN`/`NSFSXSSN`); **NSFRQE still frozen at 64 B**, anchor
 layout unmoved, `ANCVERNO` 3, `asm/` untouched — apps relink only. **§7.6 ANSWERED, and it
@@ -1786,7 +1813,15 @@ rather than through the report. **THE LIVE GATE IS NOT RUN AND NOTHING HERE IS A
 CLAIM** — arms 1 (periodic, using `SYS2.PROCLIB(TSTAPPDS)`'s dying STC, with the no-start
 window shown), 2 (on demand) and the three-state revert are the acceptance items still open,
 and a red arm-1 run is only interpretable against `NSF817I`. `NSFREQ_APP_MAX` at 64 **buys
-time and fixes nothing**, now said at the constant with a pointer to #88.
+time and fixes nothing**, now said at the constant with a pointer to #88. **"PHASE 1
+UNTOUCHED" IS A BEHAVIOURAL CLAIM, NOT A BYTE-LEVEL ONE:** the `NSF` module links the changed
+`src/nsfreq.c` and the new `src/nsftime_plat.c`, and `do_initapi`'s full-table path now runs a
+64-slot scan there before returning `EMFILE` — reclaiming nothing, since no classifier is
+registered and every Phase-1 slot has a zero identity. Observable behaviour is unchanged and
+`S NSF` need not be redeployed (the M3-2 precedent), but the module is **not** byte-for-byte
+identical and the unqualified claim is not made. A **mass reclaim is also a burst** inside one
+run-to-completion pass — up to 64 × (`soc_foreach` + a WTO) at a full table; bounded, once,
+and the pass a reader should picture.
 **40-CHK (does the ADR-0040 guard protect anything for a batch client?) — DONE, live-green,
 docs-only. It fixes nothing; the answer is NO.** Not a milestone step; **M5 stays in progress**
 and c1 stage b is still with Mike. Stage a proved a batch job runs in a **reused initiator**, so
