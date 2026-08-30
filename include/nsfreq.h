@@ -379,7 +379,7 @@ int      nsfreq_app_sweep(UINT min_secs) asm("NSFRQAPS");
  * operator console out of nsfreq.c -- most builds that link this file do not
  * link NSFMSG at all -- and it makes the reclaim OBSERVABLE to a host test,
  * which a WTO would not be.  On MVS the Phase-2 STC registers a wrapper that
- * WTOs NSF817I; NULL is the default and the Phase-1 state, and a NULL notify
+ * WTOs NSF057I; NULL is the default and the Phase-1 state, and a NULL notify
  * changes nothing but the silence. */
 void     nsfreq_set_sweep_notify(void (*fn)(UINT idx, UINT token, UINT ascb,
                                             UINT asid)) asm("NSFRQSSN");

@@ -113,7 +113,8 @@ UINT *nsfsx_ecb(void) asm("NSFSXECB");
  * (M5-2c1). */
 int   nsfsx_classify_client(UINT ascb, UINT asid) asm("NSFSXCLC");
 
-/* Register the app-registry sweep's per-reclaim operator line, NSF817I
+/* Register the app-registry sweep's per-reclaim console line, NSF057I,
+ * and the per-sweep summary NSF058I that carries the best-effort caveat
  * (M5-2c1 stage b, ADR-0045).  A one-line wrapper rather than exporting the
  * handler itself, so the WTO text stays private to this file and the STC's
  * init reads as a list of registrations.  Phase 1 never calls it, so a
