@@ -194,6 +194,7 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_app_max NSFRQAPM       nsfreq_set_classifier NSFRQSCL
  *   nsfreq_app_classify NSFRQACL   nsfreq_app_sweep NSFRQAPS
  *   nsfreq_set_sweep_notify NSFRQSSN   nsfreq_sweep_stats NSFRQSWS
+ *   nsfreq_set_sweep_summary NSFRQSSU
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -383,6 +384,19 @@ int      nsfreq_app_sweep(UINT min_secs) asm("NSFRQAPS");
  * changes nothing but the silence. */
 void     nsfreq_set_sweep_notify(void (*fn)(UINT idx, UINT token, UINT ascb,
                                             UINT asid)) asm("NSFRQSSN");
+
+/* Register a per-SWEEP summary, called once at the end of any sweep that
+ * reclaimed at least one slot, with the count.
+ *
+ * IT LIVES INSIDE THE SWEEP RATHER THAN AT A CALL SITE, and that is the whole
+ * reason it is a seam of its own.  As the periodic caller's own line it
+ * silently exempted the other trigger -- a full table at RQ_INITAPI, which is
+ * the loudest burst there is (up to NSFREQ_APP_MAX reclaims at once) and
+ * exactly where an operator most needs the caveat that most dead clients are
+ * never reclaimed at all.  Here, the two triggers cannot drift.
+ *
+ * NULL is the default and the Phase-1 state. */
+void     nsfreq_set_sweep_summary(void (*fn)(int reclaimed)) asm("NSFRQSSU");
 
 /* How many sweeps have RUN, and how many app slots they have reclaimed in
  * total.  Either out-parameter may be NULL.

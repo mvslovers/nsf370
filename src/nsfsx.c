@@ -461,6 +461,7 @@ static void nsfsx_sweep_summary(int reclaimed)
 void nsfsx_set_sweep_notify(void)
 {
     nsfreq_set_sweep_notify(nsfsx_sweep_notify);
+    nsfreq_set_sweep_summary(nsfsx_sweep_summary);
 }
 
 int nsfsx_classify_client(UINT ascb, UINT asid)
@@ -1148,7 +1149,7 @@ nsfsx_drain(void)
      * from problem state key 8 -- stage a ran exactly this path live from the
      * F NSFS,APPS operator verb). */
     if (!g_busy) {
-        nsfsx_sweep_summary(nsfreq_app_sweep(NSFSX_SWEEP_SECS));
+        (void)nsfreq_app_sweep(NSFSX_SWEEP_SECS);
     }
 
     /* ---- 1. Finish the completed request ----------------------------------

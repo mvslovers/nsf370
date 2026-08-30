@@ -105,6 +105,11 @@ the STATS **supplement** as `NSF817I APPSWEEP SWEEPS=n RECLAIMED=m`, and a live 
 `SWEEPS=12 RECLAIMED=0` against `SWEEPS=0` without anyone having to reason about where in a
 pass the operator drain runs relative to the sweep.
 
+**`SWEEPS` counts BOTH triggers, so it is a ceiling unless the arm controls for the other
+one.** `do_initapi`'s on-demand sweep increments it too, so `SWEEPS=12` does not by itself
+establish that twelve *periodic* sweeps ran — `INITAPI` churn would inflate it. Arm 1 must
+therefore read it with no `INITAPI` traffic in flight, or read it as an upper bound.
+
 They are **not** `sts_register` counters, and that is a measured constraint rather than a
 preference: the NSFS build already registers ~46 counters and `sts_render` fills a fixed
 512-byte buffer, so the rendered block truncates well before the end of the list — a counter
@@ -198,7 +203,16 @@ with the operator verb that merely reports it would conflate them where a reader
 **`NSF058I` carries the caveat because "RECLAIMED" reads as authoritative cleanup to an
 operator**, and the honest reading is that most dead clients are not reclaimed at all. It is
 emitted once per sweep that reclaimed something — never per slot (64 lines in the mass-reclaim
-case) and never on an empty sweep (a line every ten seconds, forever). Its width was
+case) and never on an empty sweep (a line every ten seconds, forever).
+
+**It is emitted from INSIDE the sweep, through a seam of its own, and that is a correction.**
+Written first as the periodic caller's own line, it silently exempted the other trigger — and
+that trigger is the **full table at `INITAPI`**, the loudest and most consequential burst
+there is, the very one §9 tells the reader to picture, and precisely where an operator most
+needs to be told that most dead clients are never reclaimed. A summary that covers the quiet
+path and not the loud one is worse than none, because it reads as complete. Putting it inside
+`nsfreq_app_sweep` makes "every sweep that reclaims, summarises" structural, on the same rule
+the sweep itself is built on: one function, two callers, no drift. Its width was
 **measured, not estimated**: the Hercules console truncates around 107 characters and eats the
 **tail**, and the natural phrasing came to 127 — the console would have kept the reassuring
 half and dropped every word that qualifies it. So the caveat leads and the count sits inside

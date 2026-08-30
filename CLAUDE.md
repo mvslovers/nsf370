@@ -1739,12 +1739,19 @@ truncates the rendered block well before the end of the list, so a counter added
 be one that never reaches the console (evidence that silently does not exist; the supplement
 is emitted *after* that block precisely so it cannot be pushed out). A live arm then reads
 `SWEEPS=12 RECLAIMED=0` against `SWEEPS=0` with no reasoning about where in a pass the
-operator drain runs. **MESSAGE NUMBERS ARE 0xx, NOT 8xx:** the reclaim (`NSF057I`) and the
+operator drain runs — but **`SWEEPS` counts BOTH triggers**, so arm 1 must read it with no
+INITAPI traffic in flight or treat it as a **ceiling**. **MESSAGE NUMBERS ARE 0xx, NOT 8xx:** the reclaim (`NSF057I`) and the
 per-sweep summary (`NSF058I`) are EXECUTIVE actions and sit with their siblings
 `NSF050I`/`NSF051W`; 814–816 and `NSF817I` are things an operator ASKED for. Numbering the
 sweep with the operator verb that merely reports it would conflate the two reclamation paths
-in the place a reader looks first. **`NSF058I` carries the caveat**, because "RECLAIMED"
-reads to an operator as authoritative cleanup — and its width was **measured, not estimated**:
+in the place a reader looks first. **`NSF058I` carries the caveat**, and is emitted from
+**inside the sweep through a seam of its own** — written first as the periodic caller's own
+line it **silently exempted the on-demand trigger**, which is the LOUDEST burst there is (a
+full table at INITAPI, up to 64 reclaims) and exactly where an operator most needs it; a
+summary covering the quiet path and not the loud one is worse than none, because it reads as
+complete. **Found in review, fixed structurally, and pinned** (`test_sweep_summary_both_
+triggers`; reverting to the call-site shape fails **4**). It carries the caveat because
+"RECLAIMED" reads to an operator as authoritative cleanup — and its width was **measured, not estimated**:
 the Hercules console truncates near **107** characters and eats the **TAIL**, the natural
 phrasing came to **127**, so it would have kept the reassuring half and dropped every word
 that qualifies it. The caveat leads and the count sits inside it, at 103. **Two triggers, ONE implementation, the cap as a parameter** — periodic from
@@ -1793,12 +1800,19 @@ CONFLICT THE TESTS FOUND, resolved in the header rather than bent in the test:**
 `since` answers 0"* and *"secs == 0 is always 1"* both cover a backwards timestamp — the
 future rule now **wins** (a timestamp that cannot be believed is not a measurement), and the
 two platforms are documented as differing on exactly that input **by RESOLUTION**, since MVS
-cannot see a sub-second step backwards at all. **Gates:** host **3007 → 3204 PASS / 0 FAIL**,
+cannot see a sub-second step backwards at all. **Gates:** host **3007 → 3342 PASS / 0 FAIL**,
 and the new assertions are **verified to discriminate** — widening the reclaim predicate to
 LIVE-only fails **14**, capturing the identity after `app_free` fails **2**, making the
 limiter always-elapsed fails **2**, removing the on-demand sweep fails **4**, breaking the
-host seam's sub-second borrow fails **2**, and counting a SKIPPED sweep as having looked —
-the exact lie the counters exist to prevent — fails **3**. Cross-build clean (**6 modules + 53 test
+host seam's sub-second borrow fails **2**, counting a SKIPPED sweep as having looked —
+the exact lie the counters exist to prevent — fails **3**, and returning the summary to the
+periodic call site fails **4**. **A POSITIVE CHECK THAT THE `[host].replace` SWAP TOOK
+EFFECT falls out of the seam's own test and is worth naming:** every portable assertion in
+`test_elapsed_seam` was chosen to answer the same under both conversions, but the guarded
+sub-second borrow case does **not** — `since={100,5}, now={110,4}` is 0 on the host and 1
+under the MVS arithmetic — so a green host suite proves the **host** implementation is the
+one under test, rather than `nsftime_plat.c` having been compiled natively and passed
+anyway. Cross-build clean (**6 modules + 53 test
 modules**, cc370/as370/ld370, no warnings); alias scan **239 unique, all ≤ 8 chars** (four
 new: `NSFELAPS`/`NSFRQAPS`/`NSFRQSSN`/`NSFSXSSN`); **NSFRQE still frozen at 64 B**, anchor
 layout unmoved, `ANCVERNO` 3, `asm/` untouched — apps relink only. **§7.6 ANSWERED, and it

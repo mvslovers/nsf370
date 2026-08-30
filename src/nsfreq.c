@@ -101,6 +101,7 @@ static APPREG g_apptab[NSFREQ_APP_MAX];
  * reintroduce the idle floor ADR-0043 established is not needed. */
 static NSFTIME g_lastsweep;
 static void  (*g_sweepnotify)(UINT idx, UINT token, UINT ascb, UINT asid);
+static void  (*g_sweepsummary)(int reclaimed);
 
 /* Sweep counters, and they are the THIRD STATE FOR A WHOLE RUN (CLAUDE.md 8.5).
  * A sweep that reclaims nothing is SILENT, and so is a sweep that never
@@ -169,7 +170,8 @@ void nsfreq_init(void)
     g_reqecb = 0u;
     g_xtransport = NULL;                /* Phase 1 until a transport registers */
     g_classify   = NULL;                /* ... and until one supplies a guard  */
-    g_sweepnotify = NULL;               /* ... and until one wants to be told  */
+    g_sweepnotify  = NULL;              /* ... and until one wants to be told  */
+    g_sweepsummary = NULL;
     g_lastsweep.hi = 0u;                /* "never swept" -> the first call runs */
     g_lastsweep.lo = 0u;
     g_sweeps_run      = 0u;
@@ -289,6 +291,11 @@ void nsfreq_set_sweep_notify(void (*fn)(UINT idx, UINT token, UINT ascb,
                                         UINT asid))
 {
     g_sweepnotify = fn;
+}
+
+void nsfreq_set_sweep_summary(void (*fn)(int reclaimed))
+{
+    g_sweepsummary = fn;
 }
 
 int nsfreq_app_classify(UINT idx)
@@ -468,6 +475,19 @@ int nsfreq_app_sweep(UINT min_secs)
              * already happened rather than something about to be attempted. */
             g_sweepnotify(i, token, ascb, asid);
         }
+    }
+    /* THE SUMMARY IS A PROPERTY OF THE SWEEP, NOT OF ONE CALLER.  It was
+     * briefly the periodic caller's own line, and that silently exempted the
+     * OTHER trigger -- a full table at INITAPI, which is the LOUDEST and most
+     * consequential burst there is (up to 64 reclaims at once) and the one an
+     * operator most needs the caveat beside.  Emitting it here means the two
+     * triggers cannot drift, which is the same rule the sweep itself is built
+     * on: one function, two callers.
+     *
+     * Only when something was actually reclaimed -- an empty sweep would be a
+     * line every ten seconds, forever. */
+    if (reclaimed > 0 && g_sweepsummary != NULL) {
+        g_sweepsummary(reclaimed);
     }
     return reclaimed;
 }

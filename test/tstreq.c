@@ -852,6 +852,14 @@ static int fake_sweep_cls(UINT ascb, UINT asid)
 
 static UINT g_sw_calls;
 static UINT g_sw_idx, g_sw_token, g_sw_ascb, g_sw_asid;
+static UINT g_sum_calls;
+static int  g_sum_last;
+
+static void fake_sweep_summary(int reclaimed)
+{
+    g_sum_calls++;
+    g_sum_last = reclaimed;
+}
 
 static void fake_sweep_notify(UINT idx, UINT token, UINT ascb, UINT asid)
 {
@@ -1055,6 +1063,69 @@ static void test_sweep_reclaims(void)
     nsfreq_set_sweep_notify(NULL);
 }
 
+/* THE SUMMARY IS A PROPERTY OF THE SWEEP, NOT OF ONE CALLER.
+ *
+ * This is the assertion that made the seam worth having: the summary was
+ * briefly the periodic caller's own line, which silently exempted the
+ * on-demand trigger -- the LOUDEST burst there is, and the one whose operator
+ * output most needs the caveat. Both paths reach the same sweep, so both must
+ * summarise, and an empty sweep must stay silent. */
+static void test_sweep_summary_both_triggers(void)
+{
+    NSFRQE r;
+    UINT   n, i;
+
+    reset_req();
+    g_sum_calls  = 0u;
+    g_sum_last   = -1;
+    g_cls_answer = NSFREQX_CL_LIVE;
+    g_dead_ascb  = 0u;
+    nsfreq_set_classifier(fake_sweep_cls);
+    nsfreq_set_sweep_summary(fake_sweep_summary);
+
+    /* An empty sweep says nothing. */
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 0L, "a sweep that reclaims nothing");
+    CHECK_EQ((long)g_sum_calls, 0L, "... does NOT summarise");
+
+    /* DIRECT trigger (what the periodic caller does): one summary, right count. */
+    CHECK(app_init_id(0x00F10000u, 0x0060u) != 0u, "a client that will die");
+    g_dead_ascb = 0x00F10000u;
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 1L, "the periodic-shape sweep reclaims");
+    CHECK_EQ((long)g_sum_calls, 1L, "the periodic trigger summarises");
+    CHECK_EQ((long)g_sum_last, 1L, "... with the count it reclaimed");
+
+    /* ON-DEMAND trigger: fill the table, kill one, and let INITAPI drive it.
+     * This is the path that had no summary at all. */
+    g_dead_ascb = 0u;
+    n = nsfreq_app_max();
+    for (i = 0u; i < n; i++) {
+        if (!nsfreq_app_info(i, NULL, NULL, NULL)) {
+            CHECK(app_init_id(0x00F20000u + i, 0x0070u + i) != 0u, "table filled");
+        }
+    }
+    g_dead_ascb = 0x00F20000u;          /* whichever slot took that identity   */
+    g_sum_calls = 0u;
+    g_sum_last  = -1;
+
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, 0x00F30000u, 0x0080u);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "INITAPI swept and was granted a slot");
+    CHECK_EQ((long)g_sum_calls, 1L,
+             "THE ON-DEMAND TRIGGER SUMMARISES TOO (it did not, before the seam)");
+    CHECK_EQ((long)g_sum_last, 1L, "... with its own count");
+
+    /* Release everything so the suite's leak gate sees the registry empty. */
+    g_cls_answer = NSFREQX_CL_DEAD;
+    g_dead_ascb  = 0u;
+    (void)nsfreq_app_sweep(0u);
+    for (i = 0u; i < n; i++) {
+        CHECK_EQ((long)nsfreq_app_info(i, NULL, NULL, NULL), 0L,
+                 "every app slot released");
+    }
+    nsfreq_set_classifier(NULL);
+    nsfreq_set_sweep_summary(NULL);
+}
+
 /* THE SECOND TRIGGER: a full table makes INITAPI sweep before it refuses. */
 static void test_sweep_on_initapi_full(void)
 {
@@ -1134,6 +1205,7 @@ int main(void)
     test_sweep_counters();
     test_sweep_reclaims();
     test_sweep_on_initapi_full();
+    test_sweep_summary_both_triggers();
 #ifndef __MVS__
     test_roundtrip();
     test_lost_request();
