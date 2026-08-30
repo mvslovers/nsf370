@@ -1823,10 +1823,61 @@ own WTO (at 64 slots: **66 WTOs**, a console flood, not a truncation). What *is*
 the **host** capture ring — `src/nsfmsg_host.c` `CAP_MAX = 64`, and it drops **NEWER** lines
 — so with 64 slots in use the `NSF816I` summary is line 66 and is evicted. Reported, **not
 fixed** (§4), and it is why stage b's tests read the registry through `nsfreq_app_info`
-rather than through the report. **THE LIVE GATE IS NOT RUN AND NOTHING HERE IS A LIVE
-CLAIM** — arms 1 (periodic, using `SYS2.PROCLIB(TSTAPPDS)`'s dying STC, with the no-start
-window shown), 2 (on demand) and the three-state revert are the acceptance items still open,
-and a red arm-1 run is only interpretable against `NSF817I`. `NSFREQ_APP_MAX` at 64 **buys
+rather than through the report. **VALIDATED LIVE on MVSCE** (STC 1629/1633/1635, real
+0500/0501, MTU 1500), and the deploy-took-effect check had to be a NEW SHAPE because this
+round adds no field to an existing line: **`NSF817I APPSWEEP` present at all** is the proof
+(impossible on the old module), and its complement is what carried the revert arm.
+**ARM 1 (periodic), both halves quoted** — `SYS2.PROCLIB(TSTAPPDS)` `P=HANG` gives a dying
+STC that announces its own identity, so no reading is about some other address space.
+BEFORE (client alive): `SLOT 2 TOKEN=00010002 ASCB=00FF8D18 ASID=000C LIVE`, `3 OF 64 SLOTS
+IN USE`, `NSFSOC opens 3 closes 0`, `SWEEPS=19 RECLAIMED=0`. `C TSTAPPDS` → `IEF450I ...
+ABEND S222 ... 06.23.29`, and **ONE SECOND LATER** `NSF057I APP SLOT 2 (TOKEN=00010002
+ASCB=00FF8D18 ASID=000C) RECLAIMED` + `NSF058I ... 1 APP SLOT(S)`. AFTER: `2 OF 64 SLOTS IN
+USE`, **`NSFSOC opens 3 closes 1`**, `SWEEPS=25 RECLAIMED=1`. `D A,L` at 06.22.30 and
+06.24.09 is the **identical set** (7 jobs, 3 initiators) — nothing started, so the run
+measures the sweep and not ASID reuse. **Passes came from the STC's own idle heartbeat** (no
+external traffic, no address space started); the table was never full, so `do_initapi` never
+swept and all 25 sweeps are periodic — an exact count, not the ceiling the counter would
+otherwise be. **THE BATCH LIMITATION IS CONFIRMED AT SCALE, and it is the round's clearest
+picture of what this feature is NOT:** 63 ended batch clients — every `TSTAPPD` step of a
+61-step filler job plus the two earlier runs — all report the **same** initiator identity
+`ASCB=00FD0F18 ASID=0008` and every one reads **LIVE**, `0 DEAD`, reclaimed never. **ARM 2
+(on demand), before and after.** BEFORE: with the registry at `64 OF 64` and everything
+LIVE, **260 INITAPI attempts across two jobs every one returned `ERRNO=24` (EMFILE)** — and
+`SWEEPS` moved 46 → 125 across a 9-second job whose periodic share is ~1, so **the ~60 extra
+sweeps are one on-demand scan per refused INITAPI**: the scan demonstrably runs BEFORE the
+refusal. AFTER: with a 200-step job still running (a step attempts INITAPI every ~0.045 s
+against a 10 s periodic interval), `C TSTAPPDS` at 06.32.50 drew `NSF057I APP SLOT 63
+(TOKEN=0002003F ...) RECLAIMED` **in the same second**, and the slot came back as
+**`SLOT 63 TOKEN=0003003F ASCB=00FD0F18 ASID=0008`** — generation **3** and the INITIATOR's
+identity, i.e. a step of that job was granted the reclaimed slot. **Attribution stated
+honestly:** the same-second timing makes the on-demand path overwhelmingly likely rather
+than certain (a periodic sweep landing in that second is ~10 %), and it is the sweep-count
+evidence above that independently establishes the on-demand scan runs at all. **THE REVERT
+TEST, THREE STATES, ONE ASSERTION MOVING** — and the reverted arm is also the gate's own
+control for §2.3, because it RENDERS the "defect" signature deliberately: with the periodic
+call removed (`if (0 && !g_busy)`, one axis) the module reports **`SWEEPS=0` after 66 s with
+`EVTPASSES=663`** — impossible on the fixed module, so the revert is confirmed POSITIVELY
+and not by a missing line — and 46 s after the same cancel the slot reads **`DEAD` and still
+`1 OF 64 SLOTS IN USE` with `NSFSOC closes 0`**: the classifier saw DEAD, the socket was
+never freed, and nothing acted because nothing swept. Restored → `SWEEPS` climbs again and
+the same stimulus reclaims (`closes 1`). **PHASE 1 VERIFIED LIVE, not assumed:** `S NSF`
+starts clean (`NSF000I`→`NSF210I/211I`→`NSF001I`, no abend), `F NSF,APPS` still draws
+**`NSF808E UNKNOWN COMMAND APPS`** — the structural red line on the machine — and a 20-ping
+regression is **20/20, 0 % loss** (0.581/0.878/1.304 ms). Regression on the restored module:
+`TSTRQXC`/`TSTRQXF` **122 PASS CC 0 batch+TSO** (and 132 with `TSTAPPD` earlier in the
+round); **ZERO dumps** (`IEA995I` 0, against five `IEF450I S222` that are exactly the five
+deliberate `TSTAPPDS` cancels — the positive control); no `NSF900E`/`NSF903I`; `SVC 239`
+stolen and restored across every recycle; registry left at `0 OF 64`, stand as found.
+**§2.6 ANSWERED ON A REAL CONSOLE:** one `F NSFS,APPS` at a full registry is **exactly 66
+WTOs** (1 heading + 64 slots + 1 summary), longest line **61 columns**, nothing truncated —
+an operational consequence of 16 → 64 that appeared in no trade-off, and worth knowing
+before someone issues it on a busy stack.
+**THE DEPLOYED PHASE-1 MODULE AND `main` HAVE PARTED COMPANY, WHICH IS THE HALF THAT GOES
+MISSING:** "inert, no redeploy needed" is true, and so is "any `NSF` deployed before this
+change predates it" — the module links the changed `src/nsfreq.c` and the new
+`src/nsftime_plat.c`, so its bytes differ even though its behaviour does not. On mvsdev it
+WAS redeployed and verified above; anywhere else it has not been. `NSFREQ_APP_MAX` at 64 **buys
 time and fixes nothing**, now said at the constant with a pointer to #88. **"PHASE 1
 UNTOUCHED" IS A BEHAVIOURAL CLAIM, NOT A BYTE-LEVEL ONE:** the `NSF` module links the changed
 `src/nsfreq.c` and the new `src/nsftime_plat.c`, and `do_initapi`'s full-table path now runs a

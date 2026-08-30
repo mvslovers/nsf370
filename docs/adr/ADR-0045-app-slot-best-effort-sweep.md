@@ -1,6 +1,12 @@
 # ADR-0045 — The app-registry sweep ships as best-effort, and is named that way
 
-**Status:** Proposed (2026-08-30). Settles **what M5-2c1 delivers against obligation #3** —
+**Status:** Accepted (2026-08-30) — live gate green on MVSCE: arm 1 reclaimed a cancelled
+STC's slot and socket one second after its address space ended, with `D A,L` showing nothing
+started; arm 2 showed the on-demand scan running before the refusal (260 `EMFILE`s, ~60 extra
+sweeps) and a client granted the reclaimed slot; and the three-state revert has the reverted
+module leaving the slot `DEAD` and its socket unfreed 46 s later. 63 ended **batch** clients
+in the same round were never reclaimable, which is the limitation working exactly as §1
+describes it. Settles **what M5-2c1 delivers against obligation #3** —
 reclaim the sockets of an application that ends without `TERMAPI` — now that three rounds of
 measurement have established the obligation cannot be kept.
 
@@ -255,6 +261,10 @@ relink-only still holds); then `TERMAPI` from an ESTAE exit for ecosystem client
   Phase 1 registers no notify — so the observable behaviour is unchanged and `S NSF` need not
   be redeployed (the M3-2 precedent). The module is not byte-for-byte identical, and saying so
   plainly is cheaper than a reader discovering it.
+- **`F NSFS,APPS` at a full registry is 66 WTOs** (1 heading + 64 slots + 1 summary),
+  measured on a real console; longest line 61 columns, nothing truncated. Not a defect and
+  not the `sts_render` wall, but an operational consequence of raising the registry from 16
+  to 64 that appeared in no trade-off at the time.
 - **Not established by this step:** anything about issue #88's eventual design; the TSO client
   class, still unmeasured; and the live behaviour of the periodic trigger under a real ASID
   reuse race, which the gate measures but cannot bound.
