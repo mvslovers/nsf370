@@ -60,7 +60,13 @@ static NSFECB g_reqecb;
  * carrying that token (the mass-teardown path) and frees the slot. The token is
  * (gen<<16)|idx like a socket descriptor, so a stale token never matches a
  * reused slot. Static -- no pool, no runtime allocation (spec 3). */
-#define NSFREQ_APP_MAX   16
+/* 64, matching the two limits either side of it: the CSA request-slot pool is
+ * NSFV_NSLOTS = 64 (ADR-0042), so up to 64 clients can have a request
+ * outstanding, and the socket table is NSFSOC_MAX_DEFAULT = 64. At 16 this
+ * registry was the tighter bound -- a 17th client could claim a CSA slot and
+ * reach the dispatcher, only to be refused at INITAPI. Costs 12 bytes a slot,
+ * so the whole table is 768 bytes static. */
+#define NSFREQ_APP_MAX   64
 
 typedef struct appreg {
     UCHAR  inuse;

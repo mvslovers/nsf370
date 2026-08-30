@@ -541,7 +541,7 @@ static void test_caller_identity(void)
 
     reset_req();
 
-    CHECK_EQ((long)nsfreq_app_max(), 16L, "app registry bound is 16 slots");
+    CHECK_EQ((long)nsfreq_app_max(), 64L, "app registry bound is 64 slots");
 
     /* (a) An identified caller: the pair is stored verbatim against the slot. */
     rqe_init(&r, RQ_INITAPI, 0u, 0u);
@@ -718,7 +718,7 @@ static void test_app_classify_and_report(void)
           cap_contains("ASID=0031"), "the identified slot reports its identity");
     CHECK(cap_contains("DEAD"), "the identified slot reports its verdict");
     CHECK(cap_contains("NO-ID"), "the Phase-1 slot reports NO-ID");
-    CHECK(cap_contains("NSF816I APP REGISTRY: 2 OF 16 SLOTS IN USE, 1 DEAD"),
+    CHECK(cap_contains("NSF816I APP REGISTRY: 2 OF 64 SLOTS IN USE, 1 DEAD"),
           "the summary counts slots in use and, of those, the dead ones");
 
     /* Read-only: the report classified twice more and reaped nothing. */
@@ -732,7 +732,7 @@ static void test_app_classify_and_report(void)
     nsfmsg_cap_reset();
     nsfapp_report();
     CHECK_EQ((long)nsfmsg_cap_count(), 2L, "an empty registry reports heading + summary");
-    CHECK(cap_contains("NSF816I APP REGISTRY: 0 OF 16 SLOTS IN USE, 0 DEAD"),
+    CHECK(cap_contains("NSF816I APP REGISTRY: 0 OF 64 SLOTS IN USE, 0 DEAD"),
           "an empty registry says so");
 #else
     /* On the target, still release the two instances so the suite's leak gate
