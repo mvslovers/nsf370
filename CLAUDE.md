@@ -1705,8 +1705,8 @@ asks after an idle period"**, which is the normal case. Three options are laid o
 Mike's call.** Each LEAVE/CANCEL arm costs one app slot of 16; the round leaked three and
 `P NSFS`/`S NSFS` reset it (**verified**: STC 1505 came up `0 OF 16 SLOTS IN USE`, no
 `NSF054W`, `SVC 239 RESTORED`, stand left clean). `docs/measurements/m5-2c1/`.
-**M5-2c1 stage b (the sweep, shipped best-effort and named that way) — host + cross-link
-+ alias scan DONE; the live gate is NOT run.** The second half of the first sub-step of
+**M5-2c1 stage b (the sweep, shipped best-effort and named that way) — DONE, live-green in
+both arms and all three revert states, maintainer-countersigned (PR #89 merged).** The second half of the first sub-step of
 M5-2c; **M5 stays in progress and no milestone flips.** Stage a stopped on a measurement,
 and the measurement decided what this could be: **client liveness is not soundly
 detectable on 3.8j**, so the sweep reclaims a narrow class and nothing else
