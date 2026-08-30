@@ -177,7 +177,7 @@ issue states: `nsfsx_next_actionable` skips any slot that is not `PENDING`, and 
 re-examines a `HELD` slot. A parked task costs exactly one slot and hangs itself, so
 exhausting the pool needs 64 of them.
 
-Proposed comment for #67 — **to be posted only on your say-so**:
+**Posted to #67** (comment only — the issue stays OPEN, no state change):
 
 > `ORPHAN` was retired in M5-2c2 stage b (PR #90's map priced it; the retirement is on
 > `m5-2c2-orphan-retire`). It is now rejected by name in the pre-claim chain and returns
@@ -190,6 +190,14 @@ Proposed comment for #67 — **to be posted only on your say-so**:
 > is gone. The remaining probe verbs are c3.
 
 ---
+
+## 4a. The STATS truncation — filed as #92
+
+`F NSFS,STATS` renders ~32 of 52 counters into a fixed 512-byte buffer with a **data-dependent
+cut point**, and `src/nsfmsg_host.c`'s `CAP_MAX = 64` ring drops NEWER lines so the `NSF816I`
+summary is evicted at a full registry. Filed as **#92**, with the (e) dependency stated and no
+fix proposed: (e) measures throughput by reading counters, so a renderer that silently drops a
+fifth of them at a moving boundary is a measurement instrument that fails silently.
 
 ## 5. Obligation #4 — half discharged, and it must not be booked as met
 

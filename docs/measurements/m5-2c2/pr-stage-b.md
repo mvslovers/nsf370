@@ -102,5 +102,6 @@ free ASID nothing owns), `ASCB=00FD0F20` (the real ASCB **+8**), `ASCB=00000000`
   or renaming it breaks `tstdeath.c`'s compile and would **force the `TSTDEATH` decision as a
   side effect**, which this round is told not to pre-empt. The honest cost of keeping it is a
   header that names a verb which no longer works.
-- **#67 update drafted, not applied.**
-- **The STATS truncation issue drafted, not filed.**
+- **#67 updated** — comment posted recording that the sharp variant is gone and the issue
+  **stays open** (`ECHO`/`XFER` still strand a slot each). No state change.
+- **The STATS truncation filed as #92**, with the (e) dependency stated and no fix proposed.
