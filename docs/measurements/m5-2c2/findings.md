@@ -33,7 +33,7 @@ from the FLIH, not one it was handed — be arranged into this row?
 | row | condition | producible by a real client | logic host-side | wiring live **after** removal |
 |---|---|---|---|---|
 | 1 LIVE | ASID assigned, ASCB matches | **yes**, constantly | yes | **yes** — every cross-AS test |
-| 2 DEAD (avail bit) | ASVT entry `AVAIL` | **yes** — measured 9/9 | yes | **yes** — measured this round |
+| 2 DEAD (avail bit) | ASVT entry `AVAIL` | **yes** — 9 of 9 kills | yes | **yes** — app sweep n=8, transport **n=1** |
 | 3 DEAD (ASCB mismatch) | ASID assigned, ASCB differs | **no** — 0 of 9 reuses | yes | **no**, and not coverable |
 | 4a UNKNOWN | `req_ascb == 0` | **no** | yes | **no** (only `ORPHAN` drives it) |
 | 4b UNKNOWN | `asvt_enty == NULL \|\| maxu == 0` | **no** — STC-side, not a client property | yes | no (never was) |
@@ -52,8 +52,12 @@ Producible and continuously exercised. The guard gates **every** reply POST:
 without passing here."* The production STC does the same at `src/nsfsx.c:374`.
 
 So a false DEAD on row 1 would hang the client and fail the round. **Row 1's wiring is
-covered live by the entire Stage-0 and cross-AS regression set** — TSTSVC, TSTUBUF,
-TSTMVCK, TSTXFW, TSTRQXC, TSTRQXF, TSTRQXM — none of which uses `ORPHAN`. Within
+covered live by every test that actually crosses the boundary** — TSTSVC, TSTUBUF,
+TSTXFW, TSTRQXC, TSTRQXF, TSTRQXM — none of which uses `ORPHAN`. (Pruned deliberately:
+`TSTMVCK` and `TSTMVCD` are *instruction-level* probes that self-auth and never rendezvous
+through the anchor — `project.toml` says of TSTMVCK "No NSF sources" — so they never pass
+the guard and are not evidence here. The listed six were checked for `nsfv_svc_issue` /
+the `src/nsfreqc.c` client seam, not assumed.) Within
 `TSTDEATH` itself, scenario 5 (the blocking ECHO round trip) is also a real-identity LIVE
 control and survives the retirement of scenarios 1–4.
 
@@ -97,12 +101,34 @@ The completing datagram is required: M5-2b4 established that the drain scan **sk
 in-service slot**, so a parked request is never reaped by the periodic scan; only the
 completion path's guard looks at it.
 
-**The rate, and why a percentage would mislead.** 9 of 9 kills were classified DEAD and
-acted on, the ASVT entry flipping to `AVAIL` within ~1 s of the ABEND every time. But the
-window is **event-bounded, not time-bounded**: with nothing else starting, ASID 12 stayed
-`AVAIL` for the full 100 s of the first watch. It returned to LIVE only when another
-address space was deliberately started. So the check races **address-space starts**, not
-wall time, and a rate quoted without the start rate attached is not transferable.
+**The ledger, so the counts reconcile.** 9 real STC clients were killed. All 9 were
+reclaimed by the **app sweep** (`NSF057I`), which is why the closing
+`NSF817I APPSWEEP … RECLAIMED=9` reads 9. Exactly one of those 9 — the `PARK` run — also
+had a published **transport** request outstanding, and that one produced the `NSF050I`
+transport reap and the closing `REAPED=1`. So: app-sweep path **n = 8** plus the PARK run;
+**transport path n = 1**.
+
+**And the transport datum is n = 1, which matters because it is the path `ORPHAN`
+rehearses.** The app-sweep evidence is plentiful but it is not the path `TSTDEATH`'s rows
+live on. The claim "a real client can drive the transport guard to row 2" rests on a single
+observation, cleanly instrumented but single.
+
+**The rate, and why a percentage would mislead.** Every kill was classified DEAD and acted
+on, the ASVT entry flipping to `AVAIL` within ~1 s of the ABEND every time. But the window
+is **event-bounded, not time-bounded**: with nothing else starting, ASID 12 stayed `AVAIL`
+for the full 100 s of the first watch, and returned to LIVE only when another address space
+was deliberately started. So the check races **address-space starts**, not wall time, and a
+rate quoted without the start rate attached is not transferable.
+
+**For the transport path it is worse than that, and this is the sharper form of the same
+insight: the transport guard has no period at all.** The sweep looks every 10 s; the
+transport guard looks *when the request completes*, which is the client's or the peer's
+business and is unbounded. In this round's own datum there were **~16 s** between the
+`ABEND S222` (9.36.35) and the `NSF050I` (9.36.51), and the guard looked only because a
+datagram was sent. Had another address space started in that gap, the identity would have
+resurrected to LIVE and the STC would have POSTed into a dead address space — 40-CHK's
+permanently leaked slot. So the transport exposure is **completion latency vs. start rate**,
+with completion latency unbounded, not "sweep period vs. start rate".
 
 Direction, carried from `m5-79` rather than re-derived: fast reuse means the check **misses
 more**, and this stand is the **pessimistic** case (three initiators, near-empty STC ASID
@@ -197,7 +223,8 @@ round protocol has to be restated at the same time or the next round reads as a 
 (`qstate` `qinfl` `qreap` `rqeimg` `slot` `sexpect` `snew`). Removing them:
 
 - shifts all 7 by 8 bytes;
-- changes **7 `NSFV_OFF_ASSERT`s** and `NSF_SIZE_ASSERT(NSFV_REQ, 64)` → 56;
+- changes the value of **7 `NSFV_OFF_ASSERT`s**, deletes 2, and changes
+  `NSF_SIZE_ASSERT(NSFV_REQ, 64)` → 56;
 - changes the 7 matching asm `REQ*` EQUs (`asm/nsfvsvc.asm:202-209`);
 - and **two of the seven shifted fields are used by real, non-probe requests** —
   `rqeimg` (the NSFRQE image, M5-2a) and `slot`, which the claim path writes for **every**
@@ -218,10 +245,13 @@ A new client meeting an old router would therefore have `rqeimg` and `slot` read
 offsets, silently, with the eyecatcher check passing. That is the same hazard class
 `ANCVERNO` was introduced for, in a structure that has no equivalent guard.
 
-**So the two options are not equal in kind.** Leaving the fields reserved — verb gone,
-offsets unchanged — retires the forging path without introducing an unguarded layout change.
-Removing them is a layout move in a structure with no version check, and would want one
-(or a bump of something that covers it) as part of the same change.
+**The two costs, stated flatly.** Verb gone / offsets unchanged: no field moves, no assert
+changes, no skew hazard, and the two fields remain as dead reserved words. Verb gone /
+fields removed: 7 fields move, 8 offset asserts and 7 asm EQUs change, two production
+fields (`rqeimg`, `slot`) shift, and the move lands in a structure that has no version
+check — so it is a layout change of the kind `ANCVERNO` exists to catch elsewhere, and
+would want an equivalent guard introduced in the same change. Which of those is worth
+paying is the decision this round does not make.
 
 **The churn is shared with the rest of the probe set.** `SLOT` / `QUERY` / `UNSTAGE` carry
 the identical *"SCAFFOLDING, DUE OUT IN M5-2c — a SECURITY item, not hygiene"* header, and
@@ -231,23 +261,39 @@ fields can be removed as a contiguous block without moving a production field.
 
 ---
 
-## 4. The bonus: retiring the verb closes half of #67
+## 4. The bonus: retiring the verb closes the sharp half of #67
 
-`ORPHAN` claims a slot, publishes it, POSTs the STC and **returns without parking**
-(`ORPHRET`, `asm/nsfvsvc.asm:1121`). With a forged zero identity it classifies UNKNOWN →
-`ACT_HOLD` → `HELD`, and `nsfreqx_reap_ok` refuses a HELD-with-UNKNOWN outright — by
-design, and correctly. So **one live, unauthorised task can strand slots by repetition,
-without dying and without being cancelled**; 64 calls exhaust the pool.
+Read from the issue rather than inherited: **#67's stranding mechanism does not depend on a
+forged *dead* identity at all**, and that makes the case stronger than the kickoff's summary.
+`nsfsx_next_actionable` skips any slot that is not `PENDING`, and the `ACT_DISPATCH` arm
+rejects any staged `xfunc` other than `NSFV_REQ_RQE` by setting the slot `HELD`. Nothing
+re-examines a `HELD` slot.
 
-That it is reachable at the production STC is not an inference: M5-2b3 records `NSF050I` /
-`NSF051W` firing against NSFS from *"ORPHAN requests reaching NSFS"*. Unlike `XFEROUT` —
-which M5-2c0 established is dispatchable but never actually executed under NSFS — `ORPHAN`
-runs there.
+`ORPHIN` stages `xfunc = FNECHO` (`asm/nsfvsvc.asm:596-597`), so at the production STC an
+`ORPHAN` carrying a perfectly ordinary **LIVE** identity is stranded by the `xfunc`
+rejection — no forgery required. (A forged UNKNOWN identity strands it one step earlier, via
+`ACT_HOLD`; a forged DEAD one is the only case that cleans itself up, by being reaped.)
 
-Retiring the verb closes that half of #67 outright, and it belongs in the argument for
-doing it.
+What makes `ORPHAN` the sharp case is `ORPHRET` (`asm/nsfvsvc.asm:1121`): it returns
+**without parking** and without decrementing `inflight`. `ECHO`/`XFER` also strand a slot,
+but the caller parks, so one hostile task costs exactly one slot and hangs itself — 64
+parked tasks to exhaust the pool. With `ORPHAN`, **one live, unauthorised task can repeat
+the call 64 times**, after which every real client gets `ENOBUFS` and `P NSFS` retains the
+anchor and the SVC routine (~137 KB of CSA) until IPL. `QUERY`/`UNSTAGE`/`SLOT` are not
+affected — they branch out ahead of the claim and take no slot.
 
----
+Reachability at NSFS is recorded, not inferred: M5-2b3 saw `NSF050I`/`NSF051W` fire against
+the production STC from *"ORPHAN requests reaching NSFS"*. Unlike `XFEROUT`, which M5-2c0
+established is dispatchable but never actually executed under NSFS, `ORPHAN` runs there.
+
+So retiring the verb closes the **unparked, repeatable** half of #67 outright, and leaves
+the `ECHO`/`XFER` half (one slot per parked task) untouched. That belongs in the argument
+for doing it.
+
+**A note that makes §3a's enumeration complete rather than merely unrefuted:** because
+`ORPHIN` stages `xfunc = FNECHO`, no C-side code anywhere ever sees `ORPHAN` as a distinct
+transform. The verb exists only in the assembler's dispatch and return paths and in
+`tstdeath.c`. That is why the §3a list is short, and why it can be claimed to be exhaustive.
 
 ## 5. What this round does not establish
 
@@ -269,3 +315,50 @@ the first `S TSTAPPDS` drew `IEA703I 806-4 … MODULE ACCESSED TSTAPPD` / `ABEND
 is the §8.5 shape again: the rig was absent, and absence looks like a result.
 
 `NSF.LINKLIB` was **not** redeployed — no module source changed in this round.
+
+---
+
+## 7. Two deviations from §2, named with their compensating controls
+
+Both are defensible; leaving them implicit is what would cost.
+
+**Offsets were inherited, not re-gated.** §2 says no control-block offset from memory —
+`SYS1.AMODGEN`, live, through the DSECT gate. This round did **not** re-run the gate; it
+reused `40-ident/arm1.py`'s already-proved set (`CVTASVT`, `ASVTMAXU`, `ASVTENTY`,
+`ASVTAVAI`, `ASCBASID`), which 64-3-0 proved with IFOX00 (`IRAOUCB` 17/17, `IHAASCB` 13/13).
+Two independent compensating controls were taken instead, and both held:
+
+1. The **CSA size reproduces** — `GDA+8 CSAPQEP → PQE → PQESIZE` reads 2 113 536 B
+   (2064 KB), identical to 64-3-0's measurement, on every invocation. A wrong `CVTGDA` or
+   a wrong chase would not land on that number.
+2. **The raw read agreed with the guard's own verdict, every time.** `rowwatch.py` reads the
+   ASVT directly through `/.dm` from outside; the STC reads it through
+   `nsfreqx_classify` from inside. They concurred on all 9 kills — `rowwatch` said
+   `DEAD-row2-avail` exactly when `NSF057I`/`NSF050I` fired, and said `LIVE` whenever
+   `NSF815I` said `LIVE`. Two independent paths to the same field, agreeing.
+
+**Two new files were written.** §2 says build no new induction machinery. Neither of these
+is induction: the induction is unchanged — `SYS2.PROCLIB(TSTAPPDS)` and 40-CHK's
+cancel-while-parked shape, both pre-existing and both used exactly as documented.
+`rowwatch.py` is `40-ident/asvtentry.py` in a loop (**observation**, read-only, `/.dm` only,
+no MODIFY and no console command), and `iter.sh` is **orchestration** — it issues the same
+`S`/`C` commands a human would. No new way of killing a client was invented.
+
+## 8. Positive evidence for the red lines
+
+Not assertions — `git status` on the round's branch shows exactly one added path:
+
+```
+?? docs/measurements/m5-2c2/
+```
+
+`asm/nsfvsvc.asm`, `include/nsfvsvc.h`, `src/`, `test/` and `project.toml` are all
+untouched, so *"anchor layout unmoved, `ANCVERNO` 3, `NSFRQE` frozen at 64 B, no verb
+retired, no field removed, no test scenario removed"* is a property of the diff rather than
+a claim about it. Host **3342 PASS / 0 FAIL** before and after — a no-regression check only,
+and evidence of nothing else, since nothing outside `docs/` changed.
+
+Stand left clean: `NSF043I SVC 239 RESTORED`, `NSF044I`, `NSF011I`, `IEF404I` — **no
+`NSF054W`**, so the drain reached zero and the CSA was freed, no debt and no IPL owed.
+**Zero dumps** (`IEA995I` count 0) against 9 deliberate `IEF450I … ABEND S222` cancels,
+which is the positive control on that count being real.
