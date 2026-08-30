@@ -192,7 +192,8 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_set_transport NSFRQSXT
  *   nsfreq_dispatch_id NSFRQDSI     nsfreq_app_info NSFRQAPI
  *   nsfreq_app_max NSFRQAPM       nsfreq_set_classifier NSFRQSCL
- *   nsfreq_app_classify NSFRQACL
+ *   nsfreq_app_classify NSFRQACL   nsfreq_app_sweep NSFRQAPS
+ *   nsfreq_set_sweep_notify NSFRQSSN
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -326,5 +327,61 @@ void     nsfreq_set_classifier(int (*fn)(UINT ascb,
  * behind it -- which is exactly what ADR-0040's UNKNOWN row exists to keep
  * separate from a verdict that does. */
 int      nsfreq_app_classify(UINT idx) asm("NSFRQACL");
+
+/* ---- the best-effort reclamation sweep (M5-2c1 stage b, ADR-0045) ---------
+ *
+ * Reclaim the app slots -- and, through the one teardown checklist, the
+ * sockets -- of applications whose address space the classifier reports DEAD.
+ *
+ * READ THIS BEFORE RELYING ON IT: IT IS BEST-EFFORT, AND THE LIMITS ARE NOT
+ * IMPLEMENTATION DETAIL.  Client liveness is not soundly detectable on
+ * 3.8j (issue #88, measured in docs/measurements/40-chk/ and
+ * docs/measurements/40-ident/):
+ *
+ *   - A BATCH CLIENT IS NEVER RECLAIMED.  EVER.  Its recorded ASCB is the
+ *     INITIATOR's, and an initiator does not end when a job ends -- a normal
+ *     end and a CANCEL both read LIVE.  Not a bug here and not fixable here.
+ *   - AN STC CLIENT IS RECLAIMED ONLY IF THIS RUNS BEFORE ITS ASID IS REUSED.
+ *     STC identities do die, within a second, but the verdict is transient:
+ *     a later address space taking the same ASID flips the slot back to LIVE,
+ *     reclassified rather than reaped.
+ *
+ * So TERMAPI REMAINS THE CONTRACT.  This is an interim measure accepted so the
+ * stack can be seen working, and it does not replace TERMAPI; the real answer is
+ * deferred to issue #88.
+ *
+ * IT IS SAFE IN THE ONLY DIRECTION THAT MATTERS.  A false LIVE leaks a slot; a
+ * false DEAD cannot arise from reuse, because an ASID is unique among the
+ * address spaces that are alive.  UNKNOWN is never reclaimed (ADR-0040), and
+ * neither is a slot with no identity recorded -- nsfreq_app_classify is where
+ * that red line lives, and this sweep asks through it like every other
+ * consumer.
+ *
+ * `min_secs` is the MINIMUM INTERVAL between two sweeps, in real seconds
+ * (nsf_elapsed_ge).  0 bypasses the limiter, which is not a special case in
+ * the code: a zero interval has always elapsed.  It bounds the gap BETWEEN
+ * SWEEPS and promises nothing about latency -- a sweep still only happens on
+ * an executive pass, and a pass only happens when something uses the stack.
+ * The honest reading is "no sooner than min_secs after the last sweep, and not
+ * until the stack is used again".
+ *
+ * RETURNS A THIRD STATE (CLAUDE.md 8.5), because "0" must not mean both
+ * "rate-limited, did not look" and "looked, found nothing": */
+#define NSFREQ_SWEEP_SKIPPED  (-1)  /* did NOT run -- the interval had not elapsed */
+/* ... any value >= 0 is the number of app slots actually reclaimed. */
+int      nsfreq_app_sweep(UINT min_secs) asm("NSFRQAPS");
+
+/* Register a per-reclaim notification (M5-2c1).  Called once for each slot the
+ * sweep reclaims, with the slot index and the identity it was carrying, AFTER
+ * the sockets are gone and the slot is free.
+ *
+ * A SEAM RATHER THAN A DIRECT nsfmsg CALL for two reasons.  It keeps the
+ * operator console out of nsfreq.c -- most builds that link this file do not
+ * link NSFMSG at all -- and it makes the reclaim OBSERVABLE to a host test,
+ * which a WTO would not be.  On MVS the Phase-2 STC registers a wrapper that
+ * WTOs NSF817I; NULL is the default and the Phase-1 state, and a NULL notify
+ * changes nothing but the silence. */
+void     nsfreq_set_sweep_notify(void (*fn)(UINT idx, UINT token, UINT ascb,
+                                            UINT asid)) asm("NSFRQSSN");
 
 #endif /* NSFREQ_H */

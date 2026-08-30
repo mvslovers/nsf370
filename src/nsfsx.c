@@ -390,6 +390,45 @@ nsfsx_client_state(const NSFV_SLOT *slot)
  * A ZERO ASCB NEVER REACHES HERE: nsfreq_app_classify answers
  * NSFREQ_APPCL_NONE first.  Should it ever arrive anyway, nsfreqx_classify's
  * own first row answers UNKNOWN, which reaps nothing. */
+/* The periodic sweep's minimum interval, in real seconds (ADR-0045).
+ *
+ * TEN, and the number is not load-bearing -- a reclamation that is late by
+ * seconds costs nothing, because the slot was already leaked and nobody is
+ * waiting on it.  What the interval buys is that the scan (64 slots, each an
+ * ASVT lookup) does not run on every executive pass, which on a busy stack is
+ * thousands per second.  The moment reclamation actually MATTERS -- the table
+ * is full -- do_initapi bypasses this entirely with a 0.
+ *
+ * REAL SECONDS, NOT TICKS.  A tick counter does not advance while the timer
+ * queue is empty (ADR-0034: queue empty <=> STIMER disarmed), so a tick-based
+ * limiter would never see its interval elapse after an idle period -- which is
+ * precisely the pass that matters.  And not a TIMER: arming one keeps the
+ * STIMER permanently armed and reintroduces the idle floor ADR-0043
+ * established is not required. */
+#define NSFSX_SWEEP_SECS  10u
+
+/* The sweep's per-reclaim operator line (ADR-0045), registered on the
+ * nsfreq_set_sweep_notify seam at init.
+ *
+ * IT IS THE LIVE GATE'S INSTRUMENT, not decoration.  A run in which nothing is
+ * reclaimed has two very different causes -- the sweep saw DEAD and failed to
+ * act (a defect), or it saw LIVE because the ASID had already been reused
+ * (expected, and the measured behaviour of this target).  The F NSFS,APPS
+ * snapshot cannot separate them, because by the time it renders, the evidence
+ * is either gone or overwritten.  This message is what says "DEAD, and acted"
+ * at the moment it happened. */
+static void nsfsx_sweep_notify(UINT idx, UINT token, UINT ascb, UINT asid)
+{
+    wtof("NSF817I APP SLOT %u (TOKEN=%08X ASCB=%08X ASID=%04X) RECLAIMED"
+         " -- CLIENT ADDRESS SPACE GONE",
+         (unsigned)idx, (unsigned)token, (unsigned)ascb, (unsigned)asid);
+}
+
+void nsfsx_set_sweep_notify(void)
+{
+    nsfreq_set_sweep_notify(nsfsx_sweep_notify);
+}
+
 int nsfsx_classify_client(UINT ascb, UINT asid)
 {
     CVT  *cvt;
@@ -1020,6 +1059,44 @@ nsfsx_drain(void)
      * check compares server_ecb_ptr against that ADDRESS, and nsfsx_stats_extra
      * reads the value for the operator.  Only the value is consumed here. */
     g_wake_ecb = 0u;
+
+    /* ---- 0b. THE PERIODIC RECLAMATION SWEEP (M5-2c1 stage b, ADR-0045) -----
+     * Reclaim the app slots and sockets of clients whose address space is
+     * gone.  Best-effort by nature -- a batch client is never reclaimed at all
+     * and an STC client only if this wins the race against ASID reuse (issue
+     * #88); nsfreq.h carries the limits.
+     *
+     * WHY HERE AND NOT IN nsfreq_drain.  evt_set_request wires exactly ONE
+     * drain per build -- nsfreq_drain in Phase 1 (nsfmain.c), this function in
+     * Phase 2 (nsfsmain.c) -- so a sweep in the Phase-1 drain would never run
+     * here at all.  Putting it in this function is also what makes "Phase 1
+     * sweeps nothing" STRUCTURAL rather than a property of the zero identity:
+     * src/nsfmain.c does not reach this code.
+     *
+     * WHY AFTER STEP 0 AND NOT AT THE TOP.  The wake-ECB reset is load-bearing
+     * and its argument is positional: it must precede both scans, or the
+     * no-lost-wake reasoning above (the two orderings) stops holding.  Nothing
+     * is allowed in front of it.
+     *
+     * WHY IT IS SKIPPED WHILE BUSY, WHICH IS A DECISION AND NOT AN OMISSION.
+     * When g_busy the executive has a request in service on g_priv, and that
+     * request may be PARKED on a socket owned by one of these very apps.
+     * Reclaiming would run soc_destroy on that socket and complete g_priv from
+     * inside a scan, underneath the step-1 completion path that owns the
+     * g_busy / g_busy_slot bookkeeping -- the same shape M5-2b4 found when a
+     * slot scan could have reaped the in-service CSA slot from under the
+     * executive.  The sweep is opportunistic; deferring it one pass costs
+     * nothing, and its own rate limit is measured in seconds while a pass is
+     * measured in milliseconds.
+     *
+     * NO KEY WINDOW.  Unlike the scans below, this touches no CSA: the app
+     * registry is STC-private key-8 storage, and the classifier only READS the
+     * CVT and ASVT, which are common storage and not fetch-protected (proven
+     * from problem state key 8 -- stage a ran exactly this path live from the
+     * F NSFS,APPS operator verb). */
+    if (!g_busy) {
+        (void)nsfreq_app_sweep(NSFSX_SWEEP_SECS);
+    }
 
     /* ---- 1. Finish the completed request ----------------------------------
      * The executive has run soc_complete on the private copy, so retcode /

@@ -50,7 +50,7 @@ cflags = ["-Wall", "-Wextra", "-Werror", "-DNSF_DEBUG=1", "-pthread"]
 #              libc370 cthread (ATTACH a subtask, SVC-2 POST, WAIT, termecb join)
 #              on MVS (src/nsfthr.c), a pthread + condvar on the host
 #              (src/nsfthr_host.c) so the SAME CTCI subtask logic runs both ways.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c", "asm/nsfctcio.asm" = "src/nsfctcio_host.c", "src/nsfctci.c" = "src/nsfctci_host.c", "src/nsfthr.c" = "src/nsfthr_host.c" }
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "src/nsftime_plat.c" = "src/nsftime_plat_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c", "asm/nsfctcio.asm" = "src/nsfctcio_host.c", "src/nsfctci.c" = "src/nsfctci_host.c", "src/nsfthr.c" = "src/nsfthr_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -381,7 +381,7 @@ sources = ["test/tstsoc.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt_plat.c",
 [[test]]
 name = "TSTREQ"
 startup = "crt1"
-sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsfapp.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfapp.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-2 NSFREQ on MVS: the same-AS transport round-trip ------------------
 # MVS-only (host = false): the executive main task runs evt_mainloop with the
@@ -394,7 +394,7 @@ sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsfapp.c", "src/nsfmsg.c", "src
 name = "TSTREQM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstreqm.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstreqm.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-3 UDP (NSFUDP): datagram in/out, port demux, checksum ---------------
 # Drives the full inbound/outbound UDP path over the M3-2 request path (build an
@@ -407,7 +407,7 @@ sources = ["test/mvs/tstreqm.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c",
 [[test]]
 name = "TSTUDP"
 startup = "crt1"
-sources = ["test/tstudp.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstudp.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-3 UDP on MVS: the full stack over the real CTCI pair (live gate) ------
 # MVS-only (host = false): stands up CTCI (0500/0501) + IP + ICMP + UDP + the
@@ -421,7 +421,7 @@ sources = ["test/tstudp.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src
 name = "TSTUDPM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-4 NSFEZA (EZASOKET API): the C API + the EZASOH03 plist decoder -------
 # Host-only (mvs = false): the @@NS* C-API functions submit + WAIT, so this uses
@@ -438,7 +438,7 @@ sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c",
 name = "TSTEZA"
 startup = "crt1"
 mvs = false
-sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfsel.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfsel.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-4 NSFEZA on MVS: the EZASOKET C API over the full stack (live gate) ---
 # MVS-only (host = false): TSTUDPM's live scenario rewritten against the @@NS*
@@ -450,7 +450,7 @@ sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfsoc.c",
 name = "TSTEZAM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstezam.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstezam.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-5 NSFEZA TCP on MVS: the M4 verb set over the real stack (live gate) ---
 # MVS-only (host = false): the TCP sibling of TSTEZAM -- a cthread APP SUBTASK
@@ -465,7 +465,7 @@ sources = ["test/mvs/tstezam.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c",
 name = "TSTEZAT"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstezat.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstezat.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-4 EZASOH03 asm veneer Stage-0 probe: the asm -> C linkage seam --------
 # MVS-only (host = false): proves asm/ezasoh03.asm (the thin EZASOH03 veneer)
@@ -479,7 +479,7 @@ sources = ["test/mvs/tstezat.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c",
 name = "TSTEZAH"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstezah.c", "asm/ezasoh03.asm", "src/nsfeza.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstezah.c", "asm/ezasoh03.asm", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-0a Stage 0: can problem state halt an outstanding CTCI READ? --------
 # MVS-only (host = false), standalone: NOT the M1-4b subtask/DEVOPS driver --
@@ -512,7 +512,7 @@ sources = ["test/mvs/tsthio.c", "test/asm/tsthalt.asm", "test/asm/tststmw.asm", 
 name = "TSTTCP"
 startup = "crt1"
 mvs = false
-sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-6 NSFTCP loss-injection harness (host-only, the M4 exit gate) ----------
 # HOST-only (mvs = false): two real NSF TCP sockets self-talk on one stack (same
@@ -528,7 +528,7 @@ sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src
 name = "TSTLOSS"
 startup = "crt1"
 mvs = false
-sources = ["test/tstloss.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstloss.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-1 NSFTCP on MVS: the portable segment vectors, byte-order proof --------
 # MVS-only (host = false), tstip-M2 pattern: the same crafted-segment / checksum
@@ -541,7 +541,7 @@ sources = ["test/tstloss.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "sr
 name = "TSTTCPM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tsttcpm.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tsttcpm.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-2 NSFTCP on MVS: the full stack over the real CTCI pair (live gate) ---
 # MVS-only (host = false): the M4-2 connection machine over CTCI (0500/0501) + IP
@@ -556,7 +556,7 @@ sources = ["test/mvs/tsttcpm.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c",
 name = "TSTTCPH"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tsttcph.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tsttcph.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-3 NSFTCP on MVS: the data path over the real CTCI pair (live gate) -----
 # MVS-only (host = false): a TCP echo server over CTCI (0500/0501) + IP + the
@@ -570,7 +570,7 @@ sources = ["test/mvs/tsttcph.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c",
 name = "TSTTCPD"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tsttcpd.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tsttcpd.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-4 NSFTCP on MVS: zero-window PERSIST over the real CTCI pair (live gate) -
 # MVS-only (host = false): the M4-4 persist path over CTCI (0500/0501) + IP + the
@@ -585,7 +585,7 @@ sources = ["test/mvs/tsttcpd.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c",
 name = "TSTTCPR"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tsttcpr.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tsttcpr.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-6 NSFTCP on MVS: TIME_WAIT reclaim under pool pressure (live gate) ------
 # MVS-only (host = false): the guest is the ACTIVE opener + closer, looping N=40
@@ -600,7 +600,7 @@ sources = ["test/mvs/tsttcpr.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c",
 name = "TSTTCPW"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tsttcpw.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tsttcpw.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-5 NSFSEL: the SELECT multiplex engine (ADR-0035) --------------------
 # Direct-call, no threads: build an RQ_SELECT NSFRQE, dispatch it (routed to the
@@ -613,7 +613,7 @@ sources = ["test/mvs/tsttcpw.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsfsoc.c",
 [[test]]
 name = "TSTSEL"
 startup = "crt1"
-sources = ["test/tstsel.c", "src/nsfsel.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfthr.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/tstsel.c", "src/nsfsel.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfthr.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M5 Stage-0a' SVC cross-AS transport probe: the CLIENT (TSTSVC) ----------
 # MVS-only (host = false): cross-AS via a private SVC (SVCTABLE/ASCB/CSA) has no
@@ -641,7 +641,7 @@ sources = ["test/mvs/tstsvc.c"]
 name = "TSTRQXM"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- 80-CHK: the cross-AS receive key probe (TSTRQXR) ------------------------
 # MVS-only (host = false): the property under test is a STORAGE KEY, which the
@@ -669,7 +669,7 @@ sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c"
 name = "TSTRQXR"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstrqxr.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstrqxr.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M5-2c1 stage a: the app-death measurement arm (TSTAPPD) -----------------
 # MVS-only (host = false): "the job ended" and the ASVT have no host analog.
@@ -681,7 +681,7 @@ sources = ["test/mvs/tstrqxr.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c"
 name = "TSTAPPD"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstappd.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/mvs/tstappd.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 
 # -- M5 Stage-0b Step 1: the MVCK (Move with Key) probe (TSTMVCK) ------------
@@ -872,7 +872,7 @@ sources = ["test/mvs/tstmvcd.c"]
 [[module]]
 name = "NSF"
 startup = "crt1"
-sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M5-2a the NSFS (Phase-2) STC ---------------------------------------------
 # The executive in its own address space, reached by applications through the
@@ -901,7 +901,7 @@ sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c",
 name = "NSFS"
 startup = "crt1"
 ac = 1
-sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfswap.c", "src/nsfapp.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm", "asm/nsfsevt.asm"]
+sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfswap.c", "src/nsfapp.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm", "asm/nsfsevt.asm"]
 
 # -- M3-5 the NSFECHO UDP echo sample (the M3 exit-gate demonstration) ---------
 # The first user-visible NSF program: a UDP echo server over the EZASOKET C API
@@ -913,7 +913,7 @@ sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c"
 [[module]]
 name = "NSFECHO"
 startup = "crt1"
-sources = ["samples/nsfecho.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["samples/nsfecho.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M4-5 the NSFTECHO TCP echo sample (the M4 exit-gate demonstration) --------
 # The stream sibling of NSFECHO: a TCP echo server over the EZASOKET C API
@@ -926,7 +926,7 @@ sources = ["samples/nsfecho.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", 
 [[module]]
 name = "NSFTECHO"
 startup = "crt1"
-sources = ["samples/nsftecho.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfreq.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["samples/nsftecho.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M5 Stage-0a' the SVC transport probe STC (NSFV) --------------------------
 # The probe target address space (ADR-0038, supersedes ADR-0036's transport):

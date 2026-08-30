@@ -28,6 +28,7 @@
 #include "nsfreq.h"
 #include "nsfapp.h"
 #include "nsfreqx.h"
+#include "nsftime.h"     /* nsf_elapsed_ge -- the sweep's rate limiter */
 #include "nsfmsg.h"
 #include "nsfsoc.h"
 #include "nsfbuf.h"
@@ -744,6 +745,322 @@ static void test_app_classify_and_report(void)
     nsfreq_set_classifier(NULL);        /* leave the suite as we found it */
 }
 
+/* -------------------------------------------------------------------------
+ * M5-2c1 stage b: the elapsed-interval seam (nsf_elapsed_ge).
+ *
+ * PURE, so this pins the boundary exactly -- no clock is read and nothing can
+ * move between building the two timestamps and comparing them.  Most of what
+ * follows holds on BOTH platforms despite their different units, because the
+ * cases are chosen to fall on the same side of both conversions; the ones that
+ * cannot are guarded and say why.
+ * ------------------------------------------------------------------------- */
+static void test_elapsed_seam(void)
+{
+    NSFTIME since, now;
+
+    since.hi = 100u; since.lo = 0u;
+
+    /* No interval asked for is always satisfied. */
+    now = since;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 0u), 1L,
+             "secs == 0 has always elapsed");
+
+    /* Nothing has passed. */
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 0L,
+             "no time at all has not elapsed 10 s");
+
+    /* THE BOUNDARY, from below and from on it.  MVS counts 1.048576 s per hi
+     * unit and the host counts exactly 1, so at a whole-second difference of 9
+     * neither has reached 10 s, and at 10 both have (MVS at 10.49 s -- late,
+     * which is the direction the seam promises). */
+    now.hi = 109u; now.lo = 0u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 0L,
+             "one unit short of the interval has NOT elapsed");
+    now.hi = 110u; now.lo = 0u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 1L,
+             "exactly the interval HAS elapsed");
+    now.hi = 111u; now.lo = 0u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 1L,
+             "past the interval has elapsed");
+
+    /* The same boundary one second wide, to pin that the threshold is not
+     * quietly scaled: 1 s is 1 unit on both sides. */
+    now.hi = 100u; now.lo = 0u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 1u), 0L, "0 units is not 1 s");
+    now.hi = 101u; now.lo = 0u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 1u), 1L, "1 unit is at least 1 s");
+
+    /* A `since` in the FUTURE answers "not elapsed" rather than wrapping the
+     * unsigned subtract into an enormous delta and firing immediately. */
+    now.hi = 99u; now.lo = 0u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 0L,
+             "a future `since` is 0, never a wrapped delta");
+
+    /* A zero stamp is deliberately "long ago" on both platforms, which is what
+     * gives a never-swept caller its first interval immediately. */
+    since.hi = 0u; since.lo = 0u;
+    now.hi   = 1000000u; now.lo = 0u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 1L,
+             "a {0,0} stamp has elapsed any sane interval");
+
+    /* Neither timestamp is optional. */
+    CHECK_EQ((long)nsf_elapsed_ge(NULL, &now, 0u), 0L, "NULL since -> 0");
+    CHECK_EQ((long)nsf_elapsed_ge(&since, NULL, 0u), 0L, "NULL now -> 0");
+
+#ifndef __MVS__
+    /* HOST ONLY: the sub-second BORROW. The host stores whole seconds plus
+     * microseconds, so 9.999999 s must not read as 10; MVS has no lo term in
+     * its conversion at all (the hi word IS the ~1 s tick), so the same two
+     * timestamps are a legitimate 10 units there and this case cannot be
+     * stated portably. */
+    since.hi = 100u; since.lo = 5u;
+    now.hi   = 110u; now.lo   = 4u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 0L,
+             "9.999999 s has not elapsed 10 s (the borrow)");
+    now.lo = 5u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 10u), 1L,
+             "exactly 10.000000 s has");
+    /* The borrow must not underflow when the seconds fields are equal: `now`
+     * is 800 us BEFORE `since`, so an unguarded subtraction would wrap to ~4
+     * billion and report any interval elapsed.  0 is the answer -- and note it
+     * BEATS the secs == 0 rule, because a backwards timestamp is not a
+     * measurement whatever interval was asked for (nsftime.h).  This is also
+     * the one input on which the two platforms differ, by resolution: MVS
+     * cannot see a sub-second step backwards at all, which is why the case is
+     * host-only. */
+    since.hi = 100u; since.lo = 900u;
+    now.hi   = 100u; now.lo   = 100u;
+    CHECK_EQ((long)nsf_elapsed_ge(&since, &now, 0u), 0L,
+             "a borrow at dsec == 0 does not underflow into a huge interval");
+#endif /* !__MVS__ */
+}
+
+/* -------------------------------------------------------------------------
+ * M5-2c1 stage b: the best-effort reclamation sweep (ADR-0045).
+ * ------------------------------------------------------------------------- */
+static UINT g_dead_ascb;                /* the one identity fake_sweep_cls kills */
+
+static int fake_sweep_cls(UINT ascb, UINT asid)
+{
+    (void)asid;
+    g_cls_calls++;
+    if (ascb == g_dead_ascb) {
+        return NSFREQX_CL_DEAD;
+    }
+    return g_cls_answer;
+}
+
+static UINT g_sw_calls;
+static UINT g_sw_idx, g_sw_token, g_sw_ascb, g_sw_asid;
+
+static void fake_sweep_notify(UINT idx, UINT token, UINT ascb, UINT asid)
+{
+    g_sw_calls++;
+    g_sw_idx = idx; g_sw_token = token; g_sw_ascb = ascb; g_sw_asid = asid;
+}
+
+/* INITAPI with an identity; returns the token. */
+static UINT app_init_id(UINT ascb, UINT asid)
+{
+    NSFRQE r;
+
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, ascb, asid);
+    return (r.retcode == NSF_RETOK) ? r.apptok : 0u;
+}
+
+/* One dummy socket under `token`; returns its descriptor. */
+static UINT app_socket(UINT token)
+{
+    NSFRQE r;
+
+    rqe_init(&r, RQ_SOCKET, 0u, 0u);
+    r.apptok = token;
+    r.p1 = NSF_AF_INET; r.p2 = NSF_SOCK_DGRAM; r.p3 = DUMMY_PROTO;
+    nsfreq_dispatch(&r);
+    return (UINT)r.retcode;
+}
+
+/* THE THIRD STATE (CLAUDE.md 8.5). "Reclaimed nothing" and "did not look" are
+ * different answers and must not share a value -- the whole point of the live
+ * gate's arm 1 is being able to tell them apart, and it starts here. */
+static void test_sweep_rate_limit(void)
+{
+    reset_req();
+    nsfreq_set_classifier(NULL);
+
+    /* Never swept -> the stamp is {0,0} -> the first call RUNS. */
+    CHECK_EQ((long)nsfreq_app_sweep(10u), 0L,
+             "the first sweep runs and reclaims nothing (0, not SKIPPED)");
+
+    /* ... and the next one, seconds inside the interval, does not. */
+    CHECK_EQ((long)nsfreq_app_sweep(10u), (long)NSFREQ_SWEEP_SKIPPED,
+             "a second sweep inside the interval does NOT run");
+    CHECK(NSFREQ_SWEEP_SKIPPED != 0,
+          "SKIPPED is distinguishable from 'ran, reclaimed nothing'");
+
+    /* 0 bypasses the limiter -- not a special case in the code: a zero
+     * interval has always elapsed. This is the on-demand path's cap. */
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 0L, "min_secs 0 bypasses the limiter");
+
+    /* A bypassing sweep still re-stamps, so the limiter keeps holding after. */
+    CHECK_EQ((long)nsfreq_app_sweep(10u), (long)NSFREQ_SWEEP_SKIPPED,
+             "a bypassing sweep re-stamps, so the interval still holds");
+
+    /* nsfreq_init resets the stamp, so a fresh stack sweeps on its first pass. */
+    reset_req();
+    CHECK_EQ((long)nsfreq_app_sweep(10u), 0L, "a fresh registry sweeps at once");
+}
+
+static void test_sweep_reclaims(void)
+{
+    UINT tok_dead, tok_live, tok_p1;
+    UINT sd, sl;
+    int  idx_dead, idx_live, idx_p1;
+    UINT sbase;
+
+    reset_req();
+    sbase        = sock_inuse();
+    g_cls_calls  = 0u;
+    g_sw_calls   = 0u;
+    g_cls_answer = NSFREQX_CL_LIVE;
+    g_dead_ascb  = 0x00AAAAAAu;
+    nsfreq_set_classifier(fake_sweep_cls);
+    nsfreq_set_sweep_notify(fake_sweep_notify);
+
+    tok_dead = app_init_id(0x00AAAAAAu, 0x0021u);   /* the one that died   */
+    tok_live = app_init_id(0x00BBBBBBu, 0x0022u);   /* a healthy client    */
+    tok_p1   = app_init_id(0u, 0u);                 /* Phase 1: no identity */
+    idx_dead = app_slot_of(tok_dead);
+    idx_live = app_slot_of(tok_live);
+    idx_p1   = app_slot_of(tok_p1);
+    CHECK(idx_dead >= 0 && idx_live >= 0 && idx_p1 >= 0,
+          "three app instances registered");
+
+    sd = app_socket(tok_dead);
+    sl = app_socket(tok_live);
+    CHECK(sock_lookup(sd) != NULL && sock_lookup(sl) != NULL,
+          "a socket under each identified app");
+    CHECK_EQ((long)soc_count(), 2L, "two sockets open before the sweep");
+
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 1L,
+             "the sweep reclaims exactly the one DEAD app");
+
+    /* The dead app is gone -- slot AND sockets, through the one checklist. */
+    CHECK(app_slot_of(tok_dead) < 0, "the dead app's slot was released");
+    CHECK(sock_lookup(sd) == NULL, "the dead app's socket was destroyed");
+    CHECK_EQ((long)g_d.detach, 1L, "it died through the ONE teardown checklist");
+
+    /* And nothing else was touched. */
+    CHECK_EQ((long)app_slot_of(tok_live), (long)idx_live,
+             "the LIVE app kept its slot");
+    CHECK(sock_lookup(sl) != NULL, "the LIVE app kept its socket");
+    CHECK_EQ((long)app_slot_of(tok_p1), (long)idx_p1,
+             "the zero-identity app kept its slot");
+    CHECK_EQ((long)soc_count(), 1L, "exactly one socket destroyed");
+
+    /* THE RED LINE AGAIN, FROM THE SWEEP'S SIDE: a slot with no identity is
+     * never offered to the classifier, so the sweep asked about two slots, not
+     * three. "It survived" alone would also be true of a classifier that ran
+     * and answered LIVE. */
+    CHECK_EQ((long)g_cls_calls, 2L,
+             "the sweep asked about the two identified slots ONLY");
+
+    /* The notification carries the identity the slot HELD, not the zeroes
+     * app_free leaves behind -- it is what a live run reads to tell a reclaim
+     * from a reuse. */
+    CHECK_EQ((long)g_sw_calls, 1L, "the notify fired once, for the reclaim");
+    CHECK_EQ((long)g_sw_idx, (long)idx_dead, "notify names the slot");
+    CHECK_EQ((long)g_sw_token, (long)tok_dead, "notify carries the token");
+    CHECK_EQ((long)g_sw_ascb, (long)0x00AAAAAAu, "notify carries the ASCB");
+    CHECK_EQ((long)g_sw_asid, (long)0x0021u, "notify carries the ASID");
+
+    /* UNKNOWN IS NEVER RECLAIMED (ADR-0040 survives contact with the sweep). */
+    g_dead_ascb  = 0u;                          /* nobody is DEAD now       */
+    g_cls_answer = NSFREQX_CL_UNKNOWN;
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 0L, "UNKNOWN is not reclaimed");
+    CHECK_EQ((long)app_slot_of(tok_live), (long)idx_live,
+             "the UNKNOWN app kept its slot");
+    CHECK(sock_lookup(sl) != NULL, "the UNKNOWN app kept its socket");
+
+    /* A LIVE app is not reclaimed either, which is the ordinary case. */
+    g_cls_answer = NSFREQX_CL_LIVE;
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 0L, "LIVE is not reclaimed");
+    CHECK(sock_lookup(sl) != NULL, "a live client keeps everything");
+
+    /* Tidy up through the ordinary path, and prove the leak gate. */
+    g_dead_ascb  = 0x00BBBBBBu;
+    CHECK_EQ((long)nsfreq_app_sweep(0u), 1L, "the second app reclaims too");
+    CHECK_EQ((long)soc_count(), 0L, "no sockets left");
+    {
+        NSFRQE r;
+        rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+        r.apptok = tok_p1;
+        nsfreq_dispatch(&r);
+    }
+    CHECK_EQ((long)sock_inuse(), (long)sbase, "SOCKET pool back to baseline");
+
+    nsfreq_set_classifier(NULL);
+    nsfreq_set_sweep_notify(NULL);
+}
+
+/* THE SECOND TRIGGER: a full table makes INITAPI sweep before it refuses. */
+static void test_sweep_on_initapi_full(void)
+{
+    NSFRQE r;
+    UINT   n, i;
+    UINT   first;
+
+    reset_req();
+    g_cls_calls  = 0u;
+    g_dead_ascb  = 0u;                  /* nobody dead yet -> the table stays full */
+    g_cls_answer = NSFREQX_CL_LIVE;
+    nsfreq_set_classifier(fake_sweep_cls);
+    nsfreq_set_sweep_notify(NULL);
+
+    n     = nsfreq_app_max();
+    first = app_init_id(0x00C00000u, 0x0030u);
+    CHECK(first != 0u, "the first slot was granted");
+    for (i = 1u; i < n; i++) {
+        CHECK(app_init_id(0x00C00000u + i, 0x0030u + i) != 0u, "table filled");
+    }
+
+    /* BEFORE: every slot is held by a client the classifier calls LIVE, so the
+     * sweep that INITAPI runs finds nothing and the refusal stands. */
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, 0x00D00000u, 0x0040u);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETERR, "a genuinely full table refuses");
+    CHECK_EQ((long)r.errno_, (long)NSF_EMFILE, "... with EMFILE");
+
+    /* AFTER: mark one of them dead. The same INITAPI now sweeps, reclaims it
+     * and is granted the slot -- the scan runs BEFORE the refusal. */
+    g_dead_ascb = 0x00C00000u;          /* `first` */
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, 0x00D00000u, 0x0040u);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK,
+             "INITAPI sweeps before refusing, and is granted the reclaimed slot");
+    CHECK(app_slot_of(first) < 0, "the dead client's slot was the one reclaimed");
+    CHECK(app_slot_of(r.apptok) >= 0, "the new client holds a live slot");
+
+    /* The on-demand path must not be gated by the periodic interval: the
+     * sweeps above ran back to back and every one of them looked. */
+    g_dead_ascb = 0x00C00001u;
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, 0x00D00001u, 0x0041u);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK,
+             "a second full-table INITAPI sweeps again (no rate limit on demand)");
+
+    /* Release everything so the suite's leak gate sees the registry empty. */
+    g_cls_answer = NSFREQX_CL_DEAD;     /* all remaining identities are dead   */
+    g_dead_ascb  = 0u;
+    (void)nsfreq_app_sweep(0u);
+    for (i = 0u; i < n; i++) {
+        CHECK_EQ((long)nsfreq_app_info(i, NULL, NULL, NULL), 0L,
+                 "every app slot released");
+    }
+    nsfreq_set_classifier(NULL);
+}
+
 int main(void)
 {
     printf("=== nsf370 NSFREQ tests ===\n");
@@ -761,6 +1078,10 @@ int main(void)
     test_app_full();
     test_caller_identity();
     test_app_classify_and_report();
+    test_elapsed_seam();
+    test_sweep_rate_limit();
+    test_sweep_reclaims();
+    test_sweep_on_initapi_full();
 #ifndef __MVS__
     test_roundtrip();
     test_lost_request();

@@ -1705,6 +1705,88 @@ asks after an idle period"**, which is the normal case. Three options are laid o
 Mike's call.** Each LEAVE/CANCEL arm costs one app slot of 16; the round leaked three and
 `P NSFS`/`S NSFS` reset it (**verified**: STC 1505 came up `0 OF 16 SLOTS IN USE`, no
 `NSF054W`, `SVC 239 RESTORED`, stand left clean). `docs/measurements/m5-2c1/`.
+**M5-2c1 stage b (the sweep, shipped best-effort and named that way) — host + cross-link
++ alias scan DONE; the live gate is NOT run.** The second half of the first sub-step of
+M5-2c; **M5 stays in progress and no milestone flips.** Stage a stopped on a measurement,
+and the measurement decided what this could be: **client liveness is not soundly
+detectable on 3.8j**, so the sweep reclaims a narrow class and nothing else
+(**ADR-0045**, new rather than an ADR-0040 annotation — Mike's call, asked and answered).
+**A batch client is NEVER reclaimed, ever** (its recorded ASCB is the **initiator's**, and
+an initiator does not end when a job ends — a normal end and a `CANCEL` both read `LIVE`);
+an **STC client is reclaimed only if the check wins the race against ASID reuse** (40-IDENT:
+both runs took the same ASCB *and* ASID, and a third start flipped two provably dead clients
+back to `LIVE` — **reclassified, not reaped**). So **`TERMAPI` REMAINS THE CONTRACT**, and
+it is **never described as a replacement for TERMAPI** — not in the code, the operator
+message, the ADR or this file. **Mike's position is recorded as his:** an explicit TERMAPI contract is
+**too fragile**, because it moves the robustness onto the client and the client is precisely
+the component whose misbehaviour creates the problem; a TCP/IP stack must protect itself
+implicitly. This is an **interim measure** accepted so the stack can be seen working, and
+the real design is deferred to **issue #88**. **What makes shipping defensible is the
+safe-side asymmetry, and it is one-directional:** a false `LIVE` leaks a slot; a false `DEAD`
+**cannot arise from reuse**, because an ASID is unique among the address spaces that are
+alive — reuse converts `DEAD → LIVE` only. **THE SAME ASYMMETRY IS WHY THE LIVE GATE NEEDS
+ITS OWN INSTRUMENT:** a run reclaiming nothing is **not automatically a failure**, so
+`NSF817I` is emitted **at the moment of a reclaim** — the only point at which the evidence
+still exists — to separate *"saw DEAD and acted"* from *"saw LIVE because the ASID had been
+re-taken"*; `F NSFS,APPS` cannot, because by the time it renders the evidence is gone or
+overwritten. **Two triggers, ONE implementation, the cap as a parameter** — periodic from
+`nsfsx_drain`, and on demand from `do_initapi` when the app table is full (retry **once**:
+if the sweep found nothing the table is genuinely full of live clients and EMFILE is the
+true answer). `min_secs == 0` bypasses the limiter and is **not a special case in the code**
+— a zero interval has always elapsed. **THE CLOCK IS REAL SECONDS BEHIND A NEW SEAM
+(`nsf_elapsed_ge`, `src/nsftime_plat.c` / `src/nsftime_plat_host.c`, C on BOTH sides).**
+Not ticks: ADR-0034's *queue empty ⟺ STIMER disarmed* means no NSFTMR tick advances with
+nothing armed (64-1: one pass in 259 s), so a tick limiter would never see its interval
+elapse **after an idle period** — precisely the pass that matters. Not a timer: that
+reintroduces the idle floor ADR-0043 established is not required. It is **pure** (both
+timestamps are parameters, no clock read), which is what makes the boundary host-testable
+exactly, and it **rounds LATE, never early**. **WHAT THE TEN SECONDS DOES NOT PROMISE**, said
+at the constant and in the header: it bounds the interval *between sweeps*, not the latency
+to a reclaim — a sweep happens only on a pass, and a pass only when something uses the stack.
+Honest form: *no sooner than ten seconds after the last sweep, and not until the stack is
+used again.* **PLACEMENT WAS THREE DECISIONS, NOT A FALL-OUT.** (1) `nsfsx_drain`, not
+`nsfreq_drain` — `evt_set_request` wires exactly ONE drain per build, so a Phase-1-drain
+sweep would never run in Phase 2 at all; it also makes **"Phase 1 sweeps nothing"
+STRUCTURAL** (`src/nsfmain.c` does not reach the code, registers no classifier and no
+notify) rather than a property of the zero identity. (2) **AFTER step 0, never in front of
+it** — the wake-ECB reset's argument is positional (64-1's two orderings), and inserting a
+block ahead of a first-position invariant is the `asm/nsfvsvc.asm` fall-through bug in C.
+(3) **It stands down while `g_busy`** — the in-service request may be PARKED on a socket
+owned by one of these very apps, so reclaiming would `soc_destroy` it and complete `g_priv`
+from inside a scan, under the step-1 path that owns the `g_busy`/`g_busy_slot` bookkeeping
+(M5-2b4's shape: a scan reaping the in-service slot from under the executive). **No key
+window** — the registry is STC-private key 8 and the classifier only READS the CVT/ASVT
+(common, not fetch-protected; stage a ran this exact path live from `F NSFS,APPS`). **The
+notify is a SEAM, not an `nsfmsg` call:** ~20 builds link `src/nsfreq.c` without NSFMSG, and
+a WTO is invisible to a host test — the reclaim, identity included, is exactly what a test
+must observe. **The identity is captured BEFORE `app_free`** along with the token, because
+`app_free` bumps the generation *and* zeroes the identity — reading either afterwards
+notifies `ASCB=0 ASID=0`, which is the one thing a live run needs to read. (**That was a real
+bug I wrote and the tests caught**; the "capture after free" revert fails 2.) **A CONTRACT
+CONFLICT THE TESTS FOUND, resolved in the header rather than bent in the test:** *"a future
+`since` answers 0"* and *"secs == 0 is always 1"* both cover a backwards timestamp — the
+future rule now **wins** (a timestamp that cannot be believed is not a measurement), and the
+two platforms are documented as differing on exactly that input **by RESOLUTION**, since MVS
+cannot see a sub-second step backwards at all. **Gates:** host **3007 → 3190 PASS / 0 FAIL**,
+and the new assertions are **verified to discriminate** — widening the reclaim predicate to
+LIVE-only fails **14**, capturing the identity after `app_free` fails **2**, making the
+limiter always-elapsed fails **2**, removing the on-demand sweep fails **4**, and breaking
+the host seam's sub-second borrow fails **2**. Cross-build clean (**6 modules + 53 test
+modules**, cc370/as370/ld370, no warnings); alias scan **239 unique, all ≤ 8 chars** (four
+new: `NSFELAPS`/`NSFRQAPS`/`NSFRQSSN`/`NSFSXSSN`); **NSFRQE still frozen at 64 B**, anchor
+layout unmoved, `ANCVERNO` 3, `asm/` untouched — apps relink only. **§7.6 ANSWERED, and it
+found a DIFFERENT wall than the one asked about:** `F NSFS,APPS` does **not** truncate —
+worst-case `NSF815I` is **64 columns** against `NSFMSG_LINE` 128 and wto()'s 124-column
+split, and it does not share `F NSFS,STATS`'s `char buf[512]` wall because each slot is its
+own WTO (at 64 slots: **66 WTOs**, a console flood, not a truncation). What *is* a wall is
+the **host** capture ring — `src/nsfmsg_host.c` `CAP_MAX = 64`, and it drops **NEWER** lines
+— so with 64 slots in use the `NSF816I` summary is line 66 and is evicted. Reported, **not
+fixed** (§4), and it is why stage b's tests read the registry through `nsfreq_app_info`
+rather than through the report. **THE LIVE GATE IS NOT RUN AND NOTHING HERE IS A LIVE
+CLAIM** — arms 1 (periodic, using `SYS2.PROCLIB(TSTAPPDS)`'s dying STC, with the no-start
+window shown), 2 (on demand) and the three-state revert are the acceptance items still open,
+and a red arm-1 run is only interpretable against `NSF817I`. `NSFREQ_APP_MAX` at 64 **buys
+time and fixes nothing**, now said at the constant with a pointer to #88.
 **40-CHK (does the ADR-0040 guard protect anything for a batch client?) — DONE, live-green,
 docs-only. It fixes nothing; the answer is NO.** Not a milestone step; **M5 stays in progress**
 and c1 stage b is still with Mike. Stage a proved a batch job runs in a **reused initiator**, so
