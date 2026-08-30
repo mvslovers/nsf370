@@ -369,6 +369,21 @@ static void do_initapi(NSFRQE *r, UINT caller_ascb, UINT caller_asid)
          * then be parked on a socket this scan destroys.  Whoever implements
          * concurrent service must revisit this call site, not just the drain.
          *
+         * "BYPASSES THE LIMITER" IS NOT QUITE "ALWAYS RUNS", and the gap is
+         * worth one sentence because the obvious reading is the wrong one.
+         * A zero interval has always elapsed, so it defeats the RATE LIMIT --
+         * but nsftime.h gives the unbelievable-timestamp rule precedence over
+         * secs == 0, so a `since` LATER than now answers 0 whatever interval
+         * was asked for, and this call returns SKIPPED without looking.
+         *
+         * That needs the clock to have gone BACKWARDS since the last sweep:
+         * unreachable on MVS, where nsf_now is STCK and monotonic, and
+         * reachable on the host, whose gettimeofday reading can step back.
+         * The cost is small and self-correcting -- this INITAPI refuses with
+         * EMFILE where it might have reclaimed, and the next one works -- and
+         * the rule earning it is right: a timestamp that cannot be believed is
+         * not a measurement. Recorded rather than repaired.
+         *
          * Retry ONCE.  If the sweep reclaimed nothing the table is genuinely
          * full of live applications and EMFILE is the true answer; looping
          * would just be the same scan again. */
