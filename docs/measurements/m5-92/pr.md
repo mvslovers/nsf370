@@ -74,6 +74,13 @@ reply.
   because **a warning nobody has seen fire is not designed in, it is asserted**, which is
   this issue's own shape one level up. The test shrinks the chunk, sees
   `NSF818W ... RENDERED 0 OF 52`, restores it, and sees the warning gone and all 52 render.
+- **And the debug proof transfers to production, stated rather than left to the reader** —
+  an unstated step is an assumption, which is the same class as the defect being fixed.
+  `op_stats`, its resume loop, the emitted-vs-total comparison and the `NSF818W` call are
+  **all outside any `NSF_DEBUG` guard**; the only thing the guard changes is whether
+  `nsfopr_set_stats_chunk` exists to *change* `g_statschunk`, which production keeps at
+  `OPR_STATS_CHUNK`. The test forces the branch by varying one constant, not by running
+  different code.
 - Cross-build clean (6 modules + 53 test modules); alias scan **244 unique, all ≤ 8**
   (`NSFSTRNF`, `NSFOPSCH`, `NSFMSGCD` new).
 - The cross-build caught a real error mid-work: the gate called `NSF_DEBUG`-only helpers from

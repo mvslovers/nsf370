@@ -356,7 +356,17 @@ int main(void)
     /* THE VISIBILITY HALF, PROVEN TO FIRE.  NSF818W cannot occur in production
      * -- the loop always makes progress -- so it is forced here by shrinking
      * the chunk below one line's width.  A warning that has never been seen to
-     * fire is not designed in, it is asserted; this is the difference. */
+     * fire is not designed in, it is asserted; this is the difference.
+     *
+     * AND THE PROOF TRANSFERS TO PRODUCTION, which is worth stating rather
+     * than leaving as a step the reader has to make -- an unstated step is an
+     * assumption, and that is the same class as the defect being fixed here.
+     * The code path exercised below IS the path production runs: op_stats, its
+     * resume loop, the emitted-vs-total comparison and the NSF818W call are all
+     * OUTSIDE any NSF_DEBUG guard.  The only thing #if NSF_DEBUG changes is
+     * whether nsfopr_set_stats_chunk exists to CHANGE g_statschunk; production
+     * simply keeps it at OPR_STATS_CHUNK.  So this test forces the branch by
+     * varying one constant, not by running different code. */
     {
         nsfopr_set_stats_chunk(4u);     /* smaller than any rendered line */
         nsfmsg_cap_reset();
