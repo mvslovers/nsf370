@@ -166,15 +166,20 @@
  *   UNSTAGE release a slot the STC deliberately did not release (the HELD case,
  *           and a LIVE orphan), so the probe leaves no in-flight count behind
  *           and the STC still stops clean. */
-/* RETIRED (M5-2c2 stage b) -- the routine answers NSFV_RC_INVALID.  The name is
- * KEPT rather than deleted or renamed, and the reason is a rule, not a
- * convenience: A MECHANICAL CHANGE MUST NOT SETTLE AN OPEN DESIGN QUESTION AS A
- * SIDE EFFECT.  Deleting or renaming this constant breaks tstdeath.c's compile,
- * which would force the TSTDEATH restructuring decision -- the one M5-2c2 stage
- * b deliberately prices and leaves open for the maintainer.  So the constant is
- * cleaned up TOGETHER WITH that decision, not before it.  Kept, it also stays a
- * live probe of the rejection path.  See the ORPHAN paragraph above. */
-#define NSFV_REQ_ORPHAN   3U
+/* FUNCTION CODE 3 IS PERMANENTLY RESERVED AND MUST NOT BE REUSED.
+ *
+ * It was NSFV_REQ_ORPHAN.  The verb was retired in M5-2c2 stage b and the C
+ * constant removed in stage c, once the TSTDEATH decision it was waiting on had
+ * been taken (the rule that kept it alive: a mechanical change must not settle
+ * an open design question as a side effect).
+ *
+ * REMOVING THE NAME DID NOT REMOVE THE CODE.  A stale client built before the
+ * retirement -- or a hostile one -- can still put 3 in req.func, so the SVC
+ * routine still knows the code and REJECTS it by name, ahead of the slot claim
+ * (asm/nsfvsvc.asm: FNORPH EQU 3 -> BADFUNC -> NSFV_RC_INVALID, claiming no slot
+ * and taking no in-flight count).  That asm is NOT dead code and must not be
+ * "cleaned up" as such: it is the only thing standing between a retired verb
+ * and the ECHO default it would otherwise fall through to. */
 #define NSFV_REQ_QUERY    4U
 #define NSFV_REQ_UNSTAGE  5U
 

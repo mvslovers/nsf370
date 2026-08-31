@@ -643,3 +643,44 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
   **Whether a sweep is worth building on this footing is the maintainer's decision, on this
   record** — the same posture as the annotation above, and for the same reason: what is
   missing is an identity, and this system does not have one to offer.
+
+---
+
+## Annotation (M5-2c2 stage c, 2026-08-31) — how each row is covered, and by what KIND
+
+`NSFV_REQ_ORPHAN` was retired in M5-2c2 stage b: it staged a **request-supplied identity**
+verbatim, which is exactly what this guard must never trust for a real client. It had been
+the driver for all four rows of the truth table, so this annotation records what replaced it
+— and, more importantly, **what kind of coverage each row now has.** A coverage kind that is
+not named is read as a test a year later.
+
+| row | condition | coverage, and its KIND |
+|---|---|---|
+| **1** LIVE | ASID assigned, ASCB matches | **LIVE, a named probe** — `TSTDEATH` on NSFV, still an isolated Stage-0 probe (no CTCI, no sockets), reduced to this one row. **+ host-pinned.** |
+| **2** DEAD, avail bit | ASVT entry `AVAIL` | **An operator-driven PROCEDURE at milestone gates — NOT a test, NOT in the matrix**: `docs/procedure-row2-client-death.md`. **+ host-pinned.** |
+| **3** DEAD, ASCB reuse | ASID assigned, ASCB differs | **Host-pinned ONLY — not live-producible.** 0 of 9 reuses produced it; every reuse restored the *identical* `(ASCB, ASID)` pair, so the guard reads **LIVE**. |
+| **4** UNKNOWN | four distinct branches | **Host-pinned ONLY — none live-producible by a real client.** `ORPHAN` drove exactly one of the four (`req_ascb == 0`); the others never had live coverage. |
+
+"Host-pinned" is `test/tstreqx.c` driving `nsfreqx_classify` directly. **That is the floor
+under every row** and it is untouched by any of this.
+
+**Why row 2 is a procedure and not a test.** It needs an address space that really ends. A
+batch client runs in an **initiator**, which does not end when the job does — its recorded
+ASCB reads LIVE forever (M5-2c1 stage a) — so row 2 cannot be produced from a batch gate at
+all. An STC can be made to die, but starting it, cancelling it and delivering the datagram
+that completes its parked request are three operator actions with no batch equivalent. The
+rig delivered **6 of 6** in the M5-2c2 mapping round; what is missing is the batch form, not
+the reproducibility. **"Not a test" and "not covered" are different things.**
+
+**Why `TSTDEATH` was kept rather than retired.** The alternative — retire it and let row 1 be
+witnessed incidentally by the other boundary-crossing clients — costs the property the
+Stage-0 set exists to provide: **an incidental witness still fails when the guard breaks, but
+it does not NAME the mechanism.** Keeping the probe named, isolated, and honest about its one
+row preserves that. Note the one asymmetry, recorded in the test's own header: row 1's
+failure mode is a **hang**, not a clean FAIL, because a misclassified live client is never
+POSTed — so the file brackets its blocking call with console markers, which survive the hang.
+
+**Function code 3 is permanently reserved.** Removing the C constant removed the *name*, not
+the *code*: `asm/nsfvsvc.asm` still knows `FNORPH EQU 3` and rejects it ahead of the slot
+claim (`BADFUNC` → `NSFV_RC_INVALID`, no slot, no in-flight count). That asm is **not** dead
+code — it is what stops a retired verb falling through to the ECHO default.

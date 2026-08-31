@@ -2469,6 +2469,50 @@ incidental witness still fails when the guard breaks but does **not name the mec
 counters into a fixed 512-byte buffer with a **data-dependent** cut point; host `CAP_MAX = 64`
 drops NEWER lines so `NSF816I` is evicted) — **a PREREQUISITE for (e), not tidying**, since (e)
 measures throughput by reading counters. **Nothing is closed: #67, #88 and #92 stay open.**
+**M5-2c2 stage c part 1 (option E: `TSTDEATH` split by ROW) — DONE, live-green.** `TSTDEATH`
+stays a **named, isolated Stage-0 probe on NSFV** (no CTCI, no sockets), reduced to the one row
+it can prove there; `NSFV_REQ_ORPHAN` is deleted, the block that held it having been lifted.
+**Chosen over retiring the file because an INCIDENTAL witness still fails when the guard breaks
+but does NOT NAME THE MECHANISM** — which is the property the Stage-0 set exists to provide.
+**THE COVERAGE KIND IS NAMED IN ALL THREE PLACES** (this table, `docs/adr/ADR-0040`'s
+annotation, and the test's own header), because a coverage kind that is not named is read as a
+test a year later — so it says **"procedure"**, never "test", for row 2:
+
+| row | coverage, and its KIND |
+|---|---|
+| **1** LIVE | **live, named probe** (`TSTDEATH` on NSFV) + host-pinned |
+| **2** DEAD (avail bit) | **an operator-driven PROCEDURE at milestone gates — NOT a test, NOT in the matrix** (`docs/procedure-row2-client-death.md`) + host-pinned |
+| **3** DEAD (ASCB reuse) | **host-pinned ONLY — not live-producible**: 0 of 9 reuses, the ASCB comes back unchanged so the guard reads LIVE |
+| **4** UNKNOWN | **host-pinned ONLY** — four branches, none live-producible by a real client; `ORPHAN` drove one |
+
+**"Not a test" and "not covered" are different things:** row 2's rig is in the repo and
+delivered **6 of 6**; what is missing is the batch form, not the reproducibility — a batch
+client runs in an **initiator** that does not end when the job does, so row 2 cannot be produced
+from a batch gate at all. **Row 1's failure mode is a HANG, not a clean FAIL** (a misclassified
+live client is never POSTed, so the job blocks in `WAIT` and its SYSPRINT is lost to the S222) —
+so the file brackets its blocking call with **console markers**, which survive a hang, and its
+header says which failure mode is which and that `NSFV050I`/`NSFV051W` in the same log names the
+row. **Function code 3 is PERMANENTLY RESERVED:** removing the C constant removed the *name*,
+not the *code* — `asm/nsfvsvc.asm` still rejects `FNORPH` ahead of the claim, and that asm is
+**not** dead code. **Gates:** host **3342 PASS / 0 FAIL** with `src/nsfreqx.c` and
+`test/tstreqx.c` **untouched** (the host pinning is the floor under every row and is not part of
+this restructuring); cross-build clean, **no unused-static warnings** on the reduced file (checked
+specifically — `tstdeath.c` is `host = false`, so cc370 is the only warning source). **Live:**
+NSFV round with `TSTDEATH` back **438 PASS / 0 FAIL** CC 0 batch+TSO — and **438 was PREDICTED
+before the run** from the surviving 13 assertion sites × 2 (412 + 26), so the reconciliation is a
+forecast that held rather than a post-hoc number; NSFS `TSTRQXC`/`TSTRQXF` **122 PASS / 0 FAIL**.
+**The row-2 procedure was EXECUTED ONCE FROM ITS OWN TEXT** and every expected output matched:
+identity `ASCB=00FF96C0 ASID=000C`, the conjunction `BUSY=1 BUSYSLOT=0 INFLIGHT=1 REAPED=0`
+before the cancel, `ABEND S222`, the independent ASVT witness reading `DEAD-row2-avail` (which is
+what distinguishes row 2 from row 3), then `NSF050I CLIENT DEAD (ASCB=00FF96C0 ASID=000C) --
+REQUEST REAPED` with the identity matching step 1, and `BUSY=0 INFLIGHT=0 REAPED=1`.
+**Executing it found one real underspecification, now fixed:** the `TSTAPPD`-in-TESTLIB
+prerequisite was written to be discovered by `S TSTAPPDS` drawing `IEA703I 806-4` —
+**discovery-by-failure**, costing a start, an abend and a restart — and is now a **positive
+pre-flight check** (`zowe zos-files list all-members`), together with the consequence that
+surfaced with it: **`--only` REPLACES the whole test library**, so `TSTAPPD` and the Stage-0 set
+cannot be resident at once. **Nothing closed:** #67, #88, #92 open; obligation #4 still discharged
+in substance for the identity half only, the remaining scaffolding being c3 after (e).
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
