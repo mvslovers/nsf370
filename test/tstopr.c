@@ -61,6 +61,23 @@ static void swap_stub(const char *arg)
     }
 }
 
+/* Count matching lines, not just "is one present" -- issue #92 is precisely a
+ * case where SOME lines are there and the rest are silently gone, so presence
+ * cannot distinguish a complete reply from a truncated one. */
+static UINT cap_count(const char *needle)
+{
+    UINT n = nsfmsg_cap_count();
+    UINT i, hits = 0u;
+
+    for (i = 0u; i < n; i++) {
+        const char *line = nsfmsg_cap_line(i);
+        if (line != NULL && strstr(line, needle) != NULL) {
+            hits++;
+        }
+    }
+    return hits;
+}
+
 static int cap_has(const char *needle)
 {
     UINT n = nsfmsg_cap_count();
@@ -228,8 +245,166 @@ int main(void)
     CHECK_EQ((long)nsfevt_inuse(), 0,
              "EVT pool at baseline after operator-driven shutdown (leak gate)");
 
+
+    /* ================================================================
+     * issue #92 -- STATS must render EVERY counter, AT WIDE VALUES, and
+     * must SAY SO if it ever cannot.
+     *
+     * DISCRIMINATING BY CONSTRUCTION.  The old renderer put one
+     * sts_render into one 512-byte buffer and stopped at the last whole
+     * line that fitted -- about 32 of 52 counters.  Registering more than
+     * that boundary and asserting the rendered COUNT equals sts_count()
+     * fails on the unfixed code and passes on the fixed code.
+     *
+     * AND AT WIDE VALUES, because the boundary MOVED: every line carries
+     * the counter's value ("%u"), so ten-digit values make each line
+     * longer and push MORE counters off the end.  A fix that works at
+     * small values and fails at large ones is the same defect at a new
+     * threshold, so the values here are driven to UINT_MAX first.
+     * ================================================================ */
+    {
+        enum { N92 = 52 };              /* the real NSFS registry size      */
+        UINT    i;
+        STSCTR *c92;
+        UINT    rendered;
+
+        sts_init();
+        for (i = 0u; i < (UINT)N92; i++) {
+            char nm[13];
+            nm[0] = 'c'; nm[1] = (char)('0' + (int)(i / 10u));
+            nm[2] = (char)('0' + (int)(i % 10u)); nm[3] = '\0';
+            c92 = sts_register("NSFWIDE", nm);
+            CHECK(c92 != NULL, "issue #92: counter registered");
+            if (c92 != NULL) {
+                c92->value = 4294967295u;   /* WIDEST possible line */
+            }
+        }
+        CHECK_EQ((long)sts_count(), (long)N92,
+                 "issue #92: all 52 counters registered");
+
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("STATS");
+        rendered = cap_count("NSF811I");
+
+        /* THE assertion.  On the unfixed renderer this reads ~24 (fewer than
+         * the ~32 of narrow values, because the wide values lengthen every
+         * line) and the test goes red. */
+        CHECK_EQ((long)rendered, (long)N92,
+                 "issue #92: EVERY counter rendered, at ten-digit values");
+        CHECK(cap_has("NSF810I STATS 52"),
+              "issue #92: the header still reports the true total");
+        CHECK(!cap_has("NSF818W"),
+              "issue #92: no truncation warning when the reply is complete");
+        CHECK_EQ((long)nsfmsg_cap_dropped(), 0L,
+                 "issue #92: the host capture retained every emitted line");
+    }
+
+    /* The visibility half, proven to FIRE.  A renderer that can drop output
+     * must be able to report that it did -- otherwise the next counter added
+     * past some future boundary is lost in the same silence that produced #92.
+     * sts_render_from with a buffer too small for even one line makes no
+     * progress, which is the one case the loop cannot resolve, so the reply is
+     * incomplete and must say so. */
+    {
+        char buf[4];
+        UINT next = 7u;
+        UINT n    = sts_render_from(buf, sizeof(buf), 0u, &next);
+
+        CHECK_EQ((long)n, 0L, "issue #92: no-progress render writes nothing");
+        CHECK_EQ((long)next, 0L,
+                 "issue #92: no-progress render reports next == first, so a"
+                 " caller breaks instead of spinning");
+    }
+
+    /* ================================================================
+     * issue #92, second problem: the HOST CAPTURE RING dropped the tail.
+     *
+     * It kept the FIRST CAP_MAX lines and dropped the rest -- the NEWER
+     * ones -- so a reply longer than the ring lost its END.  `F NSFS,APPS`
+     * at a full 64-slot registry emits 1 heading + 64 slots + 1 summary =
+     * 66 lines, so the last slot AND the NSF816I summary went missing, and
+     * nsfmsg_cap_line() returned NULL for them, which reads as "no such
+     * line" rather than "dropped".  M5-2c1 stage b worked around it by
+     * reading the registry through nsfreq_app_info instead of the report.
+     *
+     * Reproduced at the shape that broke it: 66 lines, the last one a
+     * summary, asserting the SUMMARY is retrievable and nothing was
+     * dropped.  At CAP_MAX 64 the summary is line 66 and this fails.
+     * ================================================================ */
+    {
+        UINT i;
+
+        nsfmsg_cap_reset();
+        nsfmsg("NSF814I APP REGISTRY:");
+        for (i = 0u; i < 64u; i++) {
+            nsfmsg("NSF815I   SLOT %u", (unsigned)i);
+        }
+        nsfmsg("NSF816I APP REGISTRY: 64 OF 64 SLOTS IN USE, 0 DEAD");
+
+        CHECK_EQ((long)nsfmsg_cap_count(), 66L,
+                 "issue #92: 66 lines emitted (heading + 64 slots + summary)");
+        CHECK_EQ((long)nsfmsg_cap_dropped(), 0L,
+                 "issue #92: the ring dropped NOTHING -- assertable positively,"
+                 " which is what it could not be before");
+        CHECK(cap_has("NSF816I"),
+              "issue #92: the SUMMARY line survived (it was line 66, evicted"
+              " at CAP_MAX 64)");
+        CHECK(cap_has("SLOT 63"),
+              "issue #92: the last slot line survived too");
+    }
+
+    /* THE VISIBILITY HALF, PROVEN TO FIRE.  NSF818W cannot occur in production
+     * -- the loop always makes progress -- so it is forced here by shrinking
+     * the chunk below one line's width.  A warning that has never been seen to
+     * fire is not designed in, it is asserted; this is the difference.
+     *
+     * AND THE PROOF TRANSFERS TO PRODUCTION, which is worth stating rather
+     * than leaving as a step the reader has to make -- an unstated step is an
+     * assumption, and that is the same class as the defect being fixed here.
+     * The code path exercised below IS the path production runs: op_stats, its
+     * resume loop, the emitted-vs-total comparison and the NSF818W call are all
+     * OUTSIDE any NSF_DEBUG guard.  The only thing #if NSF_DEBUG changes is
+     * whether nsfopr_set_stats_chunk exists to CHANGE g_statschunk; production
+     * simply keeps it at OPR_STATS_CHUNK.  So this test forces the branch by
+     * varying one constant, not by running different code. */
+    {
+        nsfopr_set_stats_chunk(4u);     /* smaller than any rendered line */
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("STATS");
+        CHECK(cap_has("NSF818W"),
+              "issue #92: an incomplete reply SAYS SO (NSF818W fires)");
+        CHECK(cap_has("RENDERED 0 OF 52"),
+              "issue #92: the warning names what was rendered and what exists");
+        CHECK_EQ((long)cap_count("NSF811I"), 0L,
+                 "issue #92: nothing rendered at a 4-byte chunk (no progress)");
+        nsfopr_set_stats_chunk(0u);     /* restore the default */
+
+        nsfmsg_cap_reset();
+        nsfopr_dispatch("STATS");
+        CHECK(!cap_has("NSF818W"),
+              "issue #92: warning gone once the chunk is restored");
+        CHECK_EQ((long)cap_count("NSF811I"), 52L,
+                 "issue #92: and all 52 render again");
+    }
+
+    /* Resumption itself: two chunks must cover the registry exactly once. */
+    {
+        char buf[512];
+        UINT first = 0u, next = 0u, seen = 0u;
+        UINT guard = 0u;
+
+        while (first < sts_count() && guard++ < 100u) {
+            (void)sts_render_from(buf, sizeof(buf), first, &next);
+            CHECK(next > first, "issue #92: each chunk makes progress");
+            if (next <= first) break;
+            seen += (next - first);
+            first = next;
+        }
+        CHECK_EQ((long)seen, (long)sts_count(),
+                 "issue #92: resumption covers every counter exactly once");
+    }
+
     mm_shutdown();
 #endif /* NSF_DEBUG */
-
     return mbt_test_summary("TSTOPR");
 }

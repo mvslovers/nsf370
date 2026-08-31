@@ -42,7 +42,7 @@
  * cross-module nsfmsg_* pins a unique 8-char linker name. Scheme NSFMSG*:
  *   nsfmsg NSFMSG   nsfmsg_emit NSFMSGE
  *   (host-only capture: nsfmsg_cap_reset NSFMSGCR   nsfmsg_cap_count NSFMSGCC
- *    nsfmsg_cap_line NSFMSGCL) */
+ *    nsfmsg_cap_line NSFMSGCL   nsfmsg_cap_dropped NSFMSGCD) */
 
 /* Format one NSFnnns line and emit it (WTO on MVS, captured+printed on host).
  * Never allocates; truncates to NSFMSG_LINE-1 bytes (always NUL-terminated). */
@@ -58,6 +58,7 @@ void nsfmsg_emit(const char *line) asm("NSFMSGE");
 void        nsfmsg_cap_reset(void) asm("NSFMSGCR");   /* clear the capture ring */
 UINT        nsfmsg_cap_count(void) asm("NSFMSGCC");   /* lines emitted since reset */
 const char *nsfmsg_cap_line(UINT i) asm("NSFMSGCL");  /* i-th line, NULL if >=    */
+UINT        nsfmsg_cap_dropped(void) asm("NSFMSGCD"); /* emitted but not retained */
 #endif
 
 #endif /* NSFMSG_H */

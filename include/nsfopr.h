@@ -77,6 +77,12 @@ void nsfopr_set_apps(void (*fn)(void)) asm("NSFOPAPP");
  * console ECB (nsfopr_ecb) so the WAITing loop wakes and nsfopr_drain runs. */
 void nsfopr_host_cmd(const char *text) asm("NSFOPHCM");
 void nsfopr_host_stop(void) asm("NSFOPHST");
+
+/* Shrink the STATS render chunk so a test can FORCE the incomplete path and
+ * observe NSF818W fire (issue #92).  Unreachable in production -- which is
+ * exactly why it must be reachable in a test.  0 or an over-large value
+ * restores the default. */
+void nsfopr_set_stats_chunk(UINT n) asm("NSFOPSCH");
 #endif
 
 #endif /* NSFOPR_H */
