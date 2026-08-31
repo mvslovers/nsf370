@@ -395,6 +395,13 @@ never hardcode them.
   (MIH, IGF991I/995I)** — rapid-fire UDP echo throughput suffers on a degraded
   pair while ping and *paced* echo stay clean; the M3-5 rapid 1000/1000 echo needs
   a fresh/idle pair, not a code fix.
+- **`make test-mvs ARGS="--only …"` REPLACES the whole TESTLIB** — it is not additive. Two
+  consequences that cost time: a later `S <something>` for a module that round did not name
+  draws `IEA703I 806-4 … MODULE ACCESSED <name>` (the rig is *absent*, and absence looks like
+  a broken rig), and **two activities needing different test sets cannot run back to back**.
+  The NSFV Stage-0 round and the row-2 client-death procedure
+  (`docs/procedure-row2-client-death.md`) are exactly that pair: a **redeploy sits between
+  them**, and a milestone gate wanting both must schedule that step.
 - **`make deploy` fails while an STC holds `NSF.LINKLIB` — and the run afterwards
   silently tests the OLD binary.** Order is **`P NSFS` (or `P NSFV`) → `make deploy`
   → `S NSFS`**. **Signature:** a *mid-chain* `HTTP 500 Internal Server Error for
@@ -2531,6 +2538,36 @@ pre-flight check** (`zowe zos-files list all-members`), together with the conseq
 surfaced with it: **`--only` REPLACES the whole test library**, so `TSTAPPD` and the Stage-0 set
 cannot be resident at once. **Nothing closed:** #67, #88, #92 open; obligation #4 still discharged
 in substance for the identity half only, the remaining scaffolding being c3 after (e).
+**COUNTERSIGNED (PR #93 merged).** Two findings here were more than mechanical. **(1) Row 1
+fails by HANGING, and that would have HOLLOWED OUT the decision.** E beat C precisely because
+an isolated probe **names the mechanism** — but a probe whose failure mode is a silent hang
+names nothing and **does not even go red**: a misclassified live client is never POSTed, the
+job blocks in `WAIT`, and its SYSPRINT is lost to the S222, so it cannot report a failed
+assertion. Console markers that survive a hang, plus a header saying which failure mode is
+which, restore the property the decision was made for. **Found by RUNNING THE PROCEDURE FROM
+ITS OWN TEXT, not by reading the code** — which is what that acceptance item exists for.
+**(2) The `--only` constraint is operational, not trivia:** `make test-mvs ARGS="--only …"`
+**replaces** TESTLIB, so the NSFV Stage-0 round and the row-2 procedure **cannot run back to
+back** — a redeploy sits between them and a milestone gate wanting both must schedule it (now
+recorded in 5 and in the procedure).
+
+**M5 housekeeping — DONE, docs-only, countersigned (PR #94 merged).** Three items, and one is
+why **checking is not the same as applying**. **ADR status: merged means Accepted**, now written
+in `docs/adr/README.md` so the question stops recurring — **but `ADR-0036` must NOT be flipped**:
+its transport was superseded (2026-07-21) and its SSI probe code retired (2026-07-22), so it
+reads **`Superseded by ADR-0038`**. **"Superseded" is not the same as "not accepted"**, and a
+blanket flip would have marked a retired document as current; the convention therefore carries a
+**second clause** for exactly that case. Checking the earlier ADRs rather than only the four
+named found **five more stale markers** (0035, 0038–0041 beyond the named 0042–0044). **README
+backfilled** with 0027–0033 and 0042 — verified mechanically that **no ADR file is now absent
+from the table** — and **the hand curation is preserved and now stated in the file**: `0038`
+deliberately precedes `0037`, whose row exists only to record the intentional numbering gap, so
+**the table must not be sorted**. **The `docs/measurements/` convention is written down** rather
+than left as drift: **logs are evidence, scripts are instruments that outlive their round**,
+both live there, and they are **not** in `tools/` because that is for what the build runs while
+these are what a person runs while investigating. The third kind is named too:
+**`docs/procedure-*.md` is an operator-driven gate procedure — not a measurement and not a
+test.**
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]

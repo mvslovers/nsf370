@@ -46,8 +46,11 @@ full map. The classifier's arithmetic for every row is pinned in `test/tstreqx.c
    arm leaves one app slot registered).
 
    **`--only` REPLACES the whole test library**, so `TSTAPPD` and the Stage-0 set cannot be
-   resident at the same time under `--only`. Run this procedure and the NSFV Stage-0 round
-   in separate deploys, and re-deploy whichever set the next activity needs.
+   resident at the same time. **Operational consequence, for whoever plans a milestone
+   gate: this procedure and the NSFV Stage-0 round CANNOT RUN BACK TO BACK — a redeploy
+   sits between them, and it is a step to schedule rather than a surprise to rediscover.**
+   A gate that wants both is: deploy the Stage-0 set → run the NSFV round → deploy
+   `TSTAPPD` → run this procedure (or the reverse), never one continuous sequence.
 
    *This check was added after executing the procedure from its own text: the prerequisite
    was originally written to be discovered by `S TSTAPPDS` drawing `IEA703I 806-4 ... MODULE
