@@ -1,0 +1,59 @@
+Spool file: SYSPRINT (ID #101, Step: M)
+=== TSTRQXC -- M5-2b4: the slot pool under contention ===
+role: 'MS90'
+  PASS: the client is UNAUTHORISED (TESTAUTH FCTN=1 == 0)
+  chase CVT    -> 0001D048
+  chase SCVT   -> 0001D510
+  chase SVCT   -> 0000FA60
+  chase EPA    -> 00A82108
+  chase EP     -> 00A82108 (SVC 239 routine, in CSA)
+  chase ANCHOR -> 00A8B7C8
+  chase EYE    -> 00000000
+  anchor = 00A8B7C8, version 3, 64 slots
+  PASS: the anchor carries the layout version this build was made for
+  PASS: and the slot count the scan is bounded by
+--- MS: 90 s window, first 60 s discarded from the figures ---
+  *** TRIAL SHAPE (window shortened) -- NOT A MEASUREMENT RUN ***
+  pace inside the timed region: 0 cs
+  window opens at TOD E336748823FC4081
+  discard boundary crossed at 60000 ms: served=115840 refused=0 bad=0
+  window closes at TOD E33674DDF8C678C0 (90000 ms elapsed, 174617 attempts)
+  PROGRESS (per interval, not cumulative):
+      t_ms   served   refused   bad
+          1        1         0     0
+      15000    28704         0     0
+      30000    29030         0     0
+      45000    28501         0     0
+      60000    29604         0     0
+      75000    29388         0     0
+      90000    29390         0     0
+  WHOLE WINDOW      : 90000 ms  served=174618 refused=0 bad=0  (1940 served/s)
+  served   n=174618  min=221 us  mean=509 us  max=5439 us
+             <=     250 us : 5
+             <=     500 us : 96750
+             <=     750 us : 75819
+             <=    1000 us : 1689
+             <=    1500 us : 327
+             <=    2500 us : 19
+             <=    5000 us : 7
+             <=   10000 us : 2
+  refused  n=0 -- no samples
+  REPORTED (first 60 s discarded at 60000 ms): 30000 ms  served=58778 refused=0 bad=0  (1959 served/s)
+  served   n=58778  min=238 us  mean=503 us  max=2817 us
+             <=     250 us : 2
+             <=     500 us : 37489
+             <=     750 us : 20757
+             <=    1000 us : 430
+             <=    1500 us : 95
+             <=    2500 us : 4
+             <=    5000 us : 1
+  refused  n=0 -- no samples
+  PASS: every served request came back with ITS OWN identity -- no slot was handed to two clients
+  PASS: the client was served at least once
+  PASS: progress was SAMPLED at more than one point -- an unsampled window would print a table that looks like a starved client
+  PASS: every served request contributed a latency sample -- the timing covered the run rather than part of it
+  PASS: the window outlived the discard boundary, so the reported region is not empty
+  slots FREE as MS leaves: 64 of 64
+=== TSTRQXC: 8/8 passed ===
+
+Spool file: UNK0104 (ID #104, Step: JES2)

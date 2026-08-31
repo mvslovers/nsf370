@@ -873,14 +873,27 @@ sources = ["test/mvs/tstrqxf.c"]
 #                    blocking RECV cannot induce this.
 #   PARM='Vxxxxxxxx' after the stop, read the retained anchor back.
 #   PARM='RESET'     release every CLAIMED/HELD slot (recovery aid, not a gate).
-# A/B are hand-submitted as two CONCURRENT jobs (jcl/TSTRQXCA.jcl + B), which
-# the sequential test runner cannot do.
-# PREREQUISITE: S NSFS. The client stays UNAUTHORISED. Links only libc370.
+#
+# M5-2e adds the MEASUREMENT roles. b4's roles read no clock and loop a fixed
+# REQUEST COUNT, so the window length is an output; (e) needs progress across
+# the window, a per-request delay distribution and a window bounded by TIME.
+#   PARM='MS'        measure, one client -- the reference arm for MA/MB.
+#   PARM='MA'/'MB'   measure, two address spaces, barriered at the start.
+#   PARM='MSP'       MS with a deliberate pause INSIDE the timed region: the
+#                    discriminating gate on the instrument itself.
+#   ...'MS90'        a trailing decimal shortens the window and stamps the run
+#                    a TRIAL. It never scales the 60 s discard.
+# A/B (and MA/MB) are hand-submitted as two CONCURRENT jobs (jcl/TSTRQXCA.jcl +
+# B), which the sequential test runner cannot do.
+# asm/nsftime.asm is linked for nsf_now (STCK) -- the measurement roles time
+# each request across the SVC. It is the TSTTMACC precedent; nothing else in
+# this test uses NSF code, so libc370 remains the only other dependency.
+# PREREQUISITE: S NSFS. The client stays UNAUTHORISED.
 [[test]]
 name = "TSTRQXC"
 startup = "crt1"
 host = false
-sources = ["test/mvs/tstrqxc.c"]
+sources = ["test/mvs/tstrqxc.c", "asm/nsftime.asm"]
 
 # -- M5-2b step 0: the DESTINATION-KEY probe (TSTMVCD) ----------------------
 # MVS-only (host = false): SSE opcodes, PSW/storage keys, SSK/ISK/LRA and the
