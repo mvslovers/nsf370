@@ -121,15 +121,23 @@ UINT sts_value(const char *component, const char *name)
 
 UINT sts_render(char *buf, UINT bufsize)
 {
+    return sts_render_from(buf, bufsize, 0u, NULL);
+}
+
+UINT sts_render_from(char *buf, UINT bufsize, UINT first, UINT *next)
+{
     UINT written = 0;
     UINT i;
 
+    if (next != NULL) {
+        *next = first;                  /* no progress until a line is written */
+    }
     if (bufsize == 0) {
         return 0;
     }
     buf[0] = '\0';
 
-    for (i = 0; i < g_sts.count; i++) {
+    for (i = first; i < g_sts.count; i++) {
         const STSREC *r = &g_sts.rec[i];
         char line[64];
         int  len;
@@ -146,6 +154,9 @@ UINT sts_render(char *buf, UINT bufsize)
         }
         memcpy(buf + written, line, (UINT)len);
         written += (UINT)len;
+        if (next != NULL) {
+            *next = i + 1u;             /* this one made it out */
+        }
     }
 
     buf[written] = '\0';

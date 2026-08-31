@@ -85,29 +85,88 @@ static void op_display(void)
     nsfmsg("NSF802I TRACE FLAGS %04X", (unsigned)(nsftrc_flags & 0xFFFFu));
 }
 
+/* Render EVERY registered counter, and say so if we ever fail to (issue #92).
+ *
+ * THE DEFECT THIS REPLACES.  This used to be one sts_render into one 512-byte
+ * buffer, which fitted about 32 of 52 counters -- and the cut point MOVED,
+ * because each line carries the counter's value, so a counter gaining a digit
+ * pushed a later one off the end.  Nothing said so: the reply simply ended.  An
+ * operator saw "NSF810I STATS 52 COUNTER(S)" followed by 32 lines and had to
+ * count them to notice.  A measurement round reading counters from this reply
+ * (which is what (e) does) would read a set silently missing a fifth of itself,
+ * with a different fifth missing as the numbers grew.
+ *
+ * TWO CHANGES, and the second is the durable one:
+ *   1. COMPLETE: resume with sts_render_from until every counter is out, so the
+ *      buffer bounds one CHUNK rather than the whole reply.
+ *   2. VISIBLE: count what was emitted and compare it against what exists.  If
+ *      they ever differ, say so loudly (NSF818W) instead of just ending.  This
+ *      should never fire -- the loop above is what makes it so -- but a
+ *      renderer that CAN drop output must be able to report that it did, or the
+ *      next counter added past some future boundary is lost in the same silence
+ *      that produced #92.  It is also why nsfsx_stats_extra stops being the
+ *      reason a counter is placed outside the registry: it was a workaround for
+ *      this, and it worked, and it was not a fix. */
+#define OPR_STATS_CHUNK 512
+
+/* The STATS render chunk.  A VARIABLE rather than a constant for exactly one
+ * reason, and it is the point of the visibility half: NSF818W is UNREACHABLE in
+ * production -- a rendered line is at most ~33 bytes and the chunk is 512, so
+ * the loop always makes progress and emitted always equals total.  Without a
+ * way to shrink the chunk, the warning could never be OBSERVED to fire, and a
+ * warning nobody has ever seen fire is the same "absence indistinguishable from
+ * success" shape this issue is about, one level up.  NSF_DEBUG only; the
+ * production module compiles the setter out and keeps the 512. */
+static UINT g_statschunk = OPR_STATS_CHUNK;
+
+#if NSF_DEBUG
+void nsfopr_set_stats_chunk(UINT n)
+{
+    g_statschunk = (n != 0u && n <= OPR_STATS_CHUNK) ? n : OPR_STATS_CHUNK;
+}
+#endif
+
 static void op_stats(void)
 {
-    char  buf[512];
-    UINT  n;
-    char *line;
+    char  buf[OPR_STATS_CHUNK];
+    UINT  total   = sts_count();
+    UINT  emitted = 0;
+    UINT  first   = 0;
 
-    nsfmsg("NSF810I STATS %u COUNTER(S)", (unsigned)sts_count());
-    n = sts_render(buf, sizeof(buf));
-    line = buf;
-    while ((UINT)(line - buf) < n) {
-        char *nl = strchr(line, '\n');
-        if (nl != NULL) {
-            *nl = '\0';
+    nsfmsg("NSF810I STATS %u COUNTER(S)", (unsigned)total);
+
+    while (first < total) {
+        UINT  next = first;
+        UINT  n    = sts_render_from(buf, g_statschunk, first, &next);
+        char *line = buf;
+
+        if (next == first) {
+            break;                      /* no progress: one line exceeds buf */
         }
-        nsfmsg("NSF811I %s", line);
-        if (nl == NULL) {
-            break;
+        while ((UINT)(line - buf) < n) {
+            char *nl = strchr(line, '\n');
+            if (nl != NULL) {
+                *nl = '\0';
+            }
+            nsfmsg("NSF811I %s", line);
+            emitted++;
+            if (nl == NULL) {
+                break;
+            }
+            line = nl + 1;
         }
-        line = nl + 1;
+        first = next;
     }
 
-    /* After the rendered counters, so the supplement is the LAST thing on the
-     * reply and cannot be pushed out by sts_render's fixed buffer. */
+    /* The completeness check.  Turns a silent loss into a visible one. */
+    if (emitted != total) {
+        nsfmsg("NSF818W STATS INCOMPLETE -- RENDERED %u OF %u COUNTER(S)",
+               (unsigned)emitted, (unsigned)total);
+    }
+
+    /* The supplement still comes last.  It no longer has to: it is no longer
+     * competing with a truncating renderer for room.  Kept as a mechanism for
+     * things that are genuinely not registry counters. */
     if (g_statsextra != NULL) {
         g_statsextra();
     }

@@ -44,6 +44,7 @@ NSF_SIZE_ASSERT(STSCTR, 16);
  * NSFST + verb:
  *   sts_init NSFSTINI   sts_register NSFSTREG   sts_reset NSFSTRST
  *   sts_count NSFSTCNT   sts_render NSFSTRND   sts_value NSFSTVAL
+ *   sts_render_from NSFSTRNF
  */
 
 /* Zero the registry, stamp the "NSFSTATS" eyecatcher. Safe at earliest init
@@ -77,5 +78,23 @@ UINT    sts_value(const char *component, const char *name) asm("NSFSTVAL");
  * bytes written (excluding the terminating NUL). The M0-8 operator DISPLAY
  * STATS hookup calls this; here a plain buffer keeps it trivially testable. */
 UINT    sts_render(char *buf, UINT bufsize) asm("NSFSTRND");
+
+/* RESUMABLE render -- the primitive sts_render wraps, and the one a caller must
+ * use if it needs EVERY counter.
+ *
+ * WHY THIS EXISTS (issue #92).  sts_render renders from counter 0 and stops at
+ * the last whole line that fits.  With the operator reply's 512-byte buffer that
+ * was about 32 of 52 counters -- and the cut point MOVED, because each line
+ * carries the counter's VALUE ("%u"), so a counter that gained a digit pushed a
+ * later one off the end.  The caller could not tell: the return value is a BYTE
+ * count, so "rendered everything" and "stopped a third of the way in" are the
+ * same observation.  That is the shape CLAUDE.md 8.5 forbids.
+ *
+ * Renders counters starting at index `first`.  On return `*next` (when non-NULL)
+ * is the index AFTER the last one rendered, so a caller loops until it reaches
+ * sts_count().  `*next == first` means not even one line fits -- no progress, and
+ * the caller must break rather than spin.  Returns bytes written, as before. */
+UINT    sts_render_from(char *buf, UINT bufsize, UINT first,
+                        UINT *next) asm("NSFSTRNF");
 
 #endif /* NSFSTS_H */
