@@ -30,6 +30,11 @@ client reading its own initialised `-1` — indistinguishable from "the SVC neve
 `pascb`/`pasid` stay as `rsvd_pascb`/`rsvd_pasid` at **identical offsets**: no layout change,
 so the client/router skew stage a identified cannot arise.
 
+`NSFV_REQ_ORPHAN` is kept, with the rule written at the declaration: **a mechanical change
+must not settle an open design question as a side effect.** Deleting it breaks `tstdeath.c`'s
+compile and would force the `TSTDEATH` decision; the constant is cleaned up *with* that
+decision, not before it.
+
 ---
 
 ## Verified host-side (survives without a stand)
@@ -94,14 +99,18 @@ free ASID nothing owns), `ASCB=00FD0F20` (the real ASCB **+8**), `ASCB=00000000`
 
 ## Reported, not done
 
-- **`TSTDEATH`: four options priced** against the thing that actually matters — a Stage-0
+- **`TSTDEATH`: five options priced** against the thing that actually matters — a Stage-0
   probe going red names a *mechanism*, a socket op going red names nothing. Option B turns
   out not to be possible as stated, for this round's own reason (a batch client reads LIVE
-  forever). Decision left open.
+  forever). **Option E — split by ROW rather than moving or retiring the test** — carries the
+  lowest isolation cost, on the reasoning that *isolation is a property of the probe, not of
+  the round*; its real cost is that **row 2's live proof stops being a test and becomes an
+  operator-driven procedure** with no deterministic batch form. Decision left open.
 - **`NSFV_REQ_ORPHAN`**: kept with a retired-marker comment. Cost stated both ways — deleting
   or renaming it breaks `tstdeath.c`'s compile and would **force the `TSTDEATH` decision as a
   side effect**, which this round is told not to pre-empt. The honest cost of keeping it is a
   header that names a verb which no longer works.
-- **#67 updated** — comment posted recording that the sharp variant is gone and the issue
-  **stays open** (`ECHO`/`XFER` still strand a slot each). No state change.
+- **#67 updated and retitled** — a comment records that the sharp variant is gone and the
+  issue **stays open** (`ECHO`/`XFER` still strand a slot each *and hang the client*), and the
+  title drops the now-false `ORPHAN` clause while restoring the hang. **Still OPEN.**
 - **The STATS truncation filed as #92**, with the (e) dependency stated and no fix proposed.

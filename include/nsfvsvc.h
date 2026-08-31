@@ -167,10 +167,13 @@
  *           and a LIVE orphan), so the probe leaves no in-flight count behind
  *           and the STC still stops clean. */
 /* RETIRED (M5-2c2 stage b) -- the routine answers NSFV_RC_INVALID.  The name is
- * KEPT rather than deleted or renamed: deleting it breaks tstdeath.c's compile,
- * which would force the TSTDEATH restructuring decision that M5-2c2 stage b
- * deliberately reports on and leaves open.  Kept, it stays a live probe of the
- * rejection path.  See the ORPHAN paragraph above before using it. */
+ * KEPT rather than deleted or renamed, and the reason is a rule, not a
+ * convenience: A MECHANICAL CHANGE MUST NOT SETTLE AN OPEN DESIGN QUESTION AS A
+ * SIDE EFFECT.  Deleting or renaming this constant breaks tstdeath.c's compile,
+ * which would force the TSTDEATH restructuring decision -- the one M5-2c2 stage
+ * b deliberately prices and leaves open for the maintainer.  So the constant is
+ * cleaned up TOGETHER WITH that decision, not before it.  Kept, it also stays a
+ * live probe of the rejection path.  See the ORPHAN paragraph above. */
 #define NSFV_REQ_ORPHAN   3U
 #define NSFV_REQ_QUERY    4U
 #define NSFV_REQ_UNSTAGE  5U

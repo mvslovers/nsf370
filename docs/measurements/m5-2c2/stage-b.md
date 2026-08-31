@@ -73,8 +73,14 @@ socket operation going red names nothing.** Every option below is priced against
 | **C. Retire `TSTDEATH`, carry row 1 in the existing Stage-0 clients** | **Isolation preserved, coverage honestly reduced.** Row 1's wiring is already exercised by every boundary-crossing test — the guard gates *every* reply POST, so `TSTSVC`/`TSTUBUF`/`TSTXFW` are row-1 witnesses and a false DEAD would hang them. Rows 2–4 keep only their host pinning in `TSTREQX`. Cost: the NSFV round loses a named probe, and the DEAD path's live coverage moves entirely to the NSFS-side `TSTAPPDS` rig, which is not a Stage-0 test. |
 | **D. Keep it as-is, failing** *(status quo of this branch)* | Costs a permanently red test, which is the one thing worse than any of the above: a round that is expected to be red trains the reader to skip the matrix. **Not viable beyond this branch.** |
 
-**Not decided here.** Worth noting for whoever does decide: B's row-1 remnant and C differ
-less than they look, since scenario 5 is the row-1 witness in both.
+| **E. Split it by ROW rather than moving or retiring the test** — row 1 stays on NSFV in `TSTDEATH`; row 2's live proof lives on the NSFS side; rows 3–4 stay host-pinned and documented as not live-producible | **Lowest isolation cost of the five, and it is a fifth option — none of A–D keeps `TSTDEATH` as a named probe while splitting the rows.** The reasoning checks out: **the isolation the M5-2c memo protects is a property of the PROBE, not of the round.** `TSTDEATH` stays an isolated NSFV probe — no CTCI, no sockets, no protocol layer — reduced to the row it can actually prove there, so a red run still names a mechanism. Row 2's live proof moves to the only place it is producible at all, which was never a Stage-0 probe, so nothing available is given up. **Test-surface cost:** `TSTDEATH` shrinks from five scenarios to scenario 5 plus its baseline and cleanup — roughly 72 assertions down to ~20 — and the NSFV round figure moves again. **What it leaves uncovered:** rows 3–4 live (unproducible under every option), and — the real cost — **row 2's live proof stops being a test and becomes a procedure.** It ran 6 of 6 in the map, but each run needs an operator to start and cancel an STC and then send the completing datagram; there is no deterministic batch form, so it cannot sit in a round's matrix. |
+
+**Not decided here.** Two notes for whoever does decide. B's row-1 remnant and C differ less
+than they look, since scenario 5 is the row-1 witness in both. And **C and E differ more than
+they look**: C retires the file, so row 1's live witness becomes *incidental* — other clients
+happen to pass through the guard — whereas E keeps it named and deliberate. An incidental
+witness still fails when the guard breaks, but it does not **name** the mechanism, which is
+the whole property being protected.
 
 ---
 
