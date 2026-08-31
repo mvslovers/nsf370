@@ -2399,6 +2399,76 @@ usable form the countersign asked for — the verdict half is already ≤1 s, so
 any fix is LOOK EARLIER, NOT FASTER**. **Nothing is closed:** #88 deferred, **#67 and #87 open**,
 **obligation #4 UNDISCHARGED** — retiring the verb and deciding the fields are two separate
 questions, and §3b is why.
+
+**M5-2c2 stage b (the `ORPHAN` verb retired, its two words reserved) — DONE, live-green,
+maintainer-countersigned (PR #91 merged).** The second half of M5-2c's obligation #4; **M5
+stays in progress and no milestone flips.** `ORPHAN` was **the one place a request-supplied
+identity was stored into a slot verbatim** — a forged identity taken from an unauthorised
+caller — and it is gone. **THE REJECTION IS POSITIONAL, AND THAT IS THE FINDING:** the staging
+dispatch is a **fall-through chain ending in ECHO**, so deleting the test alone would NOT have
+removed `FNORPH` — it would have silently **re-designated it to ECHO** and serviced it as an
+ordinary request. **A deleted branch in a fall-through chain is a re-designation, not a
+removal** — the Stage-0c fall-through shape (`asm/nsfvsvc.asm`'s own `B DOPOST` warning) in a
+different place. So the verb is rejected **by name, FIRST in the pre-claim chain**, ahead of
+the slot claim: a retired verb costs **NO slot and NO in-flight count, true BY POSITION rather
+than by argument** — which is also what actually narrows #67. **`BADFUNC`, NOT `BADREQ`:**
+`BADREQ` returns rc in **R15 only**, so the client would have read back its own initialised
+`-1` — **indistinguishable from "the SVC never ran"** (§8.5 applied to an error path nobody
+asked about); `BADFUNC` mirrors `BADANC` and writes the rc into the **caller's block**.
+**FIELDS RESERVED AT IDENTICAL OFFSETS** — `pascb`/`pasid` → **`rsvd_pascb`/`rsvd_pasid`**,
+putting the reservation **in the type rather than in a comment**; every `NSFV_OFF_ASSERT` value
+(28, 32) and `NSF_SIZE_ASSERT(NSFV_REQ, 64)` compared against `main` and **identical**, so **no
+client/router skew can arise** (the hazard stage a named: nothing version-checks this block —
+the router validates a layout-INVARIANT eyecatcher and `ANCVERNO` guards the anchor, a
+different contract). **`NSFV_REQ_ORPHAN` is KEPT**, with the rule written at the declaration:
+**a mechanical change must not settle an open design question as a side effect** — deleting it
+breaks `tstdeath.c`'s compile and would force the `TSTDEATH` decision, so the constant is
+cleaned up **with** that decision, not before it. **OBLIGATION #4 IS DISCHARGED IN SUBSTANCE
+FOR THE IDENTITY HALF ONLY — NOT MET OVERALL**: `ECHO`/`XFER`/`UNSTAGE`/`SLOT` and `QUERY`'s
+promotion are **c3, after (e)**, and remain reachable from an unauthorised caller. **#67
+NARROWED, NOT CLOSED** (comment posted; **retitled** to drop the now-false `ORPHAN` clause and
+restore the hang — `ECHO`/`XFER` do not only strand a slot, they **park the client**): the
+sharp variant needing neither a parked task nor a death is gone; each remaining verb still
+strands one slot per parked task. **Gates.** Host **3342 PASS / 0 FAIL** with the classifier's
+logic **still fully pinned** — `src/nsfreqx.c` and `test/tstreqx.c` untouched, so all four rows
+and all four `UNKNOWN` branches keep their host coverage; the retirement removes a live
+**driver**, not coverage. Offline: `tools/check-card-columns.sh` OK **after catching one of my
+own cards at 72 bytes mid-edit**; `as370 -a=` listing checked (`C R3,=A(FNORPH)` → `5930 64F8`,
+`BE BADFUNC` → `4780 64A4`, **base R6 not dropped to 0**, target matching `BADFUNC` at
+`0004A4`); **all 1268 source cards present byte-identical in source order** — matched as an
+in-order **SUBSEQUENCE**, because macro expansion (`WAIT`, `CVT`) makes listing statement
+numbers **not 1:1** with source lines — **and verified to discriminate**: a deliberate 89-byte
+card gave card-check FAILED, **as370 rc=8** (cc370#84) and the statement check named **both**
+the overlong card and the `BE BADFUNC` it ate; `XFERIN` still ends `B DOPOST` with **only
+comment text** where `ORPHIN` was. **Live on MVSCE:** NSFV `TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTXFW`
+**412 PASS / 0 FAIL** CC 0 batch+TSO; NSFS `TSTRQXC`/`TSTRQXF` **122 PASS / 0 FAIL**; `TSTRQXM`
+**batch CC 0** with the host peer verifying **9353 bytes byte-exact** (TSO FAIL by design —
+one-shot listener consumed, verified to be exactly `CONNECT` + its dependent `CLOSE`).
+**`TSTDEATH`'S ABSENCE IS ARITHMETIC, NOT PROSE: 484 → 412, exactly its 72 assertions** — a
+round that quietly loses a test looks like a green round; with the subtraction beside it, it
+does not. (`TSTMVCD` still excluded, #53.) **The retired verb's rejection, from an
+UNAUTHORISED client** (`TSTDEATH` is that client, now **FAIL CC 1** — "ran and failed", **not**
+the CC 20 "did not run" idiom): `rc = 4` (`NSFV_RC_INVALID`) **in the caller's block**, slot
+state **0 = FREE**, `inflight = 0` — "no slot, no count" **observed, not argued**. **Revert
+test, three states, one assertion moving:** retired `rc=4` / **0** forged reaps → **reverted**
+`rc=0` / **6** forged reaps → restored `rc=4` / **0**, states 1 and 3 byte-identical in outcome
+and state 3 `git diff`-clean. **State 2 is rendered POSITIVELY** — the forged identities shown
+*taking*, each identifiable: `ASID=0020` (a free ASID nothing owns), `ASCB=00FD0F20` (the real
+ASCB **+8**), `ASCB=00000000` (row 4a). **Zero dumps**, both STCs start/stop clean, `SVC 239`
+stolen and restored every cycle, no `NSF054W`, stand left with nothing running.
+**`TSTDEATH`'S RESTRUCTURING IS PRICED AND OPEN — FIVE options**, scored against the property
+that matters (**an isolated probe going red names a MECHANISM; a socket op going red names
+nothing**): **B is impossible as stated**, for this round's own reason — NSFV's clients are
+batch and **a batch client in an initiator reads LIVE forever**, so row 2 cannot be produced
+there at all; **E (split by ROW)** carries the lowest isolation cost, on the reasoning that
+**isolation is a property of the PROBE, not of the round**, with its real cost being that
+**row 2's live proof stops being a test and becomes an operator-driven procedure** (6 of 6 in
+the map, but no deterministic batch form); and **C differs from E by more than it looks** — an
+incidental witness still fails when the guard breaks but does **not name the mechanism**.
+**Decision is Mike's.** **STATS truncation filed as #92** (`F NSFS,STATS` renders ~32 of 52
+counters into a fixed 512-byte buffer with a **data-dependent** cut point; host `CAP_MAX = 64`
+drops NEWER lines so `NSF816I` is evicted) — **a PREREQUISITE for (e), not tidying**, since (e)
+measures throughput by reading counters. **Nothing is closed: #67, #88 and #92 stay open.**
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
