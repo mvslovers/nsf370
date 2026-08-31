@@ -2568,6 +2568,58 @@ both live there, and they are **not** in `tools/` because that is for what the b
 these are what a person runs while investigating. The third kind is named too:
 **`docs/procedure-*.md` is an operator-driven gate procedure — not a measurement and not a
 test.**
+**#92 (the STATS renderer truncated silently; the host ring dropped its tail) — FIXED,
+live-green, countersigned (PR #95 merged). #92 is NOT closed by the merge — that is Mike's.**
+Not a milestone step; **M5 stays in progress** and (e) is next. **Two defects in two layers**,
+established separately from source before either was touched. **THE PREREQUISITE CLAIM STOPPED
+BEING AN ARGUMENT AND BECAME A MEASUREMENT:** #92 was justified for (e) on *class* grounds — an
+instrument that drops output without saying so — and the measured form is specific and worse.
+Live on the deployed module: **`NSF810I STATS 52 COUNTER(S)` followed by 33 `NSF811I` lines**,
+19 missing, nothing said so — and **the 19 were not a random tail** but the **entire UDP set**
+(`in/out/binds/noport/badcksum/badlen/rxfull`) plus `NSFTCP rexmit`, `twreclaim`, `wndprobe`,
+`oooseg`, `dupack`, `rxfull`, `datadrop` and **`NSFSX wakeposts`** — *precisely what a
+throughput round reads*. **(e) would have lost the counters (e) needs.** **THE BACKWARD CHECK
+IS WHAT PROTECTS THE RECORD:** several of those were quoted in earlier rounds, but read through
+**`sts_value` inside the tests**, not from the report — **so those results stand. Checked, not
+assumed**; without it this finding would have put half a dozen rounds in doubt.
+**Mechanism 1:** `op_stats` put one `sts_render` into one `char buf[512]`; the renderer
+**breaks** at the first line that will not fit and returns a **byte count**, so "rendered
+everything" and "stopped a third of the way in" are **the same observation** to the caller —
+and because each line carries the counter's **value** (`%u`), **the cut point MOVES as values
+gain digits**. Fixed by **resumption** (`sts_render_from(buf, size, first, *next)`; the buffer
+now bounds one **chunk**, not the reply) **plus visibility** — `op_stats` compares emitted
+against `sts_count()` and emits **`NSF818W STATS INCOMPLETE -- RENDERED n OF m`**, the durable
+half, without which the next counter added past a future boundary is lost in the same silence.
+`nsfsx_stats_extra` stays a **mechanism** but stops being **the reason** a counter is placed
+outside the registry. **Mechanism 2:** the host ring **kept its first 64 and dropped the NEWER
+lines — the opposite of its own comment**, and **the direction is the whole point** (the newest
+lines are the ones wanted); **a comment that contradicts the code is worse than none, because
+it replaces the check**. At a full registry `F NSFS,APPS` emits 66 lines, so the last slot AND
+the `NSF816I` summary went, with `nsfmsg_cap_line()` returning NULL — reading as "no such line"
+rather than "dropped". Fixed `CAP_MAX` 64→**256 PLUS `nsfmsg_cap_dropped()`**, because **a
+bigger number alone is the same defect at a new threshold** — the second obligation, met
+without being asked twice. **`NSF818W` WAS UNREACHABLE IN PRODUCTION, so it could never have
+been SEEN to fire — a warning nobody has seen fire is not designed in, it is asserted: THIS
+ISSUE ONE LEVEL UP, sitting inside the safeguard it was building.** The chunk size is therefore
+`NSF_DEBUG`-settable purely so a test can force `RENDERED 0 OF 52` — **and the transfer is
+STATED, not left to the reader** (an unstated step is an assumption, the same class again):
+`op_stats`, the resume loop, the comparison and the `NSF818W` call are **all outside any
+guard**; the guard changes only whether a setter exists to alter `g_statschunk`, which
+production keeps at `OPR_STATS_CHUNK`. **THE MOVING BOUNDARY IS NOW A RANGE, NOT AN
+OBSERVATION: ~33 at live values, 22 at ten-digit ones** — the revert test measures both in one
+run (`got 22, want 52`), which is why the gate drives wide values: a fix that works at small
+values and fails at large ones is the same defect at a new threshold. **Gates:** host **3342 →
+3414 PASS / 0 FAIL** (TSTOPR 34→113); **both fixes verified to discriminate by reverting each
+ALONE** (`got 22, want 52`; `dropped got 2, want 0` = exactly the last slot and the summary);
+cross-build clean (6 modules + 53 test modules), alias scan **244 unique ≤ 8** (`NSFSTRNF`,
+`NSFOPSCH`, `NSFMSGCD`); **the cross-build caught a real error the host build could not see** —
+the gate calling `NSF_DEBUG`-only helpers from outside the guard, 4 unresolved externals.
+**Live before/after on one stand, one assertion moving:** 33 → **52 of 52** rendered,
+`NSF818W` absent in both, `NSF817I APPSWEEP` still last; NSFV **438 PASS / 0 FAIL**, NSFS
+**122 PASS / 0 FAIL**, **zero dumps**. **No counter removed or renumbered** (verified in the
+diff) — the output adapts to the counters, not the other way round. Captures in
+`docs/measurements/m5-92/`. **Nothing closed by the merge: #67 and #88 open, #92 Mike's to
+close, obligation #4 still identity-half only.**
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
