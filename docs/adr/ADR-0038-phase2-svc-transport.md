@@ -1,6 +1,6 @@
 # ADR-0038 — Phase-2 app↔stack transport: a private (dynamically installed) SVC
 
-**Status:** Proposed (2026-07-21). **Supersedes the transport decision of ADR-0036**
+**Status:** Accepted (2026-07-21). **Supersedes the transport decision of ADR-0036**
 (the MVS Subsystem Interface). ADR-0036's cross-AS state/key rules, CSA-anchor design,
 in-flight drain, and ESTAE content **remain valid and are reused here**; only the
 *dispatch* — how an application task reaches the stack across the address-space

@@ -1,6 +1,6 @@
 # ADR-0041 — Phase-2 NSFRQE crossing: a copied CSA request slot and an STC-private dispatch copy
 
-**Status:** Proposed (2026-08-22). Settles **how the frozen 64-byte `NSFRQE` crosses the
+**Status:** Accepted (2026-08-22). Settles **how the frozen 64-byte `NSFRQE` crosses the
 address-space boundary** between an application and the `NSFS` STC, how the result comes
 back, and which fields the STC may write. Stage-0 proved the three mechanisms this ADR
 composes — the private-SVC transport (ADR-0038), the keyed `ubuf` CSA bounce (ADR-0039)

@@ -1,6 +1,7 @@
 # ADR-0036 — Phase-2 app↔stack transport: the MVS Subsystem Interface (SSI)
 
-**Status:** Proposed (2026-07-21). Pins the transport that carries an application's
+**Status:** **Superseded by ADR-0038** (proposed 2026-07-21; transport superseded
+2026-07-21, SSI probe code retired 2026-07-22 — see the annotations at the end). Pins the transport that carries an application's
 request across the address-space boundary to the stack in **Phase 2** (the `NSFS`
 subsystem STC). Phase 1 is same-address-space (an ATTACHed subtask; `nsfreq_submit`
 = `xq_push` + `nsfthr_post`, a real SVC 2 POST on one TCB). Phase 2 puts apps in

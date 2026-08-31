@@ -1,6 +1,6 @@
 # ADR-0043 — The Phase-2 cross-address-space wake: one private ECB, consumed by the drain, with no floor under it
 
-**Status:** Proposed (2026-08-27). Settles **how the NSFS executive learns that a client
+**Status:** Accepted (2026-08-27). Settles **how the NSFS executive learns that a client
 published a request, and what it is entitled to assume between wakes.** The mechanism has
 existed since M5-2a and the reset half since 64-1 (PR #72, merged); what did not exist is the
 record. This ADR writes the contract down, at the strength four measurement rounds support and

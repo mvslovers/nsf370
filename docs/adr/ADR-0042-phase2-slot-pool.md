@@ -1,6 +1,6 @@
 # ADR-0042 — Phase-2 request slots: a 64-slot CSA pool claimed by per-slot compare-and-swap
 
-**Status:** Proposed (2026-08-25). Settles **how a second client gets a request slot**. Through
+**Status:** Accepted (2026-08-25). Settles **how a second client gets a request slot**. Through
 M5-2a the CSA anchor held exactly ONE request area, and the SVC routine rejected any caller
 that found it busy (`RCNOREQ`). That was correct for a single sequential probe client and is
 useless for an application stack: `MAXSOC` is 64, and a stack whose transport serialises every

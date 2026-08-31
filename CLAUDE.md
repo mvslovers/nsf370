@@ -457,8 +457,26 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
 └── docs/
     ├── Project-Brief-v2.md
     ├── Architecture-Specification.md
-    └── adr/          ADR-0001 …
+    ├── adr/          ADR-0001 …
+    ├── measurements/ per-round evidence AND the instruments that took it
+    └── procedure-*.md  operator-driven gate procedures (not tests)
 ```
+
+**`docs/measurements/` holds both evidence and instruments, and that is deliberate.** Logs
+are **evidence**: what a round measured, kept so a later claim can be checked against what
+was actually seen rather than re-derived. Scripts are **instruments that outlive their
+round** — `40-ident/arm1.py`'s `/.dm` reader with its proved control-block offsets,
+`m5-2c2/rowwatch.py`, the various drivers — and every one of them has been reused by a later
+round than the one that wrote it. Both live under `docs/measurements/<round>/`. Do not move
+the scripts to `tools/`: `tools/` is for things the build or CI runs, these are things a
+person runs while investigating, and their value is inseparable from the round's write-up
+that says what they were pointed at and what the reading meant.
+
+**A procedure is not a measurement and not a test.** `docs/procedure-*.md` is for something
+an operator executes at a gate — steps, expected output at each, what a broken result looks
+like, and the honest limit that keeps it out of `make test-mvs`. Name the coverage kind
+wherever it is referenced: **a coverage kind that is not named is read as a test a year
+later.**
 
 ---
 
