@@ -194,7 +194,8 @@ NSF_SIZE_ASSERT(NSFRQE, 64);
  *   nsfreq_app_max NSFRQAPM       nsfreq_set_classifier NSFRQSCL
  *   nsfreq_app_classify NSFRQACL   nsfreq_app_sweep NSFRQAPS
  *   nsfreq_set_sweep_notify NSFRQSSN   nsfreq_sweep_stats NSFRQSWS
- *   nsfreq_set_sweep_summary NSFRQSSU
+ *   nsfreq_set_sweep_summary NSFRQSSU  nsfreq_sock_owned NSFRQSOW
+ *   nsfreq_caller_id NSFRQCID
  * ========================================================================== */
 
 /* Reset the request transport (empty the queue, clear requestECB) and the app
@@ -298,6 +299,50 @@ int      nsfreq_app_info(UINT idx, UINT *token, UINT *ascb,
 
 /* How many app-registry slots exist (the bound for nsfreq_app_info). */
 UINT     nsfreq_app_max(void) asm("NSFRQAPM");
+
+/* ---- descriptor ownership (M5-2d1) -----------------------------------------
+ * THE ONE CHECK.  Resolve `desc` and return its SOCKCB only if it belongs to
+ * the app `apptok` names; NULL otherwise.  Two callers, and only two:
+ * req_socket (the per-verb dispatch path) and sel_scan (SELECT, which resolves
+ * one descriptor per mask item).  tools/check-sock-lookup.sh enumerates
+ * sock_lookup's callers and fails the build on an unclassified one, because
+ * forgetting is exactly how the hole this closes came to exist.
+ *
+ * IT RESOLVES AND CHECKS TOGETHER so a caller cannot hold a SOCKCB the check
+ * did not clear, and a foreign descriptor returns NULL through the same return
+ * as an unknown one -- indistinguishable by construction, so no verb becomes an
+ * existence oracle. No new errno: callers map NULL exactly as they always did.
+ *
+ * THE INPUT IS THE CAPTURED CALLER IDENTITY, NOT r->apptok, AND THAT IS NOT A
+ * STYLE CHOICE -- r->apptok IS NOT POPULATED ON MOST REQUESTS.  The EZASOKET
+ * facade sets it on exactly three verbs (INITAPI reads it back, SOCKET and
+ * TERMAPI set it); every other verb leaves it zero, because nothing downstream
+ * ever needed it.  A check comparing s->apptok against r->apptok therefore
+ * refuses BIND, CONNECT, SEND, RECV and the rest for every honest client --
+ * measured, as a deadlock in the threaded round-trip test.  And it would not
+ * have been a check even where the field IS set, since the client supplies it.
+ *
+ * The direction that works uses nothing the client can write: the SOCKET names
+ * its owning app slot, that slot records the address space that opened it, and
+ * THAT is compared with the (ascb, asid) the SVC routine captured from the FLIH.
+ *
+ * SCOPE, STATED PLAINLY: ownership is PER ADDRESS SPACE, not per app instance.
+ * Two INITAPIs from one address space may use each other's sockets.  That is
+ * the boundary worth defending -- one address space is one protection key and
+ * one storage image, so a program can already reach its own other instance's
+ * memory; nothing is bought by separating them, and the reverse lookup that
+ * would separate them is ambiguous (identity -> token is one-to-many).
+ *
+ * `struct sockcb` is forward-declared: nsfsoc.h includes THIS header, so the
+ * dependency cannot run the other way.  Both callers include nsfsoc.h and see
+ * the complete type. */
+struct sockcb;
+struct sockcb *nsfreq_sock_owned(UINT desc, UINT ascb, UINT asid) asm("NSFRQSOW");
+
+/* The identity of the request being dispatched right now, or (0, 0) outside a
+ * dispatch and in Phase 1.  Exists so NSFSEL can CAPTURE it while a SELECT is
+ * being dispatched and re-scan under it later, when no dispatch is open. */
+void     nsfreq_caller_id(UINT *ascb, UINT *asid) asm("NSFRQCID");
 
 /* Register the client-liveness classifier (M5-2c1).  `fn` takes the caller
  * identity recorded at RQ_INITAPI and returns one of NSFREQX_CL_LIVE / _DEAD /

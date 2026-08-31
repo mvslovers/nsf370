@@ -25,6 +25,22 @@ jobs:
       - name: No card reaches column 72
         run: tools/check-card-columns.sh
 
+  # Every sock_lookup call site must declare itself CHECKED or INTERNAL.
+  # sock_lookup turns a client-supplied descriptor into a SOCKCB and validates
+  # nothing about who is asking, so M5-2d1 put the ownership check in
+  # nsfreq_sock_owned.  The hole existed because NOBODY SAW sel_scan: one call
+  # site was obvious and got the attention, the other resolved N descriptors
+  # per SELECT mask and was invisible.  This job makes a new, unclassified
+  # caller break the build rather than silently open the door again.
+  # Needs no toolchain, so it answers in seconds.
+  sock-lookup-callers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Every sock_lookup call site is classified
+        run: tools/check-sock-lookup.sh
+
   # Native gcc host suite (`make test-host`) -- the portable C tests run with
   # the host compiler, no cc370 and no MVS.  The delegated `build` job above
   # only cross-compiles them, so host-only breakage (a non-portable asm()

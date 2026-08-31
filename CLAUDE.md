@@ -2620,6 +2620,81 @@ the gate calling `NSF_DEBUG`-only helpers from outside the guard, 4 unresolved e
 diff) — the output adapts to the counters, not the other way round. Captures in
 `docs/measurements/m5-92/`. **Nothing closed by the merge: #67 and #88 open, #92 Mike's to
 close, obligation #4 still identity-half only.**
+**M5-2d0 (what (d) still contains) — DONE, docs-only, read-only.** A survey, no code. Four
+answers, each against a stated criterion: **(1)** the §17.3 `ubuf`/`ulen` obligation SPLITS —
+the **cross-AS security half is CLOSED** (every store derived from `ubuf` is one of exactly
+three `MOVEOUT` sites, all inside the borrowed-key `SPKA` window; length clamped to 2048 both
+ways and every loop guard signed, so a negative `ulen` is a no-op), while the **caller-side
+robustness half stays open and is RECLASSIFIED** (nothing validates `ubuf`/`ulen` against the
+caller's real buffer extent, so an over-declared `ulen` overruns the caller's OWN storage —
+not a §17.3 item). **Exhaustiveness needed TWO searches and neither alone suffices**: an
+`R8`-base search structurally cannot find a store through a register loaded FROM the caller's
+block, which is exactly how `ubuf` is written; the second search (any store through R4/R5)
+returns exactly ONE instruction, `MOVEOUT`'s own `EX` target, with `MVCPIEC` as the positive
+control after the first pattern silently returned empty. **(2)** obligation #5 (guard
+arithmetic extracted + host-tested) **CLOSED with evidence** — four extracted functions, both
+STCs calling them with no hand-written copy, all four classifier rows + the reap predicate +
+the two-helper consistency pinned in `test/tstreqx.c`; recorded that c2 stage c removed a live
+**driver**, not host coverage. **(3)** #67 is **unreachable during (e)** — `TSTRQXC` stages
+only `QUERY`/`SLOT`/`RQE` at both revisions, never `ECHO`/`XFER`, and `QUERY`/`UNSTAGE`/`SLOT`
+dispatch BEFORE the claim loop and return `BR R14`, so they claim no slot and cannot move
+`COLLISIONS`/`EXHAUSTED`; decision 3's stated reason did not apply. **(4)** d2 is **small in
+code** (the reap is pure C via `__cas` — no asm, no layout move, no re-run-every-gate; b3's
+fourth-state problem is about a CLAIMED slot and does not apply) **but carries one decision
+nobody has taken**: force-reap flips `drained`, which takes `nsfsx_stop`'s `else` branch and
+**unloads the router** under a possibly-parked client — the 2026-08-22 ruling was about the
+*slot*, not the *module*. §5 gathered for d1: **THREE** descriptor resolution points, not one
+(`req_socket`, **`sel_scan`** — which a `req_socket`-only check would miss entirely — and
+`soc_complete`'s internal one). `docs/measurements/m5-2d0/`.
+**M5-2d1 (the ownership check) — DONE, host-verified + offline gates; NOT live-verified.**
+**ADR-0046.** Closes the sharpest thing in the tree: another client's socket was not merely
+forgeable but **guessable in tens of attempts** from an unauthorised address space (one socket
+table, `sock_alloc` returns the lowest free index regardless of who asks, descriptor
+`(gen<<16)|idx` with `idx` in 0..63). **ONE check function, `nsfreq_sock_owned`, which
+RESOLVES AND CHECKS** — a function handing back a SOCKCB for the caller to validate is how the
+hole came to exist — with exactly **two** callers (`req_socket`; and `sel_scan`, the wider
+door, one descriptor per SELECT mask item). **THE PRESCRIBED COMPARISON WAS WRONG AND A TEST
+FOUND IT:** comparing `s->apptok` against `r->apptok` **deadlocked** `test_roundtrip` (0.0 %
+CPU, `sample(1)` showing `wait_parked → pthread_cond_wait`) because **`r->apptok` is not
+populated on most requests** — `src/nsfeza.c` sets it on exactly 3 verbs of ~20 (INITAPI reads
+it back, SOCKET, TERMAPI) and leaves it zero elsewhere, so the check refused BIND/CONNECT/
+SEND/RECV **for every honest client**; it would not have been a check even where the field IS
+set, since the client supplies it. **The input is therefore the FLIH-captured identity and
+`r->apptok` is not consulted at all** (pinned: a client drives its own socket while presenting
+JUNK in `apptok` and succeeds). **Scope is PER ADDRESS SPACE, not per app instance** — one AS
+is one protection key and one storage image, and `identity → token` is one-to-many so the
+reverse lookup has no unique answer; pinned by an assertion that ALLOWS it, so flipping it is
+one named line. **Foreign ≡ unknown BY CONSTRUCTION** (same `return NULL`, all nine
+`req_socket` callers map it to `NSF_EBADF`; SELECT's foreign entry takes the existing
+`s == NULL` branch — silently not-ready, **rest of the mask served**, no error), so no verb
+becomes an existence oracle and **no new errno anywhere**. **The token is still authenticated
+at the boundary** — not for ownership but to protect `do_socket`'s `s->apptok = r->apptok`
+stamp, `RQ_INITAPI` exempt explicitly and not by ordering. **An ENUMERATION GUARD**
+(`tools/check-sock-lookup.sh`, CI job `sock-lookup-callers`) fails the build on an
+unclassified `sock_lookup` caller, because the rule is not "add a check" but "**a new
+resolution point must be classified by a person**" — it carries its own positive control
+(finding zero call sites exits 2), and its scope is production code only, with tests carrying
+**no marker at all** so none can be mistaken for coverage. **The one piece of hidden state
+FAILS CLOSED**: `g_cur_ascb`/`g_cur_asid` are set at dispatch entry and deliberately NOT
+cleared — a stale read denies (visible) where a cleared read would skip the check (silent);
+SELECT does not read it at re-scan time at all (`nsfsel_on_notify` runs with no dispatch open)
+and captures into its `SELCB` at park time. `sock_lookup` keeps its signature, `nsfsoc.c` and
+below learn nothing, **NSFRQE still frozen at 64 B**, anchor unmoved, `ANCVERNO` 3. The **parked re-scan is covered too, and it needed its own test**: everything else uses
+SELECT's poll form, which never parks, so `nsfsel_on_notify` — a different path reading the
+identity from a different source — would have been exercised by nothing; the SELCB captures it
+in **`sel_alloc`**, so `busy` implies an identity and there is no window defaulting fail-open.
+Host **3414 → 3469 PASS / 0 FAIL**; **revert test in three states with exactly the ownership
+assertions moving** (0 FAIL → **12 FAIL** → 0 FAIL), and the middle state renders the hole
+POSITIVELY (`B on A's descriptor -> refused (got 0, want 9)` — `got 0` is success;
+`SELECT counted exactly ONE ready socket (got 2, want 1)`; and on the parked path
+`A's readiness does NOT complete B's parked SELECT (got 1)`); guard **verified to discriminate**
+(unclassified caller added to `src/nsfudp.c` → rc=1 naming file+line, removed → rc=0); alias
+scan 246 unique ≤ 8 (`NSFRQSOW`, `NSFRQCID`); cross-build clean (6 modules + 53 test modules).
+**NOT LIVE-VERIFIED, and §5.1 is met as NO-REGRESSION only:** in Phase 1 the identity is zero
+so the check is **inert**, so the hand-stamped child in TSTREQ models the *stamp* and TSTTCP's
+real accept (841 green) runs with the check inert — neither exercises it. The case that tests
+an inherited child *under* the check is a **cross-AS accept**, which is live only. Spec §17.3 now carries the status of all three surfaces it named.
+`docs/measurements/m5-2d1/`.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
