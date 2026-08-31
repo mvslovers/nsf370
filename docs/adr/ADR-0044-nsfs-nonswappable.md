@@ -1,6 +1,6 @@
 # ADR-0044 — NSFS makes itself non-swappable: `SYSEVENT DONTSWAP` at init, `OKSWAP` at shutdown
 
-**Status:** Proposed (2026-08-27). Settles **whether and how the Phase-2 STC keeps MVS from
+**Status:** Accepted (2026-08-27). Settles **whether and how the Phase-2 STC keeps MVS from
 swapping it out**, after 64-0f measured a swap cycle that left the address space
 non-dispatchable for about twelve minutes.
 

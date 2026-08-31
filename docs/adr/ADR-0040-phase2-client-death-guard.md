@@ -1,6 +1,6 @@
 # ADR-0040 — Phase-2 client-death guard: an ASVT liveness check before the reply POST
 
-**Status:** Proposed (2026-08-21). Settles what happens to the stack's per-request state —
+**Status:** Accepted (2026-08-21). Settles what happens to the stack's per-request state —
 the in-flight count, the request slot and the CSA staging buffer — when the **client
 address space dies while a request is in flight**, and what stops the STC from posting a
 reply into an address space that is gone or has been recycled. Stage-0a′ proved the

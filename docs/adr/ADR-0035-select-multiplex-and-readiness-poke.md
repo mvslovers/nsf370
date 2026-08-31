@@ -1,6 +1,6 @@
 # ADR-0035 — SELECT: one request over N sockets, readiness by poke (M4-5)
 
-**Status:** Proposed (2026-07-19). Pins how NSF implements the EZASOKET **SELECT**
+**Status:** Accepted (2026-07-19). Pins how NSF implements the EZASOKET **SELECT**
 verb and the socket **readiness** model it rests on, for the M4-5 EZASOKET M4 set.
 SELECT is the one M4-5 verb with no precedent in the codebase: every other verb is
 one request bound to one socket (`pend_recv`/`pend_accept`/`pend_connect`/

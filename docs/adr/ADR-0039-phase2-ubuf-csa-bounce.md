@@ -1,6 +1,6 @@
 # ADR-0039 — Phase-2 `ubuf` cross-AS transfer: a keyed CSA bounce
 
-**Status:** Proposed (2026-07-22). Fixes how an application's data buffer (`ubuf`) moves
+**Status:** Accepted (2026-07-22). Fixes how an application's data buffer (`ubuf`) moves
 across the address-space boundary in Phase 2, on top of the private-SVC transport
 (ADR-0038). Stage-0a′ proved the transport on an empty token; Stage-0b (this ADR) adds a
 **data buffer** to the round trip and proves a byte pattern moves **app→stack→app
