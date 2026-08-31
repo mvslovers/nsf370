@@ -150,16 +150,30 @@
 /* PROBE-ONLY function codes (Stage-0c, ADR-0040 8).  They exist so a batch job
  * can reproduce client death deterministically, with no operator timing, and
  * they are NOT part of the transport M5-2 inherits:
- *   ORPHAN  stage the identity the CLIENT supplies (pascb/pasid) instead of the
- *           FLIH's, POST the STC, and return WITHOUT waiting -- so the in-flight
- *           decrement is skipped by construction, which is what a dead client
- *           leaves behind, while the caller survives to observe the outcome.
+ *   ORPHAN  RETIRED in M5-2c2 stage b.  It staged the identity the CLIENT
+ *           supplied (pascb/pasid) instead of the FLIH's -- a request-supplied
+ *           identity trusted verbatim from an unauthorised caller, which is
+ *           precisely what the guard must never do for a real client.  That is
+ *           the identity half of obligation #4, and retiring the verb discharges
+ *           it in substance; the rest of the probe scaffolding (ECHO / XFER /
+ *           UNSTAGE / SLOT) is c3, so #4 is NOT met overall.
+ *           The code is kept and REJECTED BY NAME ahead of the slot claim
+ *           (asm/nsfvsvc.asm, the pre-claim chain -> BADFUNC), so it costs no
+ *           slot and no in-flight count and can never be silently reused.
  *   QUERY   read req_state / inflight / reaped / served back into the request
  *           block.  Changes nothing, works while the slot is busy: an
  *           unauthorized client cannot read the anchor in CSA itself.
  *   UNSTAGE release a slot the STC deliberately did not release (the HELD case,
  *           and a LIVE orphan), so the probe leaves no in-flight count behind
  *           and the STC still stops clean. */
+/* RETIRED (M5-2c2 stage b) -- the routine answers NSFV_RC_INVALID.  The name is
+ * KEPT rather than deleted or renamed, and the reason is a rule, not a
+ * convenience: A MECHANICAL CHANGE MUST NOT SETTLE AN OPEN DESIGN QUESTION AS A
+ * SIDE EFFECT.  Deleting or renaming this constant breaks tstdeath.c's compile,
+ * which would force the TSTDEATH restructuring decision -- the one M5-2c2 stage
+ * b deliberately prices and leaves open for the maintainer.  So the constant is
+ * cleaned up TOGETHER WITH that decision, not before it.  Kept, it also stays a
+ * live probe of the rejection path.  See the ORPHAN paragraph above. */
 #define NSFV_REQ_ORPHAN   3U
 #define NSFV_REQ_QUERY    4U
 #define NSFV_REQ_UNSTAGE  5U
@@ -218,8 +232,9 @@
  * runs in that AS and MVCKs the ubuf<->staging; ADR-0039).  The routine reads
  * eye+func+token+ubuf+ulen IN and writes token+seq+rc OUT.
  *
- * Stage-0c appends the probe-only words (ADR-0040 8): pascb/pasid are the
- * identity ORPHAN stages verbatim, and qstate/qinfl/qreap are what QUERY reports
+ * Stage-0c appends the probe-only words (ADR-0040 8): rsvd_pascb/rsvd_pasid
+ * are RESERVED since M5-2c2 stage b (they were the identity the retired ORPHAN
+ * staged verbatim), and qstate/qinfl/qreap are what QUERY reports
  * back.  They ride the SAME block rather than a second one so the client keeps
  * one shape and one issuer.  48 bytes.
  * ============================================================ */
@@ -231,8 +246,20 @@ typedef struct nsfv_req {
     UINT      seq;          /* +10 out: server's served-counter snapshot     */
     void     *ubuf;         /* +14 XFER: caller-AS buffer address            */
     UINT      ulen;         /* +18 XFER: caller buffer length (bytes to move) */
-    void     *pascb;        /* +1C ORPHAN in: client ASCB to stage (verbatim) */
-    UINT      pasid;        /* +20 ORPHAN in: client ASID to stage (verbatim) */
+    /* RESERVED since M5-2c2 stage b.  These were ORPHAN's request-supplied
+    ** identity; the verb is retired and nothing reads them any more.  They are
+    ** KEPT, not removed, and that is a deliberate no-layout-change decision:
+    ** they sit MID-STRUCT with seven fields after them, two of which carry real
+    ** requests (rqeimg, and slot -- written for EVERY request), and NOTHING
+    ** VERSION-CHECKS THIS BLOCK.  The router validates a layout-INVARIANT
+    ** eyecatcher; NSFV_ANCHOR_VER guards the anchor (router<->STC), not this
+    ** client<->router contract.  Client modules link separately from
+    ** NSF.LINKLIB and the runbook replaces only the latter, so a router-only
+    ** deploy would give a new client an old router reading these offsets
+    ** silently.  They can go when this block gains a version check, or in a
+    ** round that relinks every client with the router. */
+    void     *rsvd_pascb;   /* +1C reserved (was ORPHAN pascb)                */
+    UINT      rsvd_pasid;   /* +20 reserved (was ORPHAN pasid)                */
     UINT      qstate;       /* +24 QUERY out: anchor req_state                */
     UINT      qinfl;        /* +28 QUERY out: anchor inflight                 */
     UINT      qreap;        /* +2C QUERY out: anchor reaped (dead requests)   */
@@ -264,8 +291,8 @@ NSFV_OFF_ASSERT(NSFV_REQ, rc,    12);
 NSFV_OFF_ASSERT(NSFV_REQ, seq,   16);
 NSFV_OFF_ASSERT(NSFV_REQ, ubuf,  20);
 NSFV_OFF_ASSERT(NSFV_REQ, ulen,  24);
-NSFV_OFF_ASSERT(NSFV_REQ, pascb, 28);
-NSFV_OFF_ASSERT(NSFV_REQ, pasid, 32);
+NSFV_OFF_ASSERT(NSFV_REQ, rsvd_pascb, 28);
+NSFV_OFF_ASSERT(NSFV_REQ, rsvd_pasid, 32);
 NSFV_OFF_ASSERT(NSFV_REQ, qstate, 36);
 NSFV_OFF_ASSERT(NSFV_REQ, qinfl, 40);
 NSFV_OFF_ASSERT(NSFV_REQ, qreap, 44);
