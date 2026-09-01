@@ -785,3 +785,66 @@ proposed again: running the protocol completion under key 0 (arbitrary protocol 
 0 puts the whole system within reach of any protocol bug), and making the staging area key 8
 (it would work for the executive and open it to every unauthorised client — trading a fault
 for a security hole).
+
+---
+
+## Update (2026-09-01, M5-2d1b) — category 3 CLOSES, and not with a key window
+
+The table above homed the **20 unwindowed key-0 stores into the caller's
+`NSFV_REQ` block** in (d), with the shape named as *"one validation of R8, not
+twenty `SPKA` windows"*. That is what was built, and the instrument is one this
+tree had not used.
+
+**`TPROT` (E501, SSE) asks the machine, under the CALLER's key, whether the
+caller may store at an address — by condition code, without faulting.** It is
+available on this target: `GENx370x390x900` in Hercules `opcode.c:5123`, against
+`MVCDK`'s `GENx___x390x900` at `:5165` — the instruction **M5-2b0 measured
+taking `S0C1`**. Same table, same format, 42 lines apart; that contrast is the
+evidence, not the mnemonic's presence in the file.
+
+**It needs no borrowed key.** `TPROT` *names* the key as an operand rather than
+entering it, so **`MOVEOUT` remains the only block in the module running under a
+borrowed key** — the property this ADR's §2.2 rests on, preserved structurally.
+It is also why the refusal can be an `rc`: a borrowed-key probe could only say
+"no" by faulting, through the very block it had just refused.
+
+The access key comes from operand 2 bits 24-27 — **the same nibble `SPKA` takes**
+— so b1's proven derivation (`PSATOLD → A(caller TCB) → IC TCBPKF`, high nibble)
+is reused unchanged, as the same register value. No new chase, no new privileged
+step, and the client stays unauthorised.
+
+**Two probes, one validation.** Every one of the 20 stores lies in
+`[R8, R8+63]` (`REQEYE 0` … `REQSNEW 60`, 4 wide), and 64 bytes straddles at
+most one page boundary, so the block occupies at most the two pages probed. That
+step — span to page count — is pinned by `nsfv_r8_probe_covers_block`
+(`include/nsfvsvc.h`), named for what it protects, because if `NSFV_REQ` ever
+grows past a page the probes stop covering the stores and **nothing about the
+check would look wrong**.
+
+**Placement is load-bearing:** the probe sits after the eyecatcher and **before
+the anchor validation**, because `BADANC` is itself one of the 20 stores.
+`BADREQ` is the disposition (rc in R15 only) — a block we cannot write cannot
+carry an rc. The eyecatcher **stays**: it answers *is this plausibly one of our
+blocks*, `TPROT` answers *may the caller write it*, and neither implies the
+other.
+
+**The obligation table now reads:**
+
+| # | destination | status |
+|---|---|---|
+| 1 | `ubuf` in the SVC routine (`RQEOUT`, `XFEROUT`) | closed (b1, M5-2c0) |
+| 2 | `rqeimg` (`RQEOUT`'s second move) | closed (b1) |
+| 3 | the caller's `NSFV_REQ` block — 20 stores | **closed (M5-2d1b), offline; live gate is the combined d1 round** |
+| 4 | `r->ubuf` written by a protocol op from key 8 | closed (80-FIX) |
+
+**What it does not establish**, so the closure is not read as broader than it
+is: it is point-in-time rather than a lock; it establishes writability under the
+caller's key, **not ownership** (another task's storage in the same address
+space at the same key is accepted — d1 §2.3's boundary); it says nothing about
+what the storage *is*; and CC 3 ("could not determine") is unreachable only
+because both pages are referenced immediately before the probes.
+
+Nothing in this ADR's own subject moved: anchor layout unchanged,
+`NSFV_ANCHOR_VER` stays 3, **NSFRQE stays frozen at 64 bytes**, and the
+C / EZASOKET / EZASMI surfaces are untouched.
+

@@ -208,6 +208,7 @@ REQRQEI  EQU   48                 A    RQE: A(caller NSFRQE image)
 REQSLOT  EQU   52                 F    in: probe idx; out: claimed
 REQSEXP  EQU   56                 F    SLOT probe: expected state
 REQSNEW  EQU   60                 F    SLOT probe: state to set
+REQLAST  EQU   63                 last byte of the block (R8 probe)
 *  state + rc constants (mirror nsfvsvc.h)
 STFREE   EQU   0
 STPEND   EQU   1
@@ -344,7 +345,61 @@ NSFVGO   DS    0H
          CLC   REQEYE(4,R8),=CL4'NSFV'   our caller?
          BNE   BADREQ             no  -> INVALID (rc in R15 only)
 *----------------------------------------------------------------------
+*  R8 VALIDATION (M5-2d1b).  MAY THE CALLER STORE INTO ITS OWN BLOCK?
+*
+*  20 stores below write REQ*(,R8) in KEY 0, and the eyecatcher above
+*  validates a POINTER, not a KEY.  A client that stamps "NSFV" into
+*  CSA therefore gets 20 key-0 words written into storage shared with
+*  every address space in the system.
+*
+*  TPROT NAMES the key as an operand instead of ENTERING it, so MOVEOUT
+*  stays the only block in this module running under a borrowed key --
+*  structurally, not by care.  It also never program-checks on a bad
+*  operand 1 (a translation failure is CC 3), which is what makes it
+*  usable on a hostile pointer, and it lets us answer with an rc rather
+*  than a fault through the very block we just refused.
+*
+*  CC 0 storable / 1 store-prot / 2 fetch-prot / 3 untranslatable.
+*  Only CC 0 passes.  CC 3 is "could not determine", not "bad address",
+*  and it is rejected fail-closed -- but it is also unreachable here:
+*  the CLC above referenced page 1 and the CLI below references the
+*  tail, so both pages are resident by the time we probe.
+*
+*  THE CLI IS NOT A NEW FAILURE MODE.  A genuinely unmapped tail faults
+*  on it -- which is exactly what the 20 stores do TODAY, only later.
+*  It is there because the tail is NOT always written by the client:
+*  FNECHO touches only REQEYE/REQFUNC, so a straddling block can have a
+*  never-referenced tail page, and rejecting that would be an
+*  intermittent false refusal of an honest caller.
+*
+*  TWO PROBES COVER ALL 20 STORES.  Every store lies in [R8,R8+63]
+*  (REQEYE 0 .. REQSNEW 60, 4 wide) and 64 bytes straddles at most one
+*  page boundary, so the block occupies at most the two pages probed.
+*  That argument depends on nsfv_r8_probe_covers_block in nsfvsvc.h.
+*
+*  Raw bytes: as370 has no SSE format at all (verified -- it rejects
+*  TPROT while assembling SPKA in the same file), so the encoding is
+*  derived from the Hercules SSE_DECODER, not from memory:
+*    E5 01 | B1 D1D1 | B2 D2D2
+*    E501 8000 9000 = TPROT 0(R8),0(R9)
+*    E501 803F 9000 = TPROT 63(R8),0(R9)
+*  akey comes from operand 2 bits 24-27, the SAME nibble SPKA takes,
+*  so the caller-key derivation b1 proved is reused unchanged.
+*----------------------------------------------------------------------
+         SLR   R9,R9
+         L     R9,PSATOLD(,R9)    R9 = A(caller TCB)
+         SLR   R3,R3
+         IC    R3,TCBPKF(,R9)     caller's key, high nibble
+         LR    R9,R3              R9 = TPROT key operand
+         CLI   REQLAST(R8),X'00'  reference the tail: page it in
+         DC    X'E5018000',X'9000'   TPROT 0(R8),0(R9)
+         BC    7,BADREQ           CC 1/2/3 -> not the caller's to write
+         DC    X'E501803F',X'9000'   TPROT 63(R8),0(R9)
+         BC    7,BADREQ           tail not storable -> INVALID
+*----------------------------------------------------------------------
 *  Locate + validate the CSA anchor (published in NSFVANCH by the STC).
+*  AFTER the R8 probe, deliberately: BADANC writes REQRC(,R8), so an
+*  unvalidated R8 must not be able to reach it.
 *----------------------------------------------------------------------
          L     R2,NSFVANCH        R2 = A(anchor)
          LTR   R2,R2

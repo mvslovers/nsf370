@@ -2077,11 +2077,17 @@ closed the third):
 | **lengths** (`ulen`) | **Closed as a cross-address-space item, open as caller-side robustness — and reclassified accordingly.** The move is clamped to 2048 in both directions and every loop guard is signed, so no unbounded or negative move exists. Nothing validates `ubuf`/`ulen` against the caller's *actual* buffer extent, so an over-declared `ulen` overruns the caller's own storage — inside its own address space, which is not a §17.3 concern. |
 | **socket ownership by ASID** | **Closed — ADR-0046 (M5-2d1).** A descriptor was not merely forgeable but *guessable in tens of attempts* from an unauthorised address space. Resolution now runs through one function, `nsfreq_sock_owned`, which resolves **and** checks; the input is the FLIH-captured caller identity, never the client-supplied `r->apptok`. Ownership scope is **per address space**, not per app instance. A foreign descriptor is indistinguishable from an unknown one, so no verb becomes an existence oracle, and no errno changes. |
 
-Two residues remain, both named rather than folded in: the **20 unwindowed
-key-0 stores into the caller's `NSFV_REQ` block** (ADR-0041 category 3, gated
-only by the `"NSFV"` eyecatcher, which validates a pointer and not a key), and
-the **probe verbs** an unauthorised caller can still dispatch (retired in
-M5-2c3).
+The **20 unwindowed key-0 stores into the caller's `NSFV_REQ` block**
+(ADR-0041 category 3) are **closed by M5-2d1b**: `TPROT` asks the machine, under
+the caller's own key, whether the caller may store there — by condition code,
+without faulting and without a borrowed key, so `MOVEOUT` remains the only block
+running under one. Two probes cover all 20 stores because every store lies in
+`[R8, R8+63]` and 64 bytes spans at most two pages. The `"NSFV"` eyecatcher
+stays: it answers a different question. Offline-verified; the live gate is the
+combined d1 round.
+
+One residue remains, named rather than folded in: the **probe verbs** an
+unauthorised caller can still dispatch (retired in M5-2c3).
 
 ---
 
