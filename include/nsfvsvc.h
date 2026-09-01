@@ -306,6 +306,26 @@ NSFV_OFF_ASSERT(NSFV_REQ, slot,   52);
 NSFV_OFF_ASSERT(NSFV_REQ, sexpect, 56);
 NSFV_OFF_ASSERT(NSFV_REQ, snew,   60);
 
+/* THE R8 PROBE'S COVERAGE ARGUMENT, AS AN ASSERT (M5-2d1b).
+ *
+ * asm/nsfvsvc.asm validates the caller's request block with exactly TWO TPROT
+ * probes -- byte 0 and byte 63 -- and that covers all 20 key-0 stores into the
+ * block ONLY because a 64-byte object straddles at most one page boundary and
+ * so occupies at most the two pages probed.
+ *
+ * Grow NSFV_REQ past a page and the probes silently stop covering the stores,
+ * with NOTHING about the check looking wrong -- the assembler is happy, the
+ * link is clean, and the hole is back. So the dependency is a compile-time
+ * assert rather than a comment, and it is named for what it PROTECTS rather
+ * than for what it measures, so a failure says why it exists.
+ *
+ * (The 64-byte size itself is pinned by NSF_SIZE_ASSERT below, and snew@60
+ * above fixes the last field; together they prove every store is inside the
+ * probed span. This assert covers the remaining step -- span to page count.) */
+#ifdef __MVS__
+typedef char nsfv_r8_probe_covers_block[(sizeof(NSFV_REQ) <= 4096) ? 1 : -1];
+#endif
+
 /* ============================================================
  * NSFV_SLOT -- ONE request slot.  64 of them make the pool (M5-2b3, ADR-0042).
  *

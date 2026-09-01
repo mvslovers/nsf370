@@ -2695,6 +2695,60 @@ so the check is **inert**, so the hand-stamped child in TSTREQ models the *stamp
 real accept (841 green) runs with the check inert — neither exercises it. The case that tests
 an inherited child *under* the check is a **cross-AS accept**, which is live only. Spec §17.3 now carries the status of all three surfaces it named.
 `docs/measurements/m5-2d1/`.
+**M5-2d1b (the R8 validation) — DONE, offline gates green; NOT live-verified.** d1's second
+half, cut from `m5-2d1-ownership` because #97 had not merged. The router's **20** result
+stores run in **key 0** through a client-supplied pointer, gated only by the `"NSFV"`
+eyecatcher — which validates a **pointer, not a key**, so a client stamping `"NSFV"` into
+**CSA** got 20 key-0 words into storage shared with every address space. **THE INSTRUMENT IS
+`TPROT`** (E501, SSE): it asks the machine, under the **caller's own key**, whether the caller
+may store at an address — **by condition code, without faulting**, which is what makes it
+usable on a hostile pointer and what lets the refusal be an `rc` instead of a fault through
+the very block just refused. **Available on this target, proved with the discriminating
+control:** `GENx370x390x900` at Hercules `opcode.c:5123` against **`MVCDK`'s
+`GENx___x390x900`** at `:5165` — the instruction **M5-2b0 measured taking `S0C1`** — same
+table, same format, 42 lines apart. Encoding derived from `SSE_DECODER` (`instfmts.h:1777`),
+not recalled; `as370` rejects the mnemonic (verified with `SPKA` assembling in the same file),
+so raw bytes, the `MVCK` precedent. **It needs NO borrowed key** — `TPROT` *names* the key as
+an operand rather than entering it, so **`MOVEOUT` stays the only block running under one,
+structurally**; and the access key is operand 2 bits 24-27, **the same nibble `SPKA` takes**,
+so b1's proven `PSATOLD → TCB → IC TCBPKF` derivation is reused unchanged as the same register
+value. **THREE ALTERNATIVES REJECTED WITH REASONS:** a private-area range check
+(`GDA PASTRT/PASIZE`) **misses LSQA**, which is key 0 *inside* the private window — and a
+store landing on `TCBPKF` with `rc = 0` sets the task's key to **0**; a borrowed-key `SPKA`
+probe needs a second borrowed-key block; `LRA`+`ISK` is the documented-unreliable moving-frame
+technique. **TWO PROBES, ONE VALIDATION**, and now provable rather than asserted: every store
+lies in `[R8, R8+63]` (`REQEYE 0`..`REQSNEW 60`, 4 wide) and 64 bytes straddles at most one
+page boundary. That span→page step is pinned by **`nsfv_r8_probe_covers_block`**, named for
+what it PROTECTS and **verified to fire** — because if `NSFV_REQ` grows past a page the probes
+stop covering the stores and **nothing about the check looks wrong**. **No C predicate was
+written for the CC rule, deliberately:** a `nsfreqx_r8_ok(cc,cc)` nothing calls would
+reproduce b3's *pinned seven times and called nowhere* **and** be a second encoding of a rule
+the assembler implements. **THE CC 3 DECISION WAS RE-DERIVED AND THE FIRST ANSWER WAS RIGHT
+FOR THE WRONG REASON:** the draft said "the client filled the whole block so both pages are
+resident" — **false**, `FNECHO` touches only offsets 0-7 and nothing obliges a client to touch
+56-63, so a straddling block with a never-referenced tail is a real shape and rejecting CC 3
+would have been an **intermittent false refusal of an honest caller**. Re-made on the **fault
+comparison**: a `CLI` on the tail faults only where the 20 stores fault **today, only later** —
+not a new failure mode, an existing one moved earlier — and with both pages referenced first
+**CC 3 becomes unreachable**, so rejecting it is a fail-closed default rather than a live path.
+**Placement is load-bearing:** after the eyecatcher, **before the anchor validation**, because
+`BADANC` is itself one of the 20 stores; `BADREQ` is the disposition (**confirmed from source**:
+`LA R15,RCINVAL; BR R14`, rc in R15 only — a block we cannot write cannot carry an rc). **The
+eyecatcher STAYS** — it answers *is this plausibly one of our blocks*, `TPROT` answers *may the
+caller write it*, and neither implies the other. **Gates:** `as370` rc 0 / 0 diagnostics; bytes
+`E50180009000` and `E501803F9000`, `BC 7,BADREQ` → `4770 6504` base **R6 not dropped to 0**;
+**instruction-stream diff CONFINED** — 740→750 emitted statements, the diff being exactly the
+10 inserted lines; **all 1323 cards present in the listing in source order**, verified to
+discriminate (a deliberate 72-byte comment → as370 **rc 8**, swallowing the next `CLI`, both
+named); column 71 OK **after the scan caught one of my own cards at 72 mid-edit**; host **3469
+PASS / 0 FAIL** — a **no-regression check only**, since `asm/` never compiles on host and no
+host test includes `nsfvsvc.h`; cross-build 6 modules. **NOT LIVE-VERIFIED** — a privileged
+instruction on a caller-supplied pointer has no host analog at all; its gate is item 4 of the
+combined round. **ADR-0041's category 3 CLOSES** (append-only annotation; the table now reads
+1,2,3,4 all closed) and spec §17.3 leaves **one** residue, the probe verbs (c3). **Does NOT
+establish:** it is point-in-time not a lock; it proves **writability under the caller's key,
+not ownership** (another task in the same AS at the same key is accepted — d1 §2.3's
+boundary); it says nothing about what the storage *is*. `docs/measurements/m5-2d1b/`.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
