@@ -298,6 +298,83 @@ void nsfreq_set_sweep_summary(void (*fn)(int reclaimed))
     g_sweepsummary = fn;
 }
 
+/* AUTHENTICATE THE CLIENT-SUPPLIED APP TOKEN AGAINST THE CAPTURED IDENTITY
+ * (M5-2d1).  This is the whole of the ownership check's trust: everything
+ * downstream compares tokens, and a token is only worth comparing once it has
+ * been corroborated against something the client cannot write.
+ *
+ * WHY NOT COMPARE s->apptok AGAINST r->apptok DIRECTLY: r->apptok arrives in
+ * the NSFRQE at +56 and crosses the boundary UNCHANGED (nsfreqx_dispatch_in
+ * rewrites only ecb / ubuf / ulen), so it is client-supplied.  Comparing it
+ * with a socket field the client also chose checks a value against itself.
+ * What the client cannot supply is `ascb` / `asid`: the SVC routine captures
+ * those from the FLIH at CLAIMOK and the request never touches them.
+ *
+ * WHY NOT DERIVE THE TOKEN FROM THE IDENTITY INSTEAD: an address space may
+ * INITAPI more than once, so identity -> token is AMBIGUOUS.  Letting the
+ * client name which of its app slots it means, and verifying it owns that one,
+ * is both unambiguous and strictly stronger.
+ *
+ * Returns the token if it is genuinely this caller's, else 0 -- which every
+ * existing reader already rejects (`app_index` fails token 0 by construction:
+ * gen 0 never matches a live slot's gen, which starts at 1).  Producing the
+ * EXISTING failure value rather than a new one is deliberate: no verb gains a
+ * new errno, and no rejection path is added that a caller could distinguish. */
+/* THE IDENTITY OF THE REQUEST BEING DISPATCHED (M5-2d1).
+ *
+ * A module static rather than a parameter on all nine req_socket callers, and
+ * that is safe for a stated reason, not by luck: the executive is
+ * single-task and RUN-TO-COMPLETION, and ADR-0042 10 permits exactly ONE
+ * cross-address-space request in flight, so nsfreq_dispatch_id is never
+ * re-entered while a dispatch is open.  Set on entry, and NOT CLEARED on exit
+ * -- which is a decision about the failure DIRECTION, not laziness.
+ *
+ * The one way to misuse this is to consult it while completing a request
+ * belonging to a DIFFERENT client than the one being dispatched (B's dispatch
+ * completing A's parked request).  Nothing does that today: completions
+ * resolve their socket from the pcb they already hold, and soc_complete's
+ * lookup is the declared INTERNAL one.  But if a future one did:
+ *   - left SET, it reads B's identity against A's socket -> mismatch -> the
+ *     request is DENIED. Fail-closed, and it surfaces as a visible bug.
+ *   - CLEARED to (0, 0), it reads "no identity" -> the check is SKIPPED and
+ *     the request is ALLOWED. Fail-open, and silent.
+ * The safe-side asymmetry this milestone bends around everywhere says: keep it
+ * set. Whoever adds such a reader owns making it explicit.
+ *
+ * SELECT does NOT read it at re-scan time -- nsfsel_on_notify runs with NO
+ * dispatch open, so it would be reading an unrelated client's identity rather
+ * than merely a stale one. It captures into its SELCB at park time instead. */
+static UINT g_cur_ascb;
+static UINT g_cur_asid;
+
+void nsfreq_caller_id(UINT *ascb, UINT *asid)
+{
+    if (ascb != NULL) *ascb = g_cur_ascb;
+    if (asid != NULL) *asid = g_cur_asid;
+}
+
+static UINT app_authenticate(UINT token, UINT ascb, UINT asid)
+{
+    int idx;
+
+    /* THE RED LINE, IN ONE PLACE (the c1 shape, src/nsfreq.c app_classify).
+     * No identity recorded means there is no address space to ask about, and a
+     * zero identity may never be turned into a verdict.  Phase 1 -- and every
+     * direct-call test -- dispatches with (0, 0) and is returned the token
+     * unchanged, so the corroboration never runs there. */
+    if (ascb == 0u) {
+        return token;
+    }
+    idx = app_index(token);             /* range + inuse + generation           */
+    if (idx < 0) {
+        return 0u;
+    }
+    if (g_apptab[idx].ascb != ascb || g_apptab[idx].asid != asid) {
+        return 0u;                      /* a real token -- but not this one's   */
+    }
+    return token;
+}
+
 int nsfreq_app_classify(UINT idx)
 {
     UINT ascb = 0u;
@@ -541,10 +618,57 @@ static void do_socket(NSFRQE *r)
     soc_complete(r, (INT)soc_desc(s), 0);           /* retcode = the descriptor */
 }
 
+/* THE ONE OWNERSHIP CHECK (M5-2d1).  Two callers: req_socket below, and
+ * sel_scan in src/nsfsel.c -- which resolves N descriptors from a client's
+ * SELECT mask and is the cheapest way to guess, so a check covering only the
+ * per-verb path would leave the widest door open.
+ *
+ * IT RESOLVES *AND* CHECKS, deliberately.  Handing back a SOCKCB that the
+ * caller then has to remember to validate is how this hole came to exist:
+ * req_socket never had a check and nobody saw sel_scan either.  A caller
+ * cannot obtain a socket from this function without the check having run.
+ *
+ * A FOREIGN DESCRIPTOR RETURNS NULL -- the SAME value an unknown one returns,
+ * through the same return statement.  Foreign and non-existent are therefore
+ * INDISTINGUISHABLE BY CONSTRUCTION, not by inspection, and that is a feature:
+ * a distinguishable refusal would turn any verb (and SELECT especially) into an
+ * existence oracle for descriptor numbers.  No new errno anywhere.
+ *
+ * `apptok` MUST already have been through app_authenticate -- nsfreq_dispatch_id
+ * does that once, at the boundary, so every reader downstream sees a token that
+ * has been corroborated. */
+struct sockcb *nsfreq_sock_owned(UINT desc, UINT ascb, UINT asid)
+{
+    SOCKCB *s = sock_lookup(desc);      /* SOCK_LOOKUP: CHECKED (M5-2d1)        */
+    int     idx;
+
+    if (s == NULL) {
+        return NULL;
+    }
+    /* THE RED LINE, IN ONE PLACE.  A zero identity is Phase 1 and every
+     * direct-call test: there is no address space to ask about, and a zero
+     * identity may never be turned into a verdict.  The check does not run. */
+    if (ascb == 0u) {
+        return s;
+    }
+    /* THE SOCKET names its owner, and the OWNER's registry slot names an
+     * address space.  Compare THAT against the caller the FLIH captured.
+     * Nothing here is client-supplied -- see the header for why r->apptok
+     * cannot be the input. */
+    idx = app_index(s->apptok);
+    if (idx < 0) {
+        return NULL;                    /* owner gone: nobody may drive it      */
+    }
+    if (g_apptab[idx].ascb != ascb || g_apptab[idx].asid != asid) {
+        return NULL;                    /* foreign: as if it did not exist      */
+    }
+    return s;
+}
+
 /* Resolve the request's socket; NULL-complete with EBADF is the caller's job. */
 static SOCKCB *req_socket(NSFRQE *r)
 {
-    return sock_lookup(r->sockdesc);
+    return nsfreq_sock_owned(r->sockdesc, g_cur_ascb, g_cur_asid);
 }
 
 static void do_bind(NSFRQE *r)
@@ -751,6 +875,23 @@ void nsfreq_dispatch_id(NSFRQE *r, UINT caller_ascb, UINT caller_asid)
     reqc(req_recv);
     TRC(SOCKET, "req fn=%u fd=%08X flags=%04X", (unsigned)r->fn,
         (unsigned)r->sockdesc, (unsigned)r->flags);
+
+    /* AUTHENTICATE ONCE, HERE, AND EVERY READER DOWNSTREAM IS SAFE (M5-2d1).
+     * Doing it at the boundary rather than at each consumer is what fixes
+     * do_socket's `s->apptok = r->apptok` stamp for free: without this, a
+     * client could not USE a foreign socket but could still CREATE one already
+     * labelled as another app's, and the ownership check would then pass on it
+     * for the rest of that socket's life.
+     *
+     * RQ_INITAPI IS EXEMPT, EXPLICITLY AND NOT BY ORDERING: the request arrives
+     * with no token (there is nothing yet to corroborate) and do_initapi WRITES
+     * r->apptok as its OUTPUT.  Authenticating an input that does not exist
+     * would break the one verb that creates the binding. */
+    if (r->fn != RQ_INITAPI) {
+        r->apptok = app_authenticate(r->apptok, caller_ascb, caller_asid);
+    }
+    g_cur_ascb = caller_ascb;
+    g_cur_asid = caller_asid;
 
     switch (r->fn) {
     /* -- protocol-independent, handled here -- */

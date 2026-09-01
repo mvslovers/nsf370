@@ -37,6 +37,8 @@ typedef struct selcb {
     NSFRQE     *req;            /* the parked SELECT request (app-owned)        */
     NSFSELITEM *items;          /* the app-side descriptor/interest array (ubuf)*/
     UINT        nitems;         /* item count (r->ulen)                         */
+    UINT        ascb;           /* M5-2d1: the caller identity this parked WITH */
+    UINT        asid;           /*         -- re-scans run as that client       */
     TMR         tmr;            /* timeout (embedded; tmr_cancel mandatory)     */
 } SELCB;
 
@@ -44,14 +46,26 @@ static SELCB g_selcb[NSFSEL_MAX];
 
 /* ---- slot alloc / free ----------------------------------------------------- */
 
-static SELCB *sel_alloc(void)
+/* THE OWNER IS A PARAMETER SO A SELCB IS NEVER BUSY WITHOUT ONE (M5-2d1).
+ * Filling ascb/asid at the call site after this returns would leave a window in
+ * which busy == 1 and the identity is still 0 -- and 0 means "no identity"
+ * means the ownership check is SKIPPED, so that window would default FAIL-OPEN.
+ * Nothing could observe it today (single-task, run-to-completion, and a poke
+ * can only fire from a later dispatch), but that is a TIMING argument
+ * protecting a fail-open default, which is the one shape this change exists to
+ * remove. Storing it here makes "a parked SELECT knows who parked it"
+ * structural rather than a property of the order two statements happen to be
+ * written in. */
+static SELCB *sel_alloc(UINT ascb, UINT asid)
 {
     UINT i;
 
     for (i = 0u; i < NSFSEL_MAX; i++) {
         if (!g_selcb[i].busy) {
             memset(&g_selcb[i], 0, sizeof(g_selcb[i]));
-            g_selcb[i].busy = 1u;
+            g_selcb[i].ascb = ascb;
+            g_selcb[i].asid = asid;
+            g_selcb[i].busy = 1u;           /* last: busy implies the identity   */
             return &g_selcb[i];
         }
     }
@@ -66,6 +80,8 @@ static void sel_free(SELCB *cb)
     cb->req    = NULL;
     cb->items  = NULL;
     cb->nitems = 0u;
+    cb->ascb   = 0u;
+    cb->asid   = 0u;
 }
 
 /* ---- readiness scan (side-effect-free) ------------------------------------- */
@@ -74,13 +90,27 @@ static void sel_free(SELCB *cb)
  * subset; return the count of items with any ready bit. A closed/stale descriptor
  * (sock_lookup NULL) contributes nothing (a socket torn down WHILE parked takes the
  * SEL_DEAD path instead). Uses the protocol poll op, or the generic fallback
- * (read = rxq/acceptq non-empty, write = always) for a NULL poll (UDP / dummies). */
-static UINT sel_scan(NSFSELITEM *items, UINT n)
+ * (read = rxq/acceptq non-empty, write = always) for a NULL poll (UDP / dummies).
+ *
+ * OWNERSHIP (M5-2d1): resolution goes through nsfreq_sock_owned, the SAME check
+ * req_socket uses, so a descriptor belonging to ANOTHER app resolves to NULL and
+ * takes the EXISTING `s == NULL` branch -- ready = 0, count unaffected, and the
+ * REST OF THE MASK IS SERVED NORMALLY. A foreign entry is therefore literally
+ * indistinguishable from a closed or never-existing one, and the call returns no
+ * error: SELECT must not become an existence oracle for descriptor numbers.
+ *
+ * THE OWNER IS THE CAPTURED CALLER IDENTITY, and it is a PARAMETER because
+ * nsfsel_on_notify re-scans parked SELECTs with NO DISPATCH OPEN -- there is no
+ * "current request" to read it from at that moment. It is therefore captured
+ * into the SELCB when the SELECT parks and re-used on every later re-scan, so a
+ * parked SELECT is always re-scanned as the client that parked it. */
+static UINT sel_scan(NSFSELITEM *items, UINT n, UINT ascb, UINT asid)
 {
     UINT i, count = 0u;
 
     for (i = 0u; i < n; i++) {
-        SOCKCB *s   = sock_lookup(items[i].desc);
+        /* SOCK_LOOKUP: CHECKED -- nsfreq_sock_owned resolves AND checks. */
+        SOCKCB *s   = nsfreq_sock_owned(items[i].desc, ascb, asid);
         int     want = (int)items[i].want;
         int     rdy  = 0;
 
@@ -166,11 +196,13 @@ static void nsfsel_dispatch(NSFRQE *r)
     NSFSELITEM *items = (NSFSELITEM *)r->ubuf;
     UINT        n     = (items != NULL) ? r->ulen : 0u;
     UINT        count;
+    UINT        ascb, asid;
     SELCB      *cb;
 
     r->sockdesc = 0u;                          /* not parked on any pend_ slot   */
 
-    count = sel_scan(items, n);
+    nsfreq_caller_id(&ascb, &asid);
+    count = sel_scan(items, n, ascb, asid);
     if (count > 0u) {
         soc_complete(r, (INT)count, 0);        /* something already ready        */
         return;
@@ -181,7 +213,7 @@ static void nsfsel_dispatch(NSFRQE *r)
         return;
     }
     /* Park it (bounded). */
-    cb = sel_alloc();
+    cb = sel_alloc(ascb, asid);         /* M5-2d1: busy implies an identity    */
     if (cb == NULL) {
         soc_complete(r, NSF_RETERR, NSF_EMFILE);   /* > NSFSEL_MAX parked        */
         return;
@@ -226,7 +258,9 @@ static void nsfsel_on_notify(SOCKCB *s, UCHAR events)
     for (i = 0u; i < NSFSEL_MAX; i++) {
         SELCB *cb = &g_selcb[i];
         if (cb->busy) {
-            UINT count = sel_scan(cb->items, cb->nitems);
+            /* Re-scan as the client that PARKED it (M5-2d1): no dispatch
+             * is open here, so the identity comes from the SELCB. */
+            UINT count = sel_scan(cb->items, cb->nitems, cb->ascb, cb->asid);
             if (count > 0u) {
                 sel_finish(cb, (INT)count, 0);
             }

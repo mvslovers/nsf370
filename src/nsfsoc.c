@@ -269,7 +269,15 @@ void soc_complete(NSFRQE *r, INT retcode, INT errno_)
     /* Clear the pend slot on r's socket, if r was parked (the immediate /
      * non-blocking path never parked). This resolves r's socket via its
      * descriptor, which is still valid here -- inside soc_destroy this runs
-     * BEFORE the generation bump, so the lookup succeeds. */
+     * BEFORE the generation bump, so the lookup succeeds.
+     *
+     * NOT A CLIENT-DIRECTED RESOLUTION (M5-2d1). The
+     * stack is completing a request it already holds and is resolving THAT
+     * request's own socket to clear its pend_ slot; the descriptor came from
+     * the socket, not from the client. An ownership check here would be
+     * checking the stack against itself, and in the teardown case there may be
+     * no live app token to check against at all.
+     * SOCK_LOOKUP: INTERNAL -- resolving this request's OWN socket. */
     s = sock_lookup(r->sockdesc);
     if (s != NULL) {
         if (s->pend_recv == r) {

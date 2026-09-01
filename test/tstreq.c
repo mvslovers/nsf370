@@ -645,6 +645,188 @@ static int cap_contains(const char *needle)
 }
 #endif /* !__MVS__ */
 
+/* ---- M5-2d1: descriptor ownership ------------------------------------------
+ * The hole this closes: another client's socket was not merely FORGEABLE but
+ * GUESSABLE. One socket table, sock_alloc hands out the lowest free index
+ * regardless of who asks, and a descriptor is (gen<<16)|idx with idx in 0..63 --
+ * so a client calibrates against its own and walks the neighbours.
+ *
+ * These run with a SYNTHETIC NON-ZERO IDENTITY, which is the only way to
+ * exercise the check from the host: Phase 1 dispatches (0, 0), the corroboration
+ * is skipped there by design, and a green host suite would otherwise say nothing
+ * about the property at all. */
+#define D1_ASCB_A  0x00F10000u
+#define D1_ASID_A  0x0011u
+#define D1_ASCB_B  0x00F20000u
+#define D1_ASID_B  0x0012u
+
+static UINT d1_initapi(UINT ascb, UINT asid, const char *who)
+{
+    NSFRQE r;
+
+    rqe_init(&r, RQ_INITAPI, 0u, 0u);
+    nsfreq_dispatch_id(&r, ascb, asid);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, who);
+    return r.apptok;
+}
+
+static UINT d1_socket(UINT tok, UINT ascb, UINT asid, const char *who)
+{
+    NSFRQE r;
+
+    rqe_init(&r, RQ_SOCKET, 0u, 0u);
+    r.apptok = tok;
+    r.p1 = NSF_AF_INET; r.p2 = NSF_SOCK_DGRAM; r.p3 = DUMMY_PROTO;
+    nsfreq_dispatch_id(&r, ascb, asid);
+    CHECK(r.retcode >= 0, who);
+    return (UINT)r.retcode;
+}
+
+static void test_socket_ownership(void)
+{
+    NSFRQE r;
+    UINT   tokA, tokB, descA, descB;
+    INT    rc_foreign, er_foreign, rc_unknown, er_unknown;
+    SOCKCB *sa;
+
+    reset_req();
+
+    /* Two REAL app instances, in two different address spaces. */
+    tokA = d1_initapi(D1_ASCB_A, D1_ASID_A, "A: INITAPI from address space A");
+    tokB = d1_initapi(D1_ASCB_B, D1_ASID_B, "B: INITAPI from address space B");
+    CHECK(tokA != 0u && tokB != 0u && tokA != tokB, "two distinct app tokens");
+
+    descA = d1_socket(tokA, D1_ASCB_A, D1_ASID_A, "A: opened a socket");
+    descB = d1_socket(tokB, D1_ASCB_B, D1_ASID_B, "B: opened a socket");
+    CHECK(descA != descB, "A and B hold different descriptors");
+
+    /* The stamp is the AUTHENTICATED token: without authentication at the
+     * boundary a client could not USE a foreign socket but could still CREATE
+     * one already labelled as another app's. */
+    sa = sock_lookup(descA);            /* a direct probe: tests read the table */
+    CHECK(sa != NULL && sa->apptok == tokA, "A's socket is stamped with A's token");
+
+    /* (1) THE CONTROL, FIRST: A drives its own socket normally. A check that
+     * refuses everything would pass every assertion below but this one. */
+    rqe_init(&r, RQ_GETSOCKNAME, descA, 0u);
+    nsfreq_dispatch_id(&r, D1_ASCB_A, D1_ASID_A);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "A drives A's own socket");
+
+    /* (2) THE ATTACK: B names A's descriptor from B's address space. */
+    rqe_init(&r, RQ_GETSOCKNAME, descA, 0u);
+    nsfreq_dispatch_id(&r, D1_ASCB_B, D1_ASID_B);
+    rc_foreign = r.retcode;
+    er_foreign = r.errno_;
+    CHECK_EQ((long)er_foreign, (long)NSF_EBADF, "B on A's descriptor -> refused");
+
+    /* (3) INDISTINGUISHABLE FROM UNKNOWN -- the property, not just the refusal.
+     * A distinguishable refusal is an existence oracle for descriptor numbers. */
+    rqe_init(&r, RQ_GETSOCKNAME, 0x00BADBADu, 0u);
+    nsfreq_dispatch_id(&r, D1_ASCB_B, D1_ASID_B);
+    rc_unknown = r.retcode;
+    er_unknown = r.errno_;
+    CHECK_EQ((long)rc_foreign, (long)rc_unknown,
+             "foreign and non-existent return the SAME retcode");
+    CHECK_EQ((long)er_foreign, (long)er_unknown,
+             "foreign and non-existent return the SAME errno");
+
+    /* (4) r->apptok IS NOT CONSULTED, AND THIS IS THE ASSERTION THAT SHOWS IT.
+     * B presents A's descriptor AND A's stolen token -- the most favourable
+     * input a token-comparing check could get, since s->apptok and r->apptok
+     * would then be equal and it would ACCEPT. Refused, because the decision
+     * reads the caller identity, which is the one thing B cannot supply. */
+    rqe_init(&r, RQ_GETSOCKNAME, descA, 0u);
+    r.apptok = tokA;
+    nsfreq_dispatch_id(&r, D1_ASCB_B, D1_ASID_B);
+    CHECK_EQ((long)r.errno_, (long)NSF_EBADF,
+             "B presenting A's STOLEN TOKEN and A's descriptor -> still refused");
+
+    /* ...and the mirror: A drives its own socket while presenting a token that
+     * is not even valid. It works, because the token plays no part. */
+    rqe_init(&r, RQ_GETSOCKNAME, descA, 0u);
+    r.apptok = 0xDEADBEEFu;
+    nsfreq_dispatch_id(&r, D1_ASCB_A, D1_ASID_A);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK,
+             "A drives its own socket with a junk token: apptok is not consulted");
+
+    /* ...and A itself is unaffected by B having tried. */
+    rqe_init(&r, RQ_GETSOCKNAME, descA, 0u);
+    nsfreq_dispatch_id(&r, D1_ASCB_A, D1_ASID_A);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "A still drives A's socket");
+
+    /* (5) THE SCOPE, PINNED SO IT IS A DECISION AND NOT A SURPRISE: ownership is
+     * PER ADDRESS SPACE, not per app instance. A second INITAPI from A's
+     * address space CAN drive A's socket. One address space is one protection
+     * key and one storage image, so those two instances can already reach each
+     * other's memory directly -- separating them buys nothing, and the reverse
+     * lookup that would separate them is ambiguous (identity -> token is
+     * one-to-many). If this ever needs to be tighter, this assertion is the one
+     * that flips. */
+    {
+        UINT tokA2 = d1_initapi(D1_ASCB_A, D1_ASID_A, "A: a second INITAPI");
+
+        CHECK(tokA2 != tokA, "the second instance has its own token");
+        rqe_init(&r, RQ_GETSOCKNAME, descA, 0u);
+        nsfreq_dispatch_id(&r, D1_ASCB_A, D1_ASID_A);
+        CHECK_EQ((long)r.retcode, (long)NSF_RETOK,
+                 "same address space, second instance: ALLOWED (scope is the AS)");
+
+        rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+        r.apptok = tokA2;
+        nsfreq_dispatch_id(&r, D1_ASCB_A, D1_ASID_A);
+        CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "the second instance ended");
+    }
+
+    /* (6) THE INHERITED CHILD (5.1). An accepted TCP child copies the
+     * listener's apptok (src/nsftcp.c tcp_child_create), so a socket the client
+     * never named in a SOCKET call must still be drivable. Modelled here by the
+     * same stamp the child gets; the live cross-AS accept is the real gate. */
+    {
+        SOCKCB *child = soc_create(NSF_AF_INET, NSF_SOCK_DGRAM,
+                                   (UCHAR)DUMMY_PROTO, &dummy_ops);
+        CHECK(child != NULL, "a child socket was created");
+        if (child != NULL) {
+            child->apptok = tokA;               /* what tcp_child_create does */
+            rqe_init(&r, RQ_GETSOCKNAME, soc_desc(child), 0u);
+            nsfreq_dispatch_id(&r, D1_ASCB_A, D1_ASID_A);
+            CHECK_EQ((long)r.retcode, (long)NSF_RETOK,
+                     "A drives an INHERITED child it never opened");
+            soc_destroy(child);
+        }
+    }
+
+    /* (7) PHASE 1 IS UNAFFECTED: a zero identity skips the corroboration, so a
+     * socket opened and driven without any identity keeps working. */
+    {
+        UINT tok0  = d1_initapi(0u, 0u, "Phase 1: INITAPI with no identity");
+        UINT desc0 = d1_socket(tok0, 0u, 0u, "Phase 1: socket with no identity");
+
+        rqe_init(&r, RQ_GETSOCKNAME, desc0, 0u);
+        nsfreq_dispatch(&r);            /* == nsfreq_dispatch_id(r, 0, 0) */
+        CHECK_EQ((long)r.retcode, (long)NSF_RETOK,
+                 "Phase 1 drives its own socket with no identity");
+
+        rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+        r.apptok = tok0;
+        nsfreq_dispatch(&r);
+        CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "Phase 1 TERMAPI");
+    }
+
+    /* Teardown: each app takes its own sockets and only its own. */
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+    r.apptok = tokA;
+    nsfreq_dispatch_id(&r, D1_ASCB_A, D1_ASID_A);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "A: TERMAPI");
+    CHECK(sock_lookup(descB) != NULL,   /* direct probe, deliberately unchecked */
+          "A's TERMAPI left B's socket alone");
+
+    rqe_init(&r, RQ_TERMAPI, 0u, 0u);
+    r.apptok = tokB;
+    nsfreq_dispatch_id(&r, D1_ASCB_B, D1_ASID_B);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, "B: TERMAPI");
+    CHECK_EQ((long)soc_count(), 0L, "ownership scenario leaked no sockets");
+}
+
 static void test_app_classify_and_report(void)
 {
     NSFRQE r;
@@ -1199,6 +1381,7 @@ int main(void)
     test_termapi_teardown();
     test_app_full();
     test_caller_identity();
+    test_socket_ownership();
     test_app_classify_and_report();
     test_elapsed_seam();
     test_sweep_rate_limit();

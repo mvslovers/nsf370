@@ -351,6 +351,198 @@ static void test_multi(void)
     soc_destroy(s0);
 }
 
+/* S11 (M5-2d1): A FOREIGN DESCRIPTOR IN THE MASK.
+ *
+ * This is the widest door the ownership check had to cover: one SELECT resolves
+ * ONE DESCRIPTOR PER MASK ITEM, so a client that can put arbitrary numbers in a
+ * mask probes many descriptors per request. A check on the per-verb path alone
+ * would have left it open.
+ *
+ * The contract asserted here is deliberately NOT "SELECT returns an error":
+ *   - the foreign entry is silently NOT READY,
+ *   - the REST OF THE MASK IS SERVED NORMALLY,
+ *   - and that is byte-for-byte what a closed or never-existing descriptor
+ *     already did, so the two cannot be told apart.
+ * Anything louder would turn SELECT into an existence oracle for descriptor
+ * numbers -- which is worth more to an attacker than the SELECT itself. */
+#define S11_ASCB_A  0x00F10000u
+#define S11_ASID_A  0x0011u
+#define S11_ASCB_B  0x00F20000u
+#define S11_ASID_B  0x0012u
+
+static UINT s11_open(UINT ascb, UINT asid, UINT *tok, const char *who)
+{
+    NSFRQE r;
+
+    memset(&r, 0, sizeof(r));
+    memcpy(r.eye, NSFRQE_EYE, 4);
+    r.fn = (USHORT)RQ_INITAPI;
+    nsfreq_dispatch_id(&r, ascb, asid);
+    CHECK_EQ((long)r.retcode, (long)NSF_RETOK, who);
+    *tok = r.apptok;
+
+    memset(&r, 0, sizeof(r));
+    memcpy(r.eye, NSFRQE_EYE, 4);
+    r.fn = (USHORT)RQ_SOCKET;
+    r.apptok = *tok;
+    r.p1 = NSF_AF_INET; r.p2 = NSF_SOCK_STREAM; r.p3 = 6u;
+    nsfreq_dispatch_id(&r, ascb, asid);
+    CHECK(r.retcode >= 0, "the app opened a socket");
+    return (UINT)r.retcode;
+}
+
+static void test_ownership_mask(void)
+{
+    NSFRQE     r;
+    NSFSELITEM it[3];
+    UINT       tokA, tokB, dA, dB;
+    SOCKCB    *sa;
+    INT        rc_foreign, rc_unknown;
+
+    CHECK_EQ((long)nsfreq_register_proto(6u, &dummy_poll), 0L,
+             "register the pollable protocol");
+
+    dA = s11_open(S11_ASCB_A, S11_ASID_A, &tokA, "A: INITAPI");
+    dB = s11_open(S11_ASCB_B, S11_ASID_B, &tokB, "B: INITAPI");
+    CHECK(dA != dB, "A and B hold different descriptors");
+
+    /* Make BOTH sockets genuinely ready, so "not ready" can only come from the
+     * ownership check and never from the socket simply having nothing to say. */
+    sa = sock_lookup(dA);
+    CHECK(sa != NULL, "A's socket resolves");
+    if (sa != NULL) g_ready[sa->id] = (int)SEL_READ;
+    sa = sock_lookup(dB);
+    CHECK(sa != NULL, "B's socket resolves");
+    if (sa != NULL) g_ready[sa->id] = (int)SEL_READ;
+
+    /* B selects on: its own socket, A's socket, and a number nobody owns. */
+    item(&it[0], dB, (UCHAR)SEL_READ);
+    item(&it[1], dA, (UCHAR)SEL_READ);
+    item(&it[2], 0x00BADBADu, (UCHAR)SEL_READ);
+
+    memset(&r, 0, sizeof(r));
+    memcpy(r.eye, NSFRQE_EYE, 4);
+    r.fn      = (USHORT)RQ_SELECT;
+    r.ubuf    = it;
+    r.ulen    = 3u;
+    r.p3      = SEL_F_TIMED;                /* poll form: 0/0 -> never parks     */
+    r.retcode = PARKED;
+    nsfreq_dispatch_id(&r, S11_ASCB_B, S11_ASID_B);
+
+    CHECK_EQ((long)r.retcode, 1L, "SELECT counted exactly ONE ready socket");
+    CHECK_EQ((long)r.errno_, 0L, "SELECT returned no error for the foreign entry");
+    CHECK_EQ((long)it[0].ready, (long)SEL_READ, "B's OWN socket was served");
+    rc_foreign = (INT)it[1].ready;
+    rc_unknown = (INT)it[2].ready;
+    CHECK_EQ((long)rc_foreign, 0L, "A's socket is silently NOT READY for B");
+    CHECK_EQ((long)rc_foreign, (long)rc_unknown,
+             "foreign and never-existing look identical in the mask");
+
+    /* The control: A selecting on the SAME descriptor gets it, so the entry was
+     * withheld from B specifically -- not broken for everyone. */
+    item(&it[0], dA, (UCHAR)SEL_READ);
+    memset(&r, 0, sizeof(r));
+    memcpy(r.eye, NSFRQE_EYE, 4);
+    r.fn      = (USHORT)RQ_SELECT;
+    r.ubuf    = it;
+    r.ulen    = 1u;
+    r.p3      = SEL_F_TIMED;
+    r.retcode = PARKED;
+    nsfreq_dispatch_id(&r, S11_ASCB_A, S11_ASID_A);
+    CHECK_EQ((long)r.retcode, 1L, "A selecting on A's own socket: ready");
+    CHECK_EQ((long)it[0].ready, (long)SEL_READ, "...and the bit is set");
+
+    /* THE PARKED RE-SCAN PATH (M5-2d1). Everything above uses the POLL form,
+     * which never parks -- so it exercises only the scan at dispatch, where the
+     * identity comes from nsfreq_caller_id. The re-scan in nsfsel_on_notify runs
+     * with NO DISPATCH OPEN and reads the identity captured in the SELCB; that
+     * is a different code path with a different source for the same decision,
+     * and without this it would be covered by nothing.
+     *
+     * B parks a SELECT on A's descriptor. Making A's socket ready must NOT
+     * complete B's SELECT -- if the re-scan lost the owner, it would. */
+    {
+        NSFRQE rp;
+        NSFSELITEM ip[1];
+
+        sa = sock_lookup(dA);
+        if (sa != NULL) g_ready[sa->id] = 0;        /* start not-ready          */
+
+        item(&ip[0], dA, (UCHAR)SEL_READ);
+        memset(&rp, 0, sizeof(rp));
+        memcpy(rp.eye, NSFRQE_EYE, 4);
+        rp.fn      = (USHORT)RQ_SELECT;
+        rp.ubuf    = ip;
+        rp.ulen    = 1u;
+        rp.p1      = 5u;                            /* 5 s: parks              */
+        rp.p3      = SEL_F_TIMED;
+        rp.retcode = PARKED;
+        nsfreq_dispatch_id(&rp, S11_ASCB_B, S11_ASID_B);
+        CHECK_EQ((long)rp.retcode, (long)PARKED,
+                 "B's SELECT on A's socket parked (foreign == not ready)");
+        CHECK_EQ((long)sel_inuse(), 1L, "one SELECT parked");
+
+        /* A's socket becomes ready and pokes. B must stay parked: the re-scan
+         * runs as B, and A's socket is not B's. */
+        if (sa != NULL) g_ready[sa->id] = (int)SEL_READ;
+        soc_notify_ready(sa, (UCHAR)SEL_READ);
+        CHECK_EQ((long)rp.retcode, (long)PARKED,
+                 "A's readiness does NOT complete B's parked SELECT");
+        CHECK_EQ((long)sel_inuse(), 1L, "B is still parked");
+
+        /* THE CONTROL, AND IT IS THE SAME POKE, NOT A SIMILAR ONE. A parks its
+         * own SELECT on the same descriptor while B stays parked, then ONE
+         * poke goes to both: A's completes, B's does not. Without this,
+         * "B stayed parked" could equally mean the poke was broken. */
+        {
+            NSFRQE rA;
+            NSFSELITEM iA[1];
+
+            if (sa != NULL) g_ready[sa->id] = 0;
+            item(&iA[0], dA, (UCHAR)SEL_READ);
+            memset(&rA, 0, sizeof(rA));
+            memcpy(rA.eye, NSFRQE_EYE, 4);
+            rA.fn      = (USHORT)RQ_SELECT;
+            rA.ubuf    = iA;
+            rA.ulen    = 1u;
+            rA.p1      = 5u;
+            rA.p3      = SEL_F_TIMED;
+            rA.retcode = PARKED;
+            nsfreq_dispatch_id(&rA, S11_ASCB_A, S11_ASID_A);
+            CHECK_EQ((long)rA.retcode, (long)PARKED, "A's own SELECT parked too");
+            CHECK_EQ((long)sel_inuse(), 2L, "both A and B are parked");
+
+            if (sa != NULL) g_ready[sa->id] = (int)SEL_READ;
+            soc_notify_ready(sa, (UCHAR)SEL_READ);
+
+            CHECK_EQ((long)rA.retcode, 1L,
+                     "ONE poke completes A's parked SELECT (the re-scan works)");
+            CHECK_EQ((long)rp.retcode, (long)PARKED,
+                     "...and the SAME poke leaves B's parked (owner is honoured)");
+            CHECK_EQ((long)sel_inuse(), 1L, "only A's slot was freed");
+        }
+
+        /* Tear B's parked SELECT down through the documented path: destroying a
+         * socket in a parked set pokes SEL_DEAD -> ECONNABORTED (ADR-0035). */
+        soc_destroy(sock_lookup(dA));
+        CHECK_EQ((long)sel_inuse(), 0L, "B's parked SELECT was torn down");
+    }
+
+    /* Phase 1 (no identity) is unaffected: the same mask, dispatched with no
+     * caller, sees every socket. */
+    item(&it[0], dB, (UCHAR)SEL_READ);
+    memset(&r, 0, sizeof(r));
+    memcpy(r.eye, NSFRQE_EYE, 4);
+    r.fn      = (USHORT)RQ_SELECT;
+    r.ubuf    = it;
+    r.ulen    = 1u;
+    r.p3      = SEL_F_TIMED;
+    r.retcode = PARKED;
+    nsfreq_dispatch(&r);                    /* == dispatch_id(r, 0, 0) */
+    CHECK_EQ((long)r.retcode, 1L,
+             "Phase 1 sees B's socket without naming any caller (check inert)");
+}
+
 int main(void)
 {
     printf("=== nsf370 NSFSEL (SELECT engine) tests ===\n");
@@ -365,6 +557,7 @@ int main(void)
     setup();  test_emfile();      teardown();
     setup();  test_teardown();    teardown();
     setup();  test_multi();       teardown();
+    setup();  test_ownership_mask(); teardown();
 
     return mbt_test_summary("TSTSEL");
 }
