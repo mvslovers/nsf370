@@ -2749,6 +2749,31 @@ combined round. **ADR-0041's category 3 CLOSES** (append-only annotation; the ta
 establish:** it is point-in-time not a lock; it proves **writability under the caller's key,
 not ownership** (another task in the same AS at the same key is accepted — d1 §2.3's
 boundary); it says nothing about what the storage *is*. `docs/measurements/m5-2d1b/`.
+**d0, d1 and d1b are COUNTERSIGNED (PRs #96, #97, #98 merged, in that order; #98 was
+retargeted from `m5-2d1-ownership` to `main` first and its diff re-confirmed to be its own
+seven files — the b1/b2 stacked-base trap, closed by checking rather than by remembering).**
+Three things from the review that would otherwise have lived only in a PR body:
+**(1) THE REJECTED ALTERNATIVE IS THE ROUND'S MOST VALUABLE FINDING.** d0's framing, and the
+kickoff's, was *"does the address lie inside the caller's address space"* — and a check of
+exactly that shape would have **permitted a store into LSQA**, which is key 0 *inside* the
+private window, where a store landing on **`TCBPKF` sets the task's key to 0**. The obvious
+check would have been **WORSE THAN NONE**: the hole would have read as closed while a path to
+authorisation opened underneath it. That is what "establish before building" was for, and it
+is the sentence a later reader needs — not the one about what was built.
+**(2) `TPROT` ASKS THE MACHINE INSTEAD OF JUDGING THE ADDRESS**, and it does not fault, which
+is why the refusal can be a return code rather than a fault through the very block being
+refused. It **names** the key rather than entering it, so `MOVEOUT` stays **structurally** the
+only borrowed-key block; and the key nibble is the one `SPKA` takes, so b1's proven
+`PSATOLD → TCB → IC TCBPKF` derivation is **reused rather than reinvented**.
+**(3) THE AVAILABILITY PROOF IS A CONTROL, NOT A FIND.** `TPROT` `GENx370x390x900`
+(`opcode.c:5123`) against **`MVCDK` `GENx___x390x900`** (`:5165`) — the instruction b0
+*measured* taking `S0C1` — same table, same SSE format, 42 lines apart. **A control with a
+known negative is worth more than a located mnemonic**, and that is the general rule, not a
+fact about this instruction.
+**ADR-0041's category 3 is closed, so ALL FOUR write-out categories are now closed**, and
+spec §17.3 has exactly **one** residue: the probe verbs, retired by c3. **Nothing is closed on
+the tracker** — **#67 stays open** (c3's), **#88 deferred**, and **d2 remains a dated open item,
+decoupled from the milestone flip**.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
