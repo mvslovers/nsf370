@@ -8,7 +8,7 @@ afterwards. Drafted here for Mike to post or amend.
 
 ## The rejection came forward from c3 — the issue stays open
 
-M5-2d1c (PR TBD). Pulled out of c3 for a reason that is **not** the security one
+M5-2d1c. Pulled out of c3 for a reason that is **not** the security one
 this issue was filed for: **our own rounds keep walking into it.** M5-2d1's
 second live round (#100) issued `XFER` at NSFS, parked forever, and cost a
 cancelled job, a leaked slot and an anchor plus router retained to IPL — in the
@@ -71,8 +71,13 @@ present in source order, and the instruction stream differing from `main` by
 displacement shift, 0 by anything else. All three assembler gates verified to
 discriminate against a deliberate column-72 overrun.
 
-Live: **not yet run.** `TSTRQXF` section (E) is the gate — `ECHO` and an
-unrecognised `REQFUNC` at NSFS, each asserted for rc-in-the-block, `inflight`
-unchanged and no slot claimed, with `wtof` markers because the failure mode is a
-hang rather than a failed assertion. This comment should be posted **after** that
-runs, not before.
+Live: **run and green.** `TSTRQXF` section (E), on MVSCE, from an unauthorised
+client — `ECHO RETURNED rc=4 (it did not park)` and **`REQFUNC 99 RETURNED
+rc=4`**, the fall-through case, with `inflight 0->0` and no slot changed state,
+in both the batch and the TSO run; `TSTRQXF` 122 → **130 PASS / 0 FAIL**, the
+delta being exactly the four new assertions across the two runs. The conditional
+is shown on one binary with one axis varied: the same `ECHO` is **serviced** at
+NSFV (`TSTSVC` green, 438 PASS across that set) and refused at NSFS. No
+before/after arm was run — the prior behaviour is on record from #100's round and
+re-inducing it costs a cancelled job, a leaked slot and an anchor retained to IPL.
+Zero dumps; `SVC 239` restored by both STCs; stand left as found.

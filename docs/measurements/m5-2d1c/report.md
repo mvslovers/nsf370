@@ -9,6 +9,24 @@ Branch `m5-2d1c`, on `main` at `6046003`. Host **3469 PASS / 0 FAIL**, unchanged
 MVS-only (`asm/nsfvsvc.asm` never compiles on host; `src/nsfv.c` and
 `src/nsfsx.c` are Phase-2 STCs; `test/mvs/tstrqxf.c` is `host = false`).
 
+## Against the kickoff's acceptance list
+
+| # | item | status |
+|---|---|---|
+| 1 | §1 refusing pre-claim, rc in the caller's block, comment naming c3 | **MET** — and the shape changed to *permit one* on evidence (§1) |
+| 2 | instruction-stream diff confined; `as370 -a=` listing quoted | **MET** — 364 → 368, delta exactly the four inserted, 0 non-displacement changes |
+| 3 | §2.1 with its ASCII/EBCDIC question settled, refusal attributed to the key check | **PARTIAL** — the *question* is settled (§2); the *case* needs #100's file |
+| 4 | §2.2 in three states for both checks | **NOT MET** — R8 arm's instrument absent, ownership arm's known-defective (§5) |
+| 5 | §2.3 live | **MET** (§3) |
+| 6 | #67 updated — proposed, not applied | **MET** — drafted in `issue-67-comment-draft.md`, not posted |
+| 7 | `make test-host` ≥ 3469 PASS, 0 FAIL | **MET** — 3469 / 0, unchanged |
+| 8 | PR text separates host- from live-verified; names §2.3-of-d1 as blocked on `ulen` | **MET** in this report; the PR body follows it |
+
+Two items the kickoff did not list and this round added, both because CLAUDE.md
+required them: **§1's live gate** (§8.4 — `asm/*.asm` is validated on MVS before
+it merges) and the **ADR-0042 annotation** (§8.7 — a decision that changes
+behaviour is recorded where a reader looks).
+
 ---
 
 ## 1. The #67 rejection — DONE
@@ -150,9 +168,22 @@ than "the verbs are refused everywhere".
 
 ### The live result
 
-Stand: MVSCE, real 0500/0501, MTU 1500. All six modules deployed in **one**
-`make deploy`, so the partial-deploy hazard the sequence warns about did not
-arise. Unauthorised client throughout (`TSTRQXF` asserts `__isauth() == 0`).
+Stand: MVSCE, real 0500/0501, MTU 1500. Unauthorised client throughout
+(`TSTRQXF` asserts `__isauth() == 0`).
+
+**DEPLOY-TOOK-EFFECT IS POSITIVE IN BOTH DIRECTIONS, and deliberately not
+"no error appeared".** An absence-of-complaint check is the shape §8.5 warns
+about, and it would sit badly in a round whose headline finding is a value that
+was never observed. What rules out the partial deploy the sequence warns about
+(a stale `NSFVSVC` against a new `NSFV`) is that **both modules came out of the
+same `make deploy`, hence the same XMIT of the same build** — and each half then
+confirms its own module from its own result:
+
+* **the new router is loaded** — `REQFUNC 99` answering `rc=4` is *impossible* on
+  the old one, which would have staged it as ECHO and parked the client;
+* **the new `nsfv.c` is loaded** — `TSTSVC`'s ECHO succeeding at NSFV requires
+  the `PROBE` bit, which only the new anchor sets. Against a stale `NSFV` the
+  fail-closed direction would have refused it `rc=4` and taken the set red.
 
 **NSFV half — the negative control.** `TSTSVC` / `TSTMVCK` / `TSTUBUF` /
 `TSTDEATH` / `TSTXFW`, **438 PASS / 0 FAIL, all CC 0 batch+TSO** (STC 1726).
@@ -161,6 +192,15 @@ this set**, so no test was silently lost. `TSTSVC` drives `ECHO` and
 `TSTUBUF`/`TSTXFW` drive `XFER`, both against the anchor with the bit **set** —
 so this is simultaneously the positive check that the bit took and the proof the
 gate is conditional.
+
+**`TSTDEATH` corroborates §1 from a second direction, and the credit is worth
+being exact about.** Post-c2-stage-c it drives row 1 (LIVE) plus the retired
+`FNORPH`, and that rejection returns `rc=4` from **`BADFUNC` — the same label the
+new gate branches to**, whose address this insertion *moved* (`0004CA` →
+`0004DA`). So `TSTDEATH` green proves `BADFUNC` still writes the rc into the
+caller's block after the relocation. It proves **nothing about the new `TM`/`BNE`
+pair**, which is bypassed at NSFV: the reconciliation of 438 must not be read as
+covering it.
 
 **NSFS half — the gate.** `TSTRQXC` / `TSTRQXF`, **130 PASS / 0 FAIL, CC 0
 batch+TSO** (STC 1727). **Was 122; the delta is exactly 8 = the four new
@@ -239,15 +279,39 @@ ownership arm must be measured with. Copying either onto this branch would
 duplicate #100's diff into this PR — the trap #98's retarget check exists to
 prevent — and merging is the maintainer's countersign, not mine.
 
-* **§2.1's code change** — the minus-one staging and the diagnostic repair.
-  Specified precisely in `eyecatcher-encoding.md` §"Consequences"; it is four
-  edits to a file this branch does not have.
-* **§2.2** — the three-state revert for both checks.
-* **§2.3** — Phase 1 live.
+The two remaining items are blocked for **different reasons**, and the difference
+decides the remedy:
+
+* **§2.1's code change — INSTRUMENT ABSENT.** `test/mvs/tstd1r.c` does not exist
+  on `main`. The change itself is specified precisely in
+  `eyecatcher-encoding.md` §"Consequences"; it is four edits to a file this
+  branch does not have.
+* **§2.2's R8 arm — INSTRUMENT ABSENT.** Same file.
+* **§2.2's descriptor-ownership arm — INSTRUMENT PRESENT BUT KNOWN-DEFECTIVE.**
+  `tstd1a.c` and `tstd1b.c` are both on `main`, so this one *could* be run here.
+  It is not, and the reason is #100's own defect 2: **a zero produced by a sweep
+  range that does not cover the target is indistinguishable from a zero that
+  means refused.** Running the revert against main's `tstd1b.c` would produce
+  exactly that uninterpretable result — a measurement whose null cannot be told
+  from a broken instrument — and #100's repair (sweep before owning anything,
+  positive-control the range, derive A's descriptor at run time) is on its
+  branch. Running it here would not be blocked; it would be **worthless**, which
+  is a stronger reason to wait, not a weaker one.
+
+**§2.3 is DONE** — see §3 above.
 
 Both are live work and run on the sequence in [`sequence.md`](sequence.md), which
 this round executed for its own half and which held.
 
 §1's round turned out to be **self-contained** — `TSTD1R` is §2.1's instrument,
 not §1's — so §1 did not wait for #100 and is live-validated, which is what
-CLAUDE.md 8.4 requires before an `asm/*.asm` change merges.
+CLAUDE.md 8.4 requires before an `asm/*.asm` change merges. Checking the
+remaining items the same way, per item rather than per round, is what separates
+the three cases above.
+
+**Worth naming: §1's evidence has the structure §2.2 asks for**, on the one axis
+available without a redeploy — the same verb, one binary, opposite outcomes at
+the two servers, with the restored state re-measured. It is *not* a before/after
+revert and §1 does not claim to be one; but the "one assertion moving" discipline
+§2.2 exists to enforce was applied, and it is the reason the conditional is
+established rather than assumed.
