@@ -2905,6 +2905,34 @@ six deploys, nine STC starts, ZERO dumps**; the one `NSF054W` in the log is at 0
 #100's round, **checked not assumed**; `INFLIGHT=0` before every stop; both reverts undone in
 the tree and on the machine; left as found. **#67 comment drafted, NOT posted** (8).
 `docs/measurements/m5-2d1c/`.
+**COUNTERSIGNED (PR #102 merged). Four things from the review, and the first changes what
+the round is FOR.** **(1) PERMIT-ONE CLOSES A CLASS; REFUSE-BY-NAME ENUMERATES INSTANCES,
+and the fall-through chain is why the distinction is not stylistic** — a named-verb list has
+to be maintained and can be wrong for a verb added later, which is the same move as
+ADR-0041's always-copy over a direction table. **(2) `ANCPROBE` IS A SERVER PROPERTY, NOT A
+SPECIAL CASE WIRED INTO THE ROUTER:** the probe STC keeps its chain, the production STC does
+not, and **c3 removes a flag rather than unpicking a special case**. **(3) THE `XFER`
+ROUND TRIP RESOLVED THE ASCII/EBCDIC LOOSE END** — `XFEROUT` writes `stage[]` back to `ubuf`,
+so the buffer held the *transformed* value and a diagnostic reading it afterwards called it
+"sent". **It looked right**, because that is the value a reader expects; found by the case's
+own first run, the same defect class the round exists for. **(4) THE CONSTANT RED ASSERTION
+IS OFF-AXIS, AND THAT IS WHY IT IS QUOTABLE:** `2.3 poll` fails in all three states of both
+arms because of the `ulen` gap, and **a failure that does not move with the axis is not part
+of the experiment** — carrying it that way rather than suppressing it is the right handling
+of a known defect inside a revert test. Also worth one line: **the repaired readiness
+instrument caught a REAL sequencing error and refused to report rather than returning a false
+zero** — #100's defect 2 proving itself unplanned. **#67 MAY NOW BE CLOSABLE, and the
+kickoff's own sentence was stale:** *"ECHO and XFER still strand a slot each for anyone
+entitled to issue them"* was written for refuse-by-name; under permit-one **nobody is
+entitled** to issue them at NSFS (refused pre-claim) and at NSFV they are **serviced**, so
+nothing strands there either. **Confirmed from the chain, not from memory: NO non-`FNRQE`
+path reaches `CLAIMLP` on a production STC** — `NSFVGO`→`CLAIMLP` is straight-line, every
+instruction between is a fall-through or a branch OUT, `PROBEOK` has exactly one reference
+and `CLAIMLP` one besides its own (the `BCT` loop-back *inside* the scan), **no label exists
+in the gap** so nothing can branch in, and `R3` is loaded once from `REQFUNC` and thereafter
+only a `C` comparand. `QUERY`/`UNSTAGE`/`SLOT` branch out above the gate and each ends
+`BR R14`. Posted as a comment on #67; **closing is Mike's call and no state was changed**.
+c3 still deletes the rejection with the verbs — cleanup, not the fix.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
