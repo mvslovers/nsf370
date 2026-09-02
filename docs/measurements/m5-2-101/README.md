@@ -162,6 +162,15 @@ assertion could not have moved.
 The two **controls** are hand-built, and have to be: the facade always
 multiplies and cannot produce either shape (see below).
 
+**And the structural half, which the behavioural one does not cover.**
+`nsfreq_call` consults `g_xtransport` **exactly once, before dispatch, and never
+again on the return leg** — `src/nsfreq.c:979-982` is
+`if (g_xtransport != NULL) { g_xtransport(r); return; }`. So standing the
+transport down inside `x_exec` cannot change what the facade does with the
+result: the model is faithful on the way **back** as well as on the way in. The
+behavioural argument above is the discriminating one; this is the assurance that
+there is no second consultation to have missed.
+
 ### Two things about the gate's construction
 
 - It uses the **poll form with both sockets already ready**, so
@@ -301,6 +310,43 @@ moves with the facade and needs no edit; `test/mvs/tstd1a.c` has no SELECT at
 all. The EZASOH03 `SELE` decoder path also ends in `return nsf_select(...)`
 (`src/nsfeza.c:717`) rather than building its own RQE, so it moves too — which
 is why `r.ulen` for SELECT appears exactly **once** in the whole tree.
+
+---
+
+## The wedge claim: a sound deduction written in the mood of a measurement
+
+The §7 paragraph originally stated the block-forever wedge as fact. **It did not
+start there.** The design memo states it, and the kickoff carried it forward:
+
+> *"A cross-AS `select()` with no timeout wedges the stack for everyone, with no
+> abend, no message and no trace."*
+
+Every hop was checked in source, and every hop holds: no timer on the
+block-forever form; `sel_scan` resolving nothing; `sel_finish` never running;
+`g_priv.ecb` never posted; `g_busy` cleared only at `src/nsfsx.c:1232` under
+`POSTED`. **The conclusion has never been run.** The wedge is observed neither
+happening nor gone.
+
+It is therefore re-cast as **the written prediction for Stage 2 arm 3**, recorded
+here before that run so it cannot be edited afterwards:
+
+> **Prediction (Stage 2, arm 3).** On the *unfixed* module, a cross-AS
+> block-forever SELECT from client A leaves `g_busy` set for the life of the STC,
+> and a subsequent request from client B is never served. On the *fixed* module,
+> B is served. Falsified if B is served in both states (the wedge was never
+> reachable), or served in neither (something other than `g_busy` is holding it).
+
+**The rule this adds** — its home in CLAUDE.md §8.5 or elsewhere is Mike's call,
+so it is recorded here rather than promoted:
+
+> **A chain read out of source is a prediction until a run, however many of its
+> hops were verified.**
+
+This is a different failure from the four earlier prescription errors in this
+round's lineage. Those were an unchecked property or an assumed mechanism — each
+had a wrong hop. This one has **no wrong hop**: the reasoning is sound and it is
+still not evidence. **The tell is the tense of the sentence, not the quality of
+the reasoning** — "wedges the stack" reads as a measurement and was a deduction.
 
 ---
 

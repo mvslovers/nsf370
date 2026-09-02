@@ -247,6 +247,20 @@ driven through `nsf_select`.
   the machine is the live round's question (M5-2d1 §2.3), and #87's territory.
 - That the two load modules agree on `sizeof(NSFSELITEM)`. That is §5's assert,
   and it fires at compile time on each side separately; no host run tests it.
-- Anything about the `g_busy` wedge beyond its cause. The wedge is a consequence
-  and goes away with the cause; the serial-service property it exposes is
+- Anything about the `g_busy` wedge beyond its cause. **It is read from source
+  and has never been run** — observed neither happening nor gone. §1's
+  description of it is a deduction whose every hop was checked (no timer on the
+  block-forever form, `sel_scan` resolving nothing, `sel_finish` never running,
+  `g_priv.ecb` never posted, `g_busy` cleared only under `POSTED`), and a
+  deduction is not a measurement however many hops hold. It is re-cast as the
+  **written prediction for Stage 2 arm 3**, recorded in
+  `docs/measurements/m5-2-101/` before that run. The wedge is a consequence and
+  goes away with the cause; the serial-service property it exposes is
   ADR-0042 §10's, and measuring it is (e)'s job.
+
+  **The rule, recorded rather than promoted** (its home in CLAUDE.md §8.5 or
+  elsewhere is the maintainer's call): *a chain read out of source is a
+  prediction until a run, however many of its hops were verified.* It is a
+  different failure from an unchecked property or an assumed mechanism — there
+  is no wrong hop here — and **the tell is the tense of the sentence, not the
+  quality of the reasoning**.

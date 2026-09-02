@@ -2963,12 +2963,21 @@ ready. **The item count was RIGHT and the bytes were WRONG**, which is why
 nothing looked inconsistent: `nitems ≤ 64` under a 2048 clamp, so `staged ==
 nitems` and the dispatcher got a plausible count over a buffer holding one byte
 in eight. **The unfixed cost is worse than a wrong answer — READ FROM SOURCE,
-NEVER OBSERVED, and it is not claimed as measured anywhere:** the
-**block-forever** form parks with no timer, is re-scanned forever, never posts
-`g_priv.ecb`, so `g_busy` is never cleared and every other client's request would
-stay PENDING for the life of the STC — no abend, no message, nothing to grep for.
-It is a **consequence that goes away with the cause**; nothing here observed it
-happening or observed it gone. Bounded only **by accident**: `sel_scan` read
+NEVER RUN, and not claimed as measured anywhere:** the **block-forever** form
+parks with no timer, is re-scanned forever, never posts `g_priv.ecb`, so `g_busy`
+is never cleared and every other client's request would stay PENDING for the life
+of the STC — no abend, no message, nothing to grep for. **The claim originated in
+the design memo** (*"A cross-AS `select()` with no timeout wedges the stack for
+everyone, with no abend, no message and no trace"*) and the kickoff carried it
+forward; **every hop of it was checked in source and every hop holds, and the
+conclusion has still never been run.** It is re-cast as the **written prediction
+for Stage 2 arm 3**, recorded before that run. **THE RULE THIS ADDS** (recorded,
+not promoted — its home in §8.5 is Mike's call): **a chain read out of source is
+a PREDICTION until a run, however many of its hops were verified.** Unlike the
+four earlier prescription errors this round corrected, there is **no wrong hop**
+— the deduction is sound and still is not evidence, and **the tell is the TENSE
+of the sentence, not the quality of the reasoning**. It is a consequence that
+goes away with the cause; nothing here observed it happening or observed it gone. Bounded only **by accident**: `sel_scan` read
 `8n-1` into a 2048-byte `g_land` and 8 × 64 = 512. **THE GATE HAD TO BE NEW, AND THAT IS THE FINDING ABOUT COVERAGE:** the
 defect lives **between** two green tests — `TSTREQX` pins the crossing and never
 builds a SELECT, `TSTSEL` pins the dispatcher and never crosses a boundary — so
@@ -2985,7 +2994,11 @@ facade — `x_exec` stands the transport down only for the inner dispatch of the
 STC-private copy — and that is checkable rather than structural, because the
 gate's first assertion reads `nsfreqx_stage_len(r->ulen)` off the facade's OWN
 RQE and the red arm reported **`got 2`**, the un-multiplied count. Had the
-multiply been outside the gate, that assertion could not have moved. The two
+multiply been outside the gate, that assertion could not have moved. The
+STRUCTURAL half beside it: `nsfreq_call` consults `g_xtransport` **exactly once,
+before dispatch, never on the return leg** (`src/nsfreq.c:979-982`), so standing
+the transport down cannot change what the facade does with the result — the model
+is faithful on the way back as well as in. The two
 CONTROLS are hand-built and have to be (§ the facade cannot produce either
 shape). **Seen RED on unmodified product
 code before anything was fixed** — 10 named failures, and the numbers name the
