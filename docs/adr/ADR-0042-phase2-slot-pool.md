@@ -593,3 +593,82 @@ and consumable while busy; a dispatchable one deliberately does not.** The item 
 therefore *superseded*, and what replaced it is the reap/hold/reap-bad path — which is
 host-pinned and wired but, as §8 records, went live-unexercised. Reading the acceptance list
 against a green round without this paragraph would mark the item met.
+
+---
+
+## Annotation — M5-2d1c: the production STC permits one verb, ahead of the claim (issue #67)
+
+Append-only. §7 decided what happens when the pool is **full**; this is what happens when a
+request should never have reached the pool at all.
+
+### 1. The hole was in the claim's own ordering
+
+The claim scan runs **before** the routine looks at the verb, which §7 (D) relied on as a
+feature: "an ordinary RQE request exercises it regardless of what the STC then does with it".
+The cost was on the other side of the same fact. A probe verb at the **production** STC claimed
+a slot and an in-flight count, reached `nsfsx.c`'s `ACT_DISPATCH` arm, was set `HELD` because
+its `xfunc` was not `RQE`, and was never re-examined — the client parked on its reply ECB
+forever and the slot was gone for the life of the STC.
+
+**Not theoretical.** M5-2d1's second live round issued `XFER` at NSFS, parked, and cost a
+cancelled job, a leaked slot and an anchor plus router retained to IPL.
+
+### 2. Permit one verb; do not refuse two by name
+
+The obvious repair is to name the offending verbs. Tracing `CLAIMOK`'s staging dispatch shows
+that is not enough: it is a **fall-through chain ending in ECHO**, so **any** unrecognised
+`REQFUNC` — one wrong word in a client, no knowledge of the verb set required — stages as
+`ECHO` and hangs identically. That is the *cheapest* instance of the fault, and naming `ECHO`
+and `XFER` leaves it open.
+
+**So the production STC permits exactly `FNRQE`.** One compare-branch pair rather than two, and
+it closes the class instead of two members of it.
+
+`QUERY` / `UNSTAGE` / `SLOT` are untouched: they branch out of the chain **above** the gate and
+take no slot, which is why the gate sits **last** in the pre-claim chain rather than first. What
+has to be true is only that it is **ahead of the claim** — that is what buys "no slot, no
+in-flight count", by position rather than by argument, the form M5-2c2 established for the
+retired `FNORPH`.
+
+### 3. The gate is a capability bit, so the decision belongs to the server
+
+`NSFV_ANCHOR_PROBE` (`X'40000000'`) in the anchor's existing `flags` word, set by the probe STC
+and by nothing else. **Fail-closed by polarity:** the bit says *permitted*, never *forbidden*,
+so the zero a zeroed or unset anchor carries means refuse.
+
+`flags` rather than `rsvd0`: `rsvd0` is the **last** slack word in the header and §1's own
+annotation reserves it for the lost-race counter, so spending it here would put the next
+addition back to a full Stage-0 round. `ANCFLAG` is already loaded and `TM`'d one instruction
+above.
+
+**`ANCVERNO` stays 3, and that is a claim about silence, not about size.** No field moved. A
+stale router does not test the bit and services probe verbs as it does today. A new router
+against a stale STC reads the bit clear at NSFV and refuses every probe verb there, taking the
+whole Stage-0 set red at once. A version bump is the honest answer to a *silent* skew; neither
+direction here is silent.
+
+### 4. What it does not do
+
+**It does not close #67.** `ECHO` and `XFER` still strand a slot each at the probe STC, which
+services them, and nothing about the `HELD` arm is fixed — it is now unreachable from a client
+at NSFS, which is **not** the same as correct: a slot set `HELD` there is still never
+re-examined. M5-2c3 retires the probe verbs and deletes this gate together with them.
+
+### 5. Evidence, and what it does not amount to
+
+Live: `ECHO` and an unrecognised `REQFUNC` at NSFS both refused `rc=4` **in the caller's block**
+(`BADFUNC`'s shape, not `BADREQ`'s R15-only — a client must not be able to read back its own
+initialised value and take it for "the SVC never ran"), both returning rather than parking,
+`inflight 0→0` and no slot changed state; `TSTRQXF` 122 → **130 PASS**, the delta being exactly
+the new assertions across batch and TSO.
+
+**No before/after arm was run**, and the round says so: the prior behaviour is on record from
+M5-2d1's live round, and re-inducing it costs a cancelled job, a leaked slot and a retained
+anchor. What the round shows instead, on **one binary with one axis varied**, is the
+conditional — the same verb serviced at NSFV (`TSTSVC` green, 438 PASS across the NSFV set) and
+refused at NSFS. That is the axis the design says governs, and it is what a "refused everywhere"
+bug would fail; it is not a before/after arm and is not offered as one.
+
+**The slot/in-flight assertions cannot fail.** Without the gate the request parks, so their
+"after" side is never evaluated — they are a record, not a proof. What proves the refusal cost
+nothing is that the request **returned at all**, with `rc` 4 against an initialised −1.

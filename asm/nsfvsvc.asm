@@ -231,6 +231,11 @@ RCNOBUF  EQU   16                 POOL FULL -> ENOBUFS (ADR-0042 7)
 *  turn that into RCCORR.  Bump with every layout move or it is
 *  decorative.
 ANCVERNO EQU   3                  NSFV_ANCHOR_VER
+*  ANCFLAG's high byte carries two bits: X'80' ACTIVE (checked
+*  above) and X'40' -- THIS SERVER SERVICES THE PROBE VERBS.  A
+*  mask, not an offset.  Set by the probe STC (src/nsfv.c) and by
+*  nothing else, so a zeroed anchor refuses (issue #67).
+ANCPROBE EQU   X'40'              NSFV_ANCHOR_PROBE, high byte
 *  request functions + MVCK copy constants (mirror nsfvsvc.h)
 FNECHO   EQU   1
 FNXFER   EQU   2
@@ -448,6 +453,46 @@ NSFVGO   DS    0H
          BE    DOUNSTG
          C     R3,=A(FNSLOT)
          BE    DOSLOT
+*----------------------------------------------------------------------
+*  #67: A PROBE VERB AT A SERVER THAT DOES NOT SERVICE THEM.  A probe
+*  verb reaching the PRODUCTION STC claims a slot and an in-flight
+*  count, is set HELD by the dispatch arm because its xfunc is not RQE,
+*  and is never re-examined -- so the client parks on its reply ECB
+*  forever and the slot is gone for the life of the STC.  Not
+*  theoretical: M5-2d1's second live round walked into it, had to
+*  cancel the job, and left an anchor plus this router retained to IPL.
+*
+*  REFUSED HERE, AHEAD OF THE CLAIM, so the refusal costs NO slot and
+*  NO in-flight count -- true by position, not by argument, which is
+*  the form M5-2c2 established for the retired FNORPH.  BADFUNC, not
+*  BADREQ: BADFUNC writes the rc into the caller's block, where BADREQ
+*  returns in R15 only and would let a client read back its own
+*  initialised value and take it for "the SVC never ran".
+*
+*  PERMIT ONE VERB RATHER THAN REFUSE TWO BY NAME.  The staging
+*  dispatch at CLAIMOK is a fall-through chain ending in ECHO, so ECHO
+*  is not the only way in: ANY unrecognised REQFUNC falls through,
+*  stages as ECHO and hangs identically -- one wrong word in a client
+*  is enough.  Naming ECHO and XFER would leave that open, and it is
+*  the cheapest instance of the fault.  QUERY / UNSTAGE / SLOT are
+*  unaffected: they branched out above this point and take no slot.
+*
+*  PLACEMENT IS LAST IN THE PRE-CLAIM CHAIN, NOT FIRST.  What has to be
+*  true is only that it is AHEAD OF THE CLAIM -- that is what buys "no
+*  slot, no in-flight count".  It has to sit after the QUERY / UNSTAGE
+*  / SLOT branches, because those verbs are serviced at BOTH servers
+*  and must reach their handlers here too.
+*
+*  The gate is the anchor's own capability bit, so the decision belongs
+*  to the server that published the anchor.  M5-2c3 DELETES THIS BLOCK
+*  together with the probe verbs it protects against -- it is not left
+*  behind as unattributable dead code.
+*----------------------------------------------------------------------
+         TM    ANCFLAG(R2),ANCPROBE  probe verbs serviced here?
+         BO    PROBEOK            yes -> the chain is unchanged
+         C     R3,=A(FNRQE)       no: RQE is the only verb this server
+         BNE   BADFUNC            can service -- reject, claim nothing
+PROBEOK  DS    0H
 *----------------------------------------------------------------------
 *  CLAIM A SLOT (M5-2b3, ADR-0042).  CS each slot's OWN state word from
 *  FREE to CLAIMED; first success wins.  A failed CS means another

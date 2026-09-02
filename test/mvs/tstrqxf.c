@@ -1029,6 +1029,88 @@ main(void)
         }
     }
 
+    /* ==================================================================== *
+     * (E) M5-2d1c: THE #67 REJECTION.  A probe verb at a server that does
+     * not service them.
+     *
+     * This STC has NSFV_ANCHOR_PROBE clear, so the SVC routine permits
+     * exactly NSFV_REQ_RQE and refuses everything else AHEAD OF THE CLAIM.
+     * What has to be shown is not only that the request is refused, but that
+     * the refusal cost nothing: no slot claimed, no in-flight count taken.
+     * Both are read straight out of CSA, before and after.
+     *
+     * TWO REQUESTS, AND THE SECOND IS THE POINT.  ECHO is the verb #67
+     * names.  The unrecognised code is the one that says why the gate
+     * permits a verb instead of refusing two by name: the staging dispatch
+     * at CLAIMOK is a fall-through chain ending in ECHO, so any REQFUNC the
+     * routine does not recognise -- one wrong word in a client -- would
+     * stage as ECHO and hang identically.  A test that only drove ECHO would
+     * pass against a refuse-by-name gate that leaves that open.
+     *
+     * THE FAILURE MODE IS A HANG, NOT A FAILED ASSERTION.  Without the gate
+     * the request claims a slot, the dispatch arm sets it HELD because its
+     * xfunc is not RQE, nothing re-examines it, and this task parks on its
+     * reply ECB forever -- the job has to be cancelled and its buffered
+     * SYSPRINT goes with it (the M4-5 lesson).  So each request is bracketed
+     * by wtof markers: the console log survives the cancel and names which
+     * verb hung.  That is also what happened live in M5-2d1's second round,
+     * which is this section's "before" arm -- it is on record and is not
+     * re-induced here, because inducing it costs a cancelled job, a leaked
+     * slot and an anchor retained to IPL.
+     *
+     * ITS NEGATIVE CONTROL IS FREE AND LIVES IN THE OTHER HALF OF THE ROUND.
+     * TSTSVC drives ECHO and TSTUBUF/TSTXFW drive XFER against NSFV, where
+     * the bit IS set; those staying green is what makes this a CONDITIONAL
+     * gate rather than "the verbs are refused everywhere".
+     *
+     * Run against NSFV by mistake, this section fails CLEANLY (NSFV services
+     * ECHO and answers rc=0) rather than hanging.
+     * ==================================================================== */
+    {
+        UINT     infl_before = 0u, infl_after = 0u;
+        UINT     busy_before = 0u, busy_after = 0u;
+        UINT     i;
+        NSFV_REQ ereq;
+
+        (void)xf_query(NULL, &infl_before, NULL);
+        for (i = 0u; i < NSFV_NSLOTS; i++)
+            if (g_anchor->slots[i].req_state != NSFV_REQ_FREE) busy_before++;
+
+        /* --- ECHO: the verb #67 names -------------------------------- */
+        wtof("TSTRQXF: (E) ECHO at NSFS -- HANGS if the #67 gate is absent");
+        xf_req_init(&ereq, NSFV_REQ_ECHO);
+        ereq.token = 0x5AC0F001u;
+        nsfv_svc_issue(&ereq);
+        wtof("TSTRQXF: (E) ECHO RETURNED rc=%d (it did not park)",
+             (int)ereq.rc);
+        /* rc reaches the CALLER'S BLOCK, not R15 only -- xf_req_init left it
+        ** -1, so this also proves the block was written and the request did
+        ** not simply fail to reach the routine (BADFUNC's shape, not
+        ** BADREQ's). */
+        CHECK_EQ((long)ereq.rc, (long)NSFV_RC_INVALID,
+                 "(E) ECHO at the production STC is refused, rc in the block");
+
+        /* --- an unrecognised code: the fall-through case -------------- */
+        wtof("TSTRQXF: (E) REQFUNC 99 at NSFS -- the fall-through case");
+        xf_req_init(&ereq, 99u);
+        nsfv_svc_issue(&ereq);
+        wtof("TSTRQXF: (E) REQFUNC 99 RETURNED rc=%d", (int)ereq.rc);
+        CHECK_EQ((long)ereq.rc, (long)NSFV_RC_INVALID,
+                 "(E) an unrecognised REQFUNC is refused, not staged as ECHO");
+
+        /* --- and neither refusal cost anything ------------------------ */
+        (void)xf_query(NULL, &infl_after, NULL);
+        for (i = 0u; i < NSFV_NSLOTS; i++)
+            if (g_anchor->slots[i].req_state != NSFV_REQ_FREE) busy_after++;
+        printf("  (E) inflight %u->%u, non-FREE slots %u->%u\n",
+               (unsigned)infl_before, (unsigned)infl_after,
+               (unsigned)busy_before, (unsigned)busy_after);
+        CHECK_EQ((long)infl_after, (long)infl_before,
+                 "(E) the refusals took NO in-flight count");
+        CHECK_EQ((long)busy_after, (long)busy_before,
+                 "(E) the refusals claimed NO slot");
+    }
+
     /* ---- the transport still works end to end -------------------------- */
     rc = xf_query(&st2, &in2, &rp2);
     CHECK_EQ((long)rc, (long)NSFV_RC_OK, "the transport survived the whole run");

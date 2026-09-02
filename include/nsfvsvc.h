@@ -77,6 +77,54 @@
 /* --- Anchor state -------------------------------------------------------- */
 #define NSFV_ANCHOR_ACTIVE  0x80000000U
 
+/* THIS SERVER SERVICES THE PROBE VERBS (issue #67, M5-2d1c).  Set by the probe
+ * STC (src/nsfv.c) and by nothing else; the production STC (src/nsfsx.c)
+ * deliberately leaves it clear.
+ *
+ * WHY THE BIT EXISTS.  A probe verb reaching the PRODUCTION STC claims a CSA
+ * slot and an in-flight count, is set HELD by the dispatch arm because its
+ * xfunc is not RQE (src/nsfsx.c, NSFREQX_ACT_DISPATCH), and is never
+ * re-examined -- so the client parks on its reply ECB forever and the slot is
+ * gone for the life of the STC.  That is issue #67, and it is not theoretical:
+ * M5-2d1's second live round walked into it, had to cancel the job, and left
+ * an anchor plus the router retained to IPL.  The routine now refuses ahead of
+ * the claim, so the refusal costs no slot and no in-flight count BY POSITION
+ * rather than by argument -- the form M5-2c2 established for the retired
+ * FNORPH.
+ *
+ * PERMIT ONE VERB, DO NOT REFUSE TWO BY NAME.  The staging dispatch at CLAIMOK
+ * is a fall-through chain ending in ECHO, so ECHO is not the only way in: ANY
+ * unrecognised REQFUNC -- one wrong word in a client -- falls through, stages
+ * as ECHO, and hangs identically.  Naming ECHO and XFER would leave that open,
+ * and it is the cheapest instance of the fault.  So the production STC permits
+ * exactly FNRQE and refuses everything else.  QUERY / UNSTAGE / SLOT are
+ * unaffected either way: they branch out of the chain ABOVE this point and
+ * take no slot.
+ *
+ * POLARITY IS FAIL-CLOSED, AND THAT IS THE REASON FOR IT.  The bit says
+ * "permitted", never "forbidden", so the zero an unset or zeroed anchor
+ * carries means REFUSE.  A server that has not said it services probe verbs is
+ * not assumed to.
+ *
+ * WHY flags AND NOT rsvd0.  rsvd0 is the LAST slack word in the header and its
+ * own comment names the use it was reserved for (the lost-race counter);
+ * spending it here would put the next addition back to a full Stage-0 round.
+ * ANCFLAG is already loaded and TM'd one instruction above the insertion
+ * point, so the marginal cost of a second TM is one instruction.
+ *
+ * NSFV_ANCHOR_VER STAYS 3, AND NEITHER SKEW DIRECTION IS SILENT.  The version
+ * guards the router<->STC layout contract and no field moved.  A stale router
+ * against a new STC does not test the bit, so probe verbs are serviced as they
+ * are today -- correct at NSFV, and no worse than today at NSFS.  A new router
+ * against a stale STC reads the bit CLEAR at NSFV and refuses every probe verb
+ * there, which takes the whole Stage-0 set red immediately and loudly.  A
+ * version bump would be the honest answer to a SILENT skew; there is none.
+ *
+ * LIFETIME.  M5-2c3 retires the probe verbs after (e).  When it does, this bit,
+ * the routine's gate and the NSFV assignment all go with them -- they are not
+ * left behind as unattributable dead code. */
+#define NSFV_ANCHOR_PROBE   0x40000000U
+
 /* Slot lifecycle (M5-2b3 / ADR-0042).  Was a single request area with one
  * writer per transition; it is now a per-slot state word claimed by CS, and
  * CLAIMED is the new state between FREE and PENDING -- the window in which a
@@ -411,6 +459,7 @@ NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
  *   ANCEYE     EQU  0    CL8  "NSFVANCR"
  *   ANCVER     EQU  8    F    version -- checked against ANCVERNO
  *   ANCFLAG    EQU 12    F    ANCHOR_ACTIVE = X'80000000'
+ *                              ANCHOR_PROBE  = X'40000000' (#67)
  *   ANCSECB    EQU 16    F    server_ecb  (STC WAIT target, fallback)
  *   ANCSASCB   EQU 20    A    server_ascb (STC ASCB, POST target)
  *   ANCINFL    EQU 24    F    inflight
@@ -437,11 +486,17 @@ NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
  *  and the routine's own constant, which is NOT an offset:
  *   ANCVERNO   EQU 3          == NSFV_ANCHOR_VER; the routine rejects an
  *                                anchor whose ANCVER differs
+ *   ANCPROBE   EQU X'40'      == NSFV_ANCHOR_PROBE's high byte, TM'd against
+ *                                ANCFLAG(R2): does this server service the
+ *                                probe verbs?  (issue #67)
  * ============================================================================ */
 typedef struct nsfv_anchor {
     char      eye[8];             /* +00 "NSFVANCR"                           */
     UINT      version;            /* +08 NSFV_ANCHOR_VER -- routine checks it  */
-    UINT      flags;              /* +0C NSFV_ANCHOR_ACTIVE                   */
+    UINT      flags;              /* +0C NSFV_ANCHOR_ACTIVE, and since
+                                  **     M5-2d1c NSFV_ANCHOR_PROBE -- the
+                                  **     probe-verb capability bit the SVC
+                                  **     routine gates on (issue #67).     */
     ECB       server_ecb;         /* +10 STC WAIT target (CSA, key 0) -- the
                                   **     fallback the Stage-0 probe STC uses  */
     void     *server_ascb;        /* +14 STC ASCB (__ascb(0) at startup)      */
