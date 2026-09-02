@@ -181,6 +181,7 @@ static int case_foreign_r8(void)
     NSFV_REQ  req;
     NSFV_REQ  intended;         /* what must END UP in the CSA slot           */
     char      staged[64];       /* what we SEND: `intended`, each byte - 1    */
+    char      sent[64];         /* a snapshot of it: XFER writes `staged` back */
     NSFV_REQ *target;
     UINT      slot, i;
     int       readable = 0, storable = 1;
@@ -208,6 +209,14 @@ static int case_foreign_r8(void)
     for (i = 0u; i < (UINT)sizeof staged; i++)
         staged[i] = (char)(((const unsigned char *)&intended)[i] - 1u);
 
+    /* SNAPSHOT WHAT WE SEND, BEFORE WE SEND IT.  XFER is a ROUND TRIP: XFEROUT
+    ** copies stage[] back into ubuf after the STC replies, so `staged` holds
+    ** the TRANSFORMED bytes once the call returns.  Printing it afterwards and
+    ** calling it "sent" would be a false label on a real measurement -- the
+    ** exact defect class this round exists to remove -- and it looks right,
+    ** because the transformed value is the one the reader expects to see. */
+    memcpy(sent, staged, sizeof sent);
+
     memset(&req, 0, sizeof req);
     memcpy(req.eye, NSFV_REQ_EYE, 4);
     req.func = NSFV_REQ_XFER;
@@ -234,15 +243,18 @@ static int case_foreign_r8(void)
      * against by eye. */
     {
         const unsigned char *w = (const unsigned char *)&intended;
-        const unsigned char *g = (const unsigned char *)staged;
+        const unsigned char *g = (const unsigned char *)sent;
+        const unsigned char *r = (const unsigned char *)staged;
         const unsigned char *b = (const unsigned char *)target;
 
-        printf("  case 2: sent   %02X %02X %02X %02X  (= NSFV_REQ_EYE - 1)\n",
+        printf("  case 2: sent    %02X %02X %02X %02X  (= NSFV_REQ_EYE - 1)\n",
                g[0], g[1], g[2], g[3]);
-        printf("  case 2: landed %02X %02X %02X %02X  (after the STC's +1)\n",
+        printf("  case 2: landed  %02X %02X %02X %02X  (in CSA, after +1)\n",
                b[0], b[1], b[2], b[3]);
-        printf("  case 2: wanted %02X %02X %02X %02X  (= NSFV_REQ_EYE)\n",
+        printf("  case 2: wanted  %02X %02X %02X %02X  (= NSFV_REQ_EYE)\n",
                w[0], w[1], w[2], w[3]);
+        printf("  case 2: readback %02X %02X %02X %02X  (XFEROUT -> ubuf)\n",
+               r[0], r[1], r[2], r[3]);
     }
 
     /* SELF-VALIDATION AS A GATE, NOT AS AN ASSERTION.  Both halves must hold
