@@ -17,7 +17,17 @@
  *  (2) EYECATCHER AT AN ADDRESS THE CALLER DOES NOT OWN.  The target is the
  *      client's OWN CSA staging buffer, reached by first XFERing a pattern
  *      beginning "NSFV" into it -- so the eyecatcher check PASSES and only the
- *      key check can refuse.  Self-validating (we prove the storage is
+ *      key check can refuse.
+ *
+ *      XFER IS NOT A COPY, AND THAT COST THE PREVIOUS ROUND ITS RESULT: the
+ *      probe STC adds 1 to every staged byte (src/nsfv.c), so a verbatim
+ *      "NSFV" lands as "NSFV"+1, the EYECATCHER check is what refuses, and the
+ *      answer says nothing about TPROT.  The image is therefore staged MINUS
+ *      ONE, derived from NSFV_REQ_EYE rather than written out as bytes.  Its
+ *      self-validation is a GATE, not an assertion: if the eyecatcher did not
+ *      land, or the target turns out to be key-8 writable, the case CANNOT RUN
+ *      and says so -- and main then returns 20, because cases 1 and 3 passing
+ *      while the case the gate exists for never ran must not read as green.  Self-validating (we prove the storage is
  *      key-8-readable and key-8-unwritable first) and SAFE: the only storage at
  *      risk is this client's own scratch, so the revert arm corrupts nothing
  *      that matters.  Pointing R8 at the anchor itself would also pass the
@@ -163,20 +173,40 @@ static int d1r_try_store(void)
 }
 
 /* ---- case 2: eyecatcher present, storage the caller cannot write ---------- */
-static void case_foreign_r8(void)
+/* Returns 0 if the case RAN, non-zero if it could not run.  The distinction is
+ * the whole repair: the previous round's self-validation failed and a PASS was
+ * printed underneath it, so the case reported a result it had not earned. */
+static int case_foreign_r8(void)
 {
     NSFV_REQ  req;
-    char      staged[64];
+    NSFV_REQ  intended;         /* what must END UP in the CSA slot           */
+    char      staged[64];       /* what we SEND: `intended`, each byte - 1    */
     NSFV_REQ *target;
-    UINT      slot;
+    UINT      slot, i;
     int       readable = 0, storable = 1;
 
-    /* Stage a 64-byte image whose first 4 bytes are "NSFV" into OUR OWN CSA
-     * staging buffer, through the legitimate keyed path.  After this the CSA
-     * holds a block the eyecatcher will accept and the caller cannot write. */
-    memset(staged, 0, sizeof staged);
-    memcpy(staged, NSFV_REQ_EYE, 4);
-    *(UINT *)(staged + 4) = NSFV_REQ_QUERY;
+    /* THE IMAGE THAT MUST LAND: a valid eyecatcher, so the router's CLC accepts
+     * the block and the KEY check is the only thing left that can refuse; plus
+     * a sentinel in the two words a permitted write would change first. */
+    memset(&intended, 0, sizeof intended);
+    memcpy(intended.eye, NSFV_REQ_EYE, 4);
+    intended.func = NSFV_REQ_QUERY;
+    intended.rc   = (int)D1R_SENT;
+    intended.seq  = D1R_SENT;
+
+    /* STAGE IT MINUS ONE, BECAUSE THE STC ADDS ONE.  XFER IS NOT A COPY: the
+     * probe STC's service applies +1 to every staged byte (src/nsfv.c), so a
+     * verbatim "NSFV" lands as "NSFV"+1, the EYECATCHER check refuses, and the
+     * result says nothing about TPROT.  That is exactly what happened in the
+     * previous round -- and its own self-validation is what caught it.
+     *
+     * DERIVED FROM THE LITERAL, NEVER WRITTEN OUT AS BYTES.  The runtime is
+     * EBCDIC, so the literal is D5 E2 C6 E5; hardcoding its minus-one would
+     * re-create the very assumption that cost that round its result.  Char
+     * arithmetic wraps byte-wise with no carry, so minus-one is exact for every
+     * value, 0x00 included. */
+    for (i = 0u; i < (UINT)sizeof staged; i++)
+        staged[i] = (char)(((const unsigned char *)&intended)[i] - 1u);
 
     memset(&req, 0, sizeof req);
     memcpy(req.eye, NSFV_REQ_EYE, 4);
@@ -185,38 +215,61 @@ static void case_foreign_r8(void)
     req.ulen = (UINT)sizeof staged;
     d1r_svc(&req);
     if (req.rc != NSFV_RC_OK) {
-        printf("  case 2: could not stage (rc=%d) -- SKIPPED\n", (int)req.rc);
-        CHECK(0, "2.4(2): staging the foreign R8 target succeeded");
-        return;
+        printf("  case 2: could not stage (rc=%d) -- CASE SKIPPED\n",
+               (int)req.rc);
+        wtof("TSTD1R: (2) staging failed rc=%d -- CASE SKIPPED", (int)req.rc);
+        return 1;
     }
     slot   = req.slot;
     target = (NSFV_REQ *)&g_anchor->slots[slot].stage[0];
     printf("  case 2: staged into slot %u, target = %08X\n",
            (unsigned)slot, (unsigned)target);
 
-    /* SELF-VALIDATION, before the result means anything: the target must be
-     * READABLE from key 8 (so the eyecatcher check can pass) and NOT STORABLE
-     * from key 8 (so only the key check can be what refuses). */
-    {   /* Diagnostic: what actually landed in the staging buffer.  A failed
-         * self-validation must say WHY, or the next round repeats the guess. */
+    /* THE DIAGNOSTIC IS DERIVED THROUGHOUT, SO IT CANNOT CONTRADICT ITSELF.
+     * The previous round printed a "wanted" beside a landed value and the two
+     * implied different encodings; that contradiction is what stopped it, and
+     * settling it cost a round.  Every row below comes from the same `intended`
+     * image this client built, so all three agree under ANY runtime encoding --
+     * there is no byte value written out anywhere for a reader to compare
+     * against by eye. */
+    {
+        const unsigned char *w = (const unsigned char *)&intended;
+        const unsigned char *g = (const unsigned char *)staged;
         const unsigned char *b = (const unsigned char *)target;
-        printf("  case 2: target[0..7] = %02X %02X %02X %02X %02X %02X %02X %02X"
-               "  (wanted %02X %02X %02X %02X)\n",
-               b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-               (unsigned char)NSFV_REQ_EYE[0], (unsigned char)NSFV_REQ_EYE[1],
-               (unsigned char)NSFV_REQ_EYE[2], (unsigned char)NSFV_REQ_EYE[3]);
-    }
-    readable = (memcmp(target->eye, NSFV_REQ_EYE, 4) == 0);
-    CHECK(readable, "2.4(2): the target is key-8 READABLE and carries \"NSFV\"");
 
-    /* ...and NOT storable from key 8.  Proved, not assumed: without this, a
-     * refusal could equally mean the address was simply bad. */
+        printf("  case 2: sent   %02X %02X %02X %02X  (= NSFV_REQ_EYE - 1)\n",
+               g[0], g[1], g[2], g[3]);
+        printf("  case 2: landed %02X %02X %02X %02X  (after the STC's +1)\n",
+               b[0], b[1], b[2], b[3]);
+        printf("  case 2: wanted %02X %02X %02X %02X  (= NSFV_REQ_EYE)\n",
+               w[0], w[1], w[2], w[3]);
+    }
+
+    /* SELF-VALIDATION AS A GATE, NOT AS AN ASSERTION.  Both halves must hold
+     * before the case means anything: the target must be READABLE from key 8
+     * (or the eyecatcher check refuses and TPROT is never reached) and NOT
+     * STORABLE from key 8 (or a refusal could equally mean a bad address).  If
+     * either fails the case CANNOT RUN, and saying so is the only honest
+     * answer -- a PASS printed under a failed precondition is worse than no
+     * result, because it reads as one (CLAUDE.md 8.5). */
+    readable = (memcmp(target->eye, NSFV_REQ_EYE, 4) == 0);
+    if (!readable) {
+        printf("  case 2: the eyecatcher did NOT land -- CASE SKIPPED (the"
+               " refusal would be the eyecatcher check, not the key check)\n");
+        wtof("TSTD1R: (2) eyecatcher did not land -- CASE SKIPPED");
+        return 1;
+    }
+
     g_store_probe = (volatile UINT *)&g_anchor->slots[slot].stage[8];
     storable = (___try(d1r_try_store) == 0);
-    CHECK_EQ((long)storable, 0L,
-             "2.4(2): a key-8 STORE into that target FAULTS (so only the key "
-             "check can be what refuses)");
-    printf("  case 2: readable=%d storable=%d\n", readable, storable);
+    if (storable) {
+        printf("  case 2: the target is key-8 WRITABLE -- CASE SKIPPED (a"
+               " refusal could not be attributed to the key check)\n");
+        wtof("TSTD1R: (2) target is key-8 writable -- CASE SKIPPED");
+        return 1;
+    }
+    printf("  case 2: readable=%d storable=%d (both as required)\n",
+           readable, storable);
 
     /* THE CASE.  R8 points at storage carrying "NSFV" that this client cannot
      * write.  Refused => the block is untouched; permitted => the router writes
@@ -232,7 +285,12 @@ static void case_foreign_r8(void)
                (unsigned)before_seq, (unsigned)target->seq);
         CHECK(target->rc == before_rc && target->seq == before_seq,
               "2.4(2): a foreign R8 was REFUSED and the block NOT written");
+        /* And the refusal is now ATTRIBUTABLE: the eyecatcher provably landed
+        ** (gated above), so the eyecatcher check cannot be what refused, and
+        ** the address is provably key-0 (the store faults), so it is not simply
+        ** a bad pointer.  TPROT is what is left. */
     }
+    return 0;
 }
 
 /* ---- case 3: the never-referenced tail (a NEGATIVE control) --------------- */
@@ -271,6 +329,9 @@ static void case_tail_untouched(void)
 
 int main(void)
 {
+    int skipped = 0;
+    int rc;
+
     printf("=== nsf370 M5-2d1 live gate 2.4: the R8 validation (TSTD1R) ===\n");
     wtof("TSTD1R: R8 GATE START");
 
@@ -283,9 +344,20 @@ int main(void)
     }
 
     case_no_eye();
-    case_foreign_r8();
+    skipped = case_foreign_r8();
     case_tail_untouched();
 
     wtof("TSTD1R: R8 GATE DONE");
-    return mbt_test_summary("TSTD1R");
+    rc = mbt_test_summary("TSTD1R");
+    /* A SKIPPED CASE 2 MUST NOT LEAVE A GREEN RETURN CODE.  Cases 1 and 3 can
+    ** all pass while the one case the gate exists for never ran -- which is
+    ** precisely what happened in the previous round.  Report "could not run"
+    ** in preference to "passed"; a real failure (rc 1) still outranks it. */
+    if (rc == 0 && skipped) {
+        printf("  CASE 2 DID NOT RUN -- returning CC %d, NOT a pass\n",
+               D1R_CC_SKIP);
+        wtof("TSTD1R: CASE 2 SKIPPED -- CC %d, NOT a pass", D1R_CC_SKIP);
+        return D1R_CC_SKIP;
+    }
+    return rc;
 }
