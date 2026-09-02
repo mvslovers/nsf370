@@ -54,8 +54,25 @@ typedef struct nsfselitem {
     UCHAR rsvd[2];              /* pad to a fullword                            */
 } NSFSELITEM;                   /* 8 bytes */
 
+/* THE CROSS-COMPILATION CONTRACT (ADR-0047).  `ulen` is a BYTE length, so the
+ * facade multiplies by this size and the executive-side engine divides by it --
+ * and the two live in SEPARATELY LINKED load modules (the facade links into the
+ * application, the engine into the STC).  Within one compilation the multiply
+ * and the divide cancel whatever the size happens to be; across two they do
+ * not, and a disagreement would mis-frame every item silently.  A host test
+ * cannot see this -- it links both halves into one binary -- so the assert is
+ * what carries it.  (CLAUDE.md 3, Memory: every control block declares its byte
+ * size and is guarded by NSF_SIZE_ASSERT.)
+ *
+ * It enforces under __MVS__ only -- a no-op on the host by design (nsf.h), which
+ * is the right place: the cross build is the one that produces the two load
+ * modules whose agreement is at stake. */
+NSF_SIZE_ASSERT(NSFSELITEM, 8);
+
 /* NSFRQE param encoding for RQ_SELECT (ADR-0035): ubuf = the NSFSELITEM array,
- * ulen = its count, p1 = timeout seconds, p2 = timeout microseconds, p3 = flags.
+ * ulen = its length in BYTES -- nitems * sizeof(NSFSELITEM), not the count
+ * (ADR-0047; superseded ADR-0035's encoding). p1 = timeout seconds, p2 = timeout
+ * microseconds, p3 = flags.
  * SEL_F_TIMED present => a finite timeout (use p1/p2); absent => block forever.
  * With SEL_F_TIMED set, p1==0 && p2==0 is a poll (return immediately, no park). */
 #define SEL_F_TIMED   0x0001u

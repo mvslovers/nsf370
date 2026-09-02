@@ -230,7 +230,8 @@ static int role_b(void)
 
         memset(&r, 0, sizeof(r));
         memcpy(r.eye, NSFRQE_EYE, 4);
-        r.fn = (USHORT)RQ_SELECT; r.ubuf = it; r.ulen = 2u;
+        r.fn = (USHORT)RQ_SELECT; r.ubuf = it;
+        r.ulen = 2u * (UINT)sizeof(NSFSELITEM);   /* BYTES (ADR-0047) */
         r.p3 = SEL_F_TIMED;                     /* 0/0 poll form: never parks */
         nsfreq_call(&r);
         printf("  SELECT poll: rc=%d errno=%d foreign.ready=%u own.ready=%u\n",
@@ -257,7 +258,8 @@ static int role_b(void)
              (unsigned)a_desc);
         memset(&r, 0, sizeof(r));
         memcpy(r.eye, NSFRQE_EYE, 4);
-        r.fn = (USHORT)RQ_SELECT; r.ubuf = it; r.ulen = 1u;
+        r.fn = (USHORT)RQ_SELECT; r.ubuf = it;
+        r.ulen = 1u * (UINT)sizeof(NSFSELITEM);   /* BYTES (ADR-0047) */
         r.p1 = 8u;                              /* 8 s: it must PARK          */
         r.p3 = SEL_F_TIMED;
         nsfreq_call(&r);
