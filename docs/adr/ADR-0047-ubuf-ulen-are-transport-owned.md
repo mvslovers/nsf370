@@ -1,6 +1,7 @@
 # ADR-0047 — `ubuf` and `ulen` are transport-owned
 
-**Status:** Proposed (M5-2, issue #101)
+**Status:** Accepted (M5-2, issue #101) — merged 2026-09-02; the merge is the
+countersign (`docs/adr/README.md` convention 1)
 **Date:** 2026-09-02
 **Supersedes / amends:** supersedes ADR-0035's `RQ_SELECT` **encoding** of
 `ulen` (ADR-0035 as a whole stays Accepted); annotates ADR-0041 §2, whose
@@ -214,6 +215,14 @@ are `test/mvs/tstd1b.c`'s (a test that encodes its own request) and a hostile
 one. That is also why both controls in the S12 gate are hand-built rather than
 driven through `nsf_select`.
 
+**And the truncation control closes that claim rather than merely illustrating
+it.** It pins *arithmetic consistency* — the derived count matches the bytes that
+crossed — not dispatcher behaviour on a truncated set, and **it does not need
+to**: `NSFREQX_CHUNK` is **2048, itself a multiple of 8**, so the clamp can never
+manufacture a non-multiple out of a well-formed request. Truncation and refusal
+are therefore disjoint, the refusal path is reachable only from a hand-built RQE,
+and what this paragraph asserts is what that control demonstrates.
+
 ---
 
 ## 7. Consequences
@@ -245,6 +254,13 @@ driven through `nsf_select`.
   array integrity, the refusal of a non-multiple and the truncation behaviour —
   all in one address space. Whether the crossing carries a SELECT correctly on
   the machine is the live round's question (M5-2d1 §2.3), and #87's territory.
+- **The refusal is proved on the PHASE-1 path, not across the crossing.** The
+  `cross/odd` control submits its hand-built request with **no transport
+  registered**, so `NSF_EINVAL` is established on the drainer path. That is
+  proportionate *precisely because §2 produced one path* — `nsfsel_dispatch` is
+  the same code either way, and a per-phase branch would have been the wrong
+  change — but the division should say so rather than let a reader assume both
+  were exercised.
 - That the two load modules agree on `sizeof(NSFSELITEM)`. That is §5's assert,
   and it fires at compile time on each side separately; no host run tests it.
 - Anything about the `g_busy` wedge beyond its cause. **It is read from source

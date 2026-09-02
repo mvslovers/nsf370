@@ -3086,7 +3086,29 @@ that a **cross-AS SELECT works at all** (one address space, a *modelled*
 transport — d1 §2.3's round, #87's territory); that the two load modules agree on
 `sizeof(NSFSELITEM)` (the assert's sole job, compile-time, per side); the
 `tstd1b.c` edit itself (`host = false`, **unverified here**, proof in Stage 2);
-or anything about the `g_busy` wedge beyond its cause. `docs/measurements/m5-2-101/`.
+or anything about the `g_busy` wedge beyond its cause; and **the refusal is proved
+on the PHASE-1 path** — `cross/odd` submits with no transport registered, which is
+proportionate *because the decision produced one path* (`nsfsel_dispatch` is the
+same code either way), but is said rather than assumed. The truncation control
+pins arithmetic consistency and needs nothing more: **2048 is itself a multiple
+of 8**, so the clamp can never manufacture a non-multiple, and truncation and
+refusal are disjoint. `docs/measurements/m5-2-101/`.
+**COUNTERSIGNED (PR #103 merged); ADR-0047 Proposed → Accepted.** Both states were
+**reproduced independently in a clean clone of the PR head** — 3491/0 at head,
+3408 PASS / 10 FAIL with the two product lines reverted, `TSTSEL` `rc=-6` — and the
+three §5 checks were read off the diff, not the report. **§2 confirmed AT the
+harness:** the row reads `FAIL rc=-6` and the summary `2 host test(s) FAILED`, so
+the abort is loud at the **test** level and invisible at the **assertion** level;
+the harness proposal stays unimplemented because mbt is a different repo. **Three
+things make the gate worth trusting rather than merely green, and they are why a
+green run is not vacuous:** the oracle is sized by the test's OWN `nitems` and
+**never by `r->ulen`**, so it cannot shrink the way the defect shrinks the data;
+it carries its own **positive control** (`sent[0].desc != 0 && sent[1].desc != 0`),
+so a wrong `nitems` cannot produce a green run over an empty comparison; and the
+landing area is `NSFREQX_CHUNK` rather than the staged length, so a `ready`
+written past the staged bytes **fails an assertion instead of overrunning the
+test's own buffer**. **#101 STAYS OPEN — Stage 2 closes it**; nothing flips to
+proven.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]

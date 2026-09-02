@@ -222,6 +222,12 @@ queue.
 | non-multiple `ulen` (9) | refused, `retcode < 0`, `errno == NSF_EINVAL` (22) — **not** the empty set's `rc 0` |
 | truncation (`ulen` = 2112 > 2048) | `priv.ulen` clamped to 2048, a whole multiple of 8, derived count 256 = the bytes that crossed |
 
+**The truncation control pins arithmetic consistency, not dispatcher behaviour
+on a truncated set — and does not need to.** `NSFREQX_CHUNK` is **2048, itself a
+multiple of 8**, so the clamp can never manufacture a non-multiple out of a
+well-formed request. Truncation and refusal are disjoint, and the refusal path is
+reachable only from a hand-built RQE.
+
 **Both the non-multiple and the truncation controls are hand-built requests, and
 they have to be.** The facade always multiplies, and it caps at `NSFEZA_MAXSOC`
 (64 items = 512 bytes) against a 2048 clamp that is itself a multiple of 8 — so
@@ -265,6 +271,11 @@ trip reports both sockets ready.
 - **That a cross-AS SELECT works at all.** Everything above happens in one
   address space against a *modelled* transport. The machine's answer is Stage 2
   (M5-2d1 §2.3), and #87's territory.
+- **That the refusal survives the crossing.** `cross/odd` submits with **no
+  transport registered**, so `NSF_EINVAL` is proved on the **Phase-1 drainer
+  path**, not across the modelled crossing. Proportionate *because the decision
+  produced one path* — `nsfsel_dispatch` is the same code either way — but said
+  here rather than left for a reader to assume both.
 - **That the two load modules agree on `sizeof(NSFSELITEM)`.** The host links
   facade and dispatcher into one compilation, so the multiply and the divide
   cancel *whatever* the size is. That agreement is the size assert's sole job,
