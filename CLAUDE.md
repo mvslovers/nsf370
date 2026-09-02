@@ -2800,8 +2800,8 @@ this be green on unchanged code?"* question answering **yes, on every build**. D
 means **§2.3's parked path was never driven at all** — the one path nothing covered until d1
 added it. **Still live-unproven after this round:** R8 entirely (§2.4), indistinguishability
 (§2.2b), SELECT-foreign on either path (§2.3), the revert's R8 arm, and Phase 1 live.
-**M5-2d1c (the #67 rejection pulled forward, and the encoding question settled) — 1 DONE
-and live-green; 2.1's code change and 2.2 NOT STARTED, blocked on PR #100.** Not a milestone
+**M5-2d1c (the #67 rejection pulled forward, the encoding question settled, and both
+checks reverted in three states) — DONE, live-green.** Not a milestone
 step; **M5 stays in progress and nothing flips** — #67, #88 and #92 stay open, and the `ulen`
 gap, (e), the milestone flip, c3 and d2 are all still ahead. **#67's rejection came out of c3
 for a reason that is not the security one it was filed for: our own rounds keep walking into
@@ -2869,10 +2869,42 @@ produced. Established as exactly that and no more; *how* it came to be written i
 inference. Four consequences recorded for case 2, including that **the rc alone cannot
 attribute the refusal** (`BADREQ` returns in R15 only and *both* the eyecatcher and TPROT checks
 land there), so the discriminator is reading the eyecatcher back — **as a gate that SKIPS**,
-never a PASS printed under a failed precondition. **BLOCKED on PR #100** (open): `test/mvs/
-tstd1r.c` and the repaired `tstd1b.c` live only on its branch, and copying either here would
-duplicate its diff — the trap #98's retarget check exists to prevent. **#67 comment drafted,
-NOT posted** (8). `docs/measurements/m5-2d1c/`.
+never a PASS printed under a failed precondition. **PR #100 was MERGED at the start of the round** and `main` merged in, so
+the kickoff's base became true and the rest ran. **2.1 — CASE 2 ESTABLISHED, the case #100
+could not earn:** `TSTD1R` **CC 0 batch+TSO 10 PASS**, and **CC 0 rather than CC 20 is itself
+the proof case 2 RAN** (the repaired gate returns 20 when its precondition fails, so green can
+no longer be earned by skipping). `sent D4 E1 C5 E4` → `landed D5 E2 C6 E5` = `wanted`,
+`readable=1 storable=0`, `rc/seq 5AC0F001` **unchanged** — so the eyecatcher **provably
+landed** (not what refused), the target is **provably key-0** (key-8 read succeeds, key-8
+store faults under `___try`, so not a bad address), and the block was not written: **TPROT is
+what is left**. **A FALSE LABEL CAUGHT BY THE CASE'S OWN FIRST RUN, and it is the round's
+defect class one more time:** the run printed `sent D5 E2 C6 E5 (= NSFV_REQ_EYE - 1)` — the
+literal, not its minus-one — because **`XFER` is a ROUND TRIP** and `XFEROUT` copies `stage[]`
+back into `ubuf`, so the buffer held the *transformed* bytes by the time the diagnostic read
+it. It **looked right**, because that is the value a reader expects. Fixed by snapshotting the
+sent bytes before the call, with the read-back now its own row. **2.2 — THREE STATES, BOTH
+CHECKS, ONE AXIS EACH.** *R8 (NSFV):* **CC 0 → CC 1 (2 FAIL) → CC 0**, exactly `2.4(2)` moving,
+with TPROT **verified OUT of the listing** (2 emitted `E501` restored, **0** reverted) and the
+restored object deck **byte-identical** to the pre-revert build; the reverted arm renders the
+hole **positively** — `rc → 00000000, seq → 00000001`, the router completing a QUERY **into
+key-0 storage the caller cannot write**. *Ownership (NSFS):* **12/13 → 9/13 → 12/13**, exactly
+three assertions moving, and **the decision is by IDENTITY, not by count** — owning nothing, B
+reached **`00010000`**, which its own `00010001` derives A's to be, and **drove it `rc=0`**;
+a never-existing descriptor still refused in the same arm, so the revert did not simply break
+everything. **ONE ASSERTION IS RED IN ALL THREE STATES OF BOTH ARMS** — `2.3 poll` — and it is
+**#100's `ulen` product defect**, not an ownership result (NSFSEL and the facade read `ulen` as
+an **item count**, the transport stages `min(ulen,2048)` **BYTES**); being **constant across
+the arms** is what identifies it as unrelated to the axis. Out of scope by the kickoff, and
+**d1's 2.3 must be RE-RUN after the `ulen` fix**, because a different code path will execute.
+**A SEQUENCING BUG OF MINE COST A RUN:** the readiness poll matched A's console line by
+**timestamp**, A announced outside the pattern, and B was submitted **60 s later, after A had
+ended** — and the repaired instrument **caught it and refused to report** (*"THE SWEPT RANGE
+DOES NOT COVER LIVE DESCRIPTORS -- sweep 1's result means nothing"*), which is #100's defect-2
+repair working on a **real** occurrence. Match on **new log lines**, never timestamps. **Stand:
+six deploys, nine STC starts, ZERO dumps**; the one `NSF054W` in the log is at 03.58 from
+#100's round, **checked not assumed**; `INFLIGHT=0` before every stop; both reverts undone in
+the tree and on the machine; left as found. **#67 comment drafted, NOT posted** (8).
+`docs/measurements/m5-2d1c/`.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
