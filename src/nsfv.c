@@ -77,7 +77,14 @@ nsfv_anchor_alloc(void)
         memset(anchor, 0, sizeof(NSFV_ANCHOR));
         memcpy(anchor->eye, "NSFVANCR", 8);
         anchor->version   = NSFV_ANCHOR_VER;
-        anchor->flags     = NSFV_ANCHOR_ACTIVE;
+        /* PROBE is what makes this the probe STC as far as the SVC routine is
+        ** concerned (issue #67).  ECHO / XFER / the retired-verb rejection and
+        ** every unrecognised REQFUNC are serviced HERE and refused ahead of the
+        ** claim at the production STC, which leaves the bit clear.  The routine
+        ** tests the bit, never the identity of the server, so the decision
+        ** belongs to whoever published the anchor.  M5-2c3 removes this with
+        ** the verbs. */
+        anchor->flags     = NSFV_ANCHOR_ACTIVE | NSFV_ANCHOR_PROBE;
         {   /* Publish the slot count the SVC routine's scan is bounded by,
             ** and stamp every slot's guard.  memset already left the states
             ** FREE, which is what the claim CS compares against. */

@@ -143,6 +143,15 @@ nsfsx_anchor_alloc(void)
         unsigned i;
 
         anchor->version   = NSFV_ANCHOR_VER;
+        /* NSFV_ANCHOR_PROBE IS DELIBERATELY NOT SET (issue #67), and the
+        ** omission is stated here because an omission is invisible.  This STC
+        ** services exactly one verb -- NSFV_REQ_RQE.  Anything else reaches the
+        ** ACT_DISPATCH arm below, is set HELD because its xfunc is not RQE, and
+        ** is never re-examined: the client parks forever and the slot is gone
+        ** for the life of the STC.  With the bit clear the SVC routine refuses
+        ** those requests AHEAD OF THE CLAIM, so they cost no slot and no
+        ** in-flight count.  The HELD arm stays as the backstop it always was;
+        ** this makes it unreachable from a client, not correct. */
         anchor->flags     = NSFV_ANCHOR_ACTIVE;
         anchor->server_ascb = __ascb(0);
         /* PUBLISH THE SLOT COUNT (ADR-0042 6).  The SVC routine bounds its
@@ -1347,7 +1356,16 @@ nsfsx_drain(void)
                 ok = 1;
             } else {
                 /* A probe verb reached the production STC: reject cleanly
-                ** rather than fall through into a dispatch. */
+                ** rather than fall through into a dispatch.
+                **
+                ** SINCE M5-2d1c THIS IS A BACKSTOP, NOT THE GATE.  The anchor
+                ** here has NSFV_ANCHOR_PROBE clear, so the SVC routine refuses
+                ** anything but RQE ahead of the claim and a client can no
+                ** longer reach this arm (issue #67).  It stays because HELD is
+                ** the right answer if it ever is reached -- a stale router does
+                ** not test the bit -- and because making it unreachable is not
+                ** the same as making it correct: a slot set HELD here is still
+                ** never re-examined. */
                 slot->req_state = NSFV_REQ_HELD;
             }
             break;
