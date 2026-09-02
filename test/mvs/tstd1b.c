@@ -89,33 +89,30 @@ static int role_a(void)
     return 0;
 }
 
-/* ---- role B: the attacker ------------------------------------------------ */
-static int role_b(void)
+/* ---- role B: the attacker ------------------------------------------------
+ * REBUILT after the first live round, which found three defects in this role.
+ * Each repair is named at the thing it repairs.
+ * ------------------------------------------------------------------------ */
+
+#define D1B_MAXHIT   8
+
+static UINT g_hit[D1B_MAXHIT];
+static int  g_hits;
+
+/* One sweep of the whole descriptor space, recording WHICH descriptors were
+ * reached.  DEFECT 1 + 2: the count was the wrong thing to assert -- it does
+ * not distinguish B's own socket from A's, and it is not comparable across STC
+ * instances because a generation range that does not cover the target returns
+ * the same zero as a refusal.  The identity is what the claim is about. */
+static int sweep(const char *tag)
 {
-    NSF_SOCKADDR_IN me, gp;
-    INT   s, rc, namelen;
-    UINT  gen, idx, desc;
-    int   attempts = 0, hits = 0;
-    INT   foreign_rc = 0, foreign_err = 0, unknown_rc = 0, unknown_err = 0;
+    NSFRQE r;
+    UINT   gen, idx, desc;
+    int    attempts = 0;
 
-    rc = nsf_initapi(0, "TCPIP   ", "NSF     ", "TSTD1BB ", NULL);
-    CHECK_EQ((long)rc, (long)NSF_RETOK, "B: INITAPI across the boundary");
-
-    /* B opens one socket of its own: the control that proves B's own verbs
-     * work, so "everything refused" cannot pass as success. */
-    s = nsf_socket(NSF_AF_INET, NSF_SOCK_DGRAM, 0);
-    CHECK(s >= 0, "B: SOCKET of its own");
-    mk_sa(&me, D1B_SRC, 0);
-    rc = nsf_bind(s, &me, (INT)sizeof(me));
-    CHECK_EQ((long)rc, (long)NSF_RETOK, "B: BIND on its OWN socket works");
-
-    /* ---- 2.2 THE SWEEP.  Raw internal descriptors, straight into the
-     * request, bypassing B's own facade table -- which is the whole point:
-     * the facade cannot NAME a foreign socket, the transport could. ------- */
+    g_hits = 0;
     for (gen = 0u; gen < (UINT)D1B_GENS; gen++) {
         for (idx = 0u; idx < (UINT)D1B_SWEEP_N; idx++) {
-            NSFRQE r;
-
             desc = (gen << 16) | idx;
             memset(&r, 0, sizeof(r));
             memcpy(r.eye, NSFRQE_EYE, 4);
@@ -124,76 +121,153 @@ static int role_b(void)
             attempts++;
             nsfreq_call(&r);
             if (r.retcode == NSF_RETOK) {
-                hits++;
-                if (hits == 1) {
-                    wtof("TSTD1B: B REACHED DESCRIPTOR %08X", (unsigned)desc);
-                }
+                if (g_hits < D1B_MAXHIT) g_hit[g_hits] = desc;
+                g_hits++;
             }
         }
     }
-    printf("  SWEEP: %d hits out of %d attempts\n", hits, attempts);
-    wtof("TSTD1B: SWEEP %d HITS / %d ATTEMPTS", hits, attempts);
-    CHECK_EQ((long)hits, 0L,
-             "2.2: B reached NONE of the descriptor space (A's socket included)");
-
-    /* ---- 2.2b INDISTINGUISHABLE.  A foreign descriptor and a descriptor
-     * that never existed must give the SAME answer, or the refusal is an
-     * existence oracle for descriptor numbers. ---------------------------- */
+    printf("  SWEEP %s: %d reached out of %d attempts", tag, g_hits, attempts);
     {
-        NSFRQE r;
-
-        memset(&r, 0, sizeof(r));
-        memcpy(r.eye, NSFRQE_EYE, 4);
-        r.fn = (USHORT)RQ_GETSOCKNAME;
-        r.sockdesc = 0x00000000u;               /* idx 0: A's, almost surely  */
-        nsfreq_call(&r);
-        foreign_rc = r.retcode; foreign_err = r.errno_;
-
-        memset(&r, 0, sizeof(r));
-        memcpy(r.eye, NSFRQE_EYE, 4);
-        r.fn = (USHORT)RQ_GETSOCKNAME;
-        r.sockdesc = 0x00BADBADu;               /* never existed              */
-        nsfreq_call(&r);
-        unknown_rc = r.retcode; unknown_err = r.errno_;
+        int i;
+        for (i = 0; i < g_hits && i < D1B_MAXHIT; i++)
+            printf(" %08X", (unsigned)g_hit[i]);
     }
-    printf("  foreign rc=%d errno=%d | unknown rc=%d errno=%d\n",
-           (int)foreign_rc, (int)foreign_err, (int)unknown_rc, (int)unknown_err);
-    CHECK_EQ((long)foreign_rc, (long)unknown_rc,
-             "2.2: foreign and never-existing return the SAME retcode");
-    CHECK_EQ((long)foreign_err, (long)unknown_err,
-             "2.2: foreign and never-existing return the SAME errno");
+    printf("\n");
+    wtof("TSTD1B: SWEEP %s %d REACHED (first %08X)", tag, g_hits,
+         (unsigned)(g_hits > 0 ? g_hit[0] : 0u));
+    return attempts;
+}
 
-    /* ---- 2.3 SELECT with a foreign descriptor in the mask ---------------- */
+static INT probe_desc(UINT desc, INT *errno_out)
+{
+    NSFRQE r;
+
+    memset(&r, 0, sizeof(r));
+    memcpy(r.eye, NSFRQE_EYE, 4);
+    r.fn       = (USHORT)RQ_GETSOCKNAME;
+    r.sockdesc = desc;
+    nsfreq_call(&r);
+    if (errno_out != NULL) *errno_out = r.errno_;
+    return r.retcode;
+}
+
+static int role_b(void)
+{
+    NSF_SOCKADDR_IN me;
+    INT   s, rc;
+    UINT  own = 0u, a_desc = 0u;
+    int   i, before, found_own = 0;
+    INT   f_rc, f_err, u_rc, u_err;
+
+    rc = nsf_initapi(0, "TCPIP   ", "NSF     ", "TSTD1BB ", NULL);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "B: INITAPI across the boundary");
+
+    /* ---- SWEEP 1, OWNING NOTHING.  DEFECT 1's repair: B has no socket yet,
+     * so ANY descriptor it reaches here is foreign BY CONSTRUCTION and no
+     * exclusion arithmetic is needed. -------------------------------------- */
+    (void)sweep("pre-own");
+    before = g_hits;
+    for (i = 0; i < g_hits && i < D1B_MAXHIT; i++) a_desc = g_hit[i];
+
+    /* ---- B's own socket: the control that B's verbs work at all. --------- */
+    s = nsf_socket(NSF_AF_INET, NSF_SOCK_DGRAM, 0);
+    CHECK(s >= 0, "B: SOCKET of its own");
+    mk_sa(&me, D1B_SRC, 0);
+    rc = nsf_bind(s, &me, (INT)sizeof(me));
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "B: BIND on its OWN socket works");
+
+    /* ---- SWEEP 2: THE RANGE'S POSITIVE CONTROL.  DEFECT 2's repair: B has
+     * just created a socket, so the sweep MUST now reach at least one more
+     * than before.  If it does not, the swept generation range does not cover
+     * live descriptors and a zero from sweep 1 would have meant NOTHING --
+     * so say so and skip, rather than report a zero. -------------------- */
+    (void)sweep("post-own");
+    found_own = (g_hits > before);
+    CHECK(found_own,
+          "B's OWN socket is inside the swept range (the range is adequate)");
+    if (!found_own) {
+        printf("  THE SWEPT RANGE DOES NOT COVER LIVE DESCRIPTORS -- sweep 1's"
+               " result means nothing and is NOT reported as a refusal.\n");
+        wtof("TSTD1B: RANGE INADEQUATE -- SWEEP 1 IS NOT EVIDENCE");
+        (void)nsf_close(s);
+        (void)nsf_termapi();
+        return -1;
+    }
+    for (i = 0; i < g_hits && i < D1B_MAXHIT; i++) own = g_hit[i];
+
+    /* ---- THE CLAIM, in identity form.  Every descriptor reached before B
+     * owned anything was foreign; there must be none. ---------------------- */
+    CHECK_EQ((long)before, 0L,
+             "2.2: owning nothing, B reached NO descriptor (all foreign)");
+
+    /* ---- A's REAL descriptor.  DEFECT 3's repair: never a constant.  A
+     * allocated its socket immediately before B on the same table, so A's is
+     * B's index minus one at the same generation -- and the revert arm
+     * CONFIRMS the derivation by naming that exact value in sweep 1. ------- */
+    a_desc = (own & 0xFFFF0000u) | ((own & 0xFFFFu) - 1u);
+    printf("  B's own = %08X, so A's is derived as %08X\n",
+           (unsigned)own, (unsigned)a_desc);
+    wtof("TSTD1B: OWN %08X A-DERIVED %08X", (unsigned)own, (unsigned)a_desc);
+
+    /* ---- 2.2b INDISTINGUISHABLE, against A's REAL descriptor ------------- */
+    f_rc = probe_desc(a_desc, &f_err);
+    u_rc = probe_desc(0x00BADBADu, &u_err);
+    printf("  foreign(%08X) rc=%d errno=%d | unknown rc=%d errno=%d\n",
+           (unsigned)a_desc, (int)f_rc, (int)f_err, (int)u_rc, (int)u_err);
+    CHECK_EQ((long)f_rc, (long)u_rc,
+             "2.2b: foreign and never-existing return the SAME retcode");
+    CHECK_EQ((long)f_err, (long)u_err,
+             "2.2b: foreign and never-existing return the SAME errno");
+
+    /* ---- 2.3 SELECT, POLL PATH: A's real descriptor plus B's own --------- */
     {
-        NSFRQE      r;
-        NSFSELITEM  it[2];
+        NSFRQE     r;
+        NSFSELITEM it[2];
 
         memset(it, 0, sizeof(it));
-        it[0].desc = 0x00000000u;               /* foreign (A's)              */
-        it[0].want = (UCHAR)SEL_READ;
-        it[1].desc = (UINT)0;                   /* filled below with B's own  */
-        it[1].want = (UCHAR)SEL_WRITE;
+        it[0].desc = a_desc;  it[0].want = (UCHAR)SEL_READ;
+        it[1].desc = own;     it[1].want = (UCHAR)SEL_WRITE;
 
-        /* B's own socket, by internal descriptor: ask the facade for it via a
-         * GETSOCKNAME round trip is not available, so use the poll form over
-         * the foreign entry alone plus a write-ready own entry is not
-         * expressible here -- so this asserts the FOREIGN entry only, and the
-         * call returning without error is the "rest of the mask served" half:
-         * a 1-item mask that errors would show as a negative retcode. */
         memset(&r, 0, sizeof(r));
         memcpy(r.eye, NSFRQE_EYE, 4);
-        r.fn      = (USHORT)RQ_SELECT;
-        r.ubuf    = it;
-        r.ulen    = 1u;                         /* the foreign entry only     */
-        r.p3      = SEL_F_TIMED;                /* poll form: 0/0, no park    */
+        r.fn = (USHORT)RQ_SELECT; r.ubuf = it; r.ulen = 2u;
+        r.p3 = SEL_F_TIMED;                     /* 0/0 poll form: never parks */
         nsfreq_call(&r);
-        printf("  SELECT(foreign) rc=%d errno=%d ready=%u\n",
+        printf("  SELECT poll: rc=%d errno=%d foreign.ready=%u own.ready=%u\n",
+               (int)r.retcode, (int)r.errno_,
+               (unsigned)it[0].ready, (unsigned)it[1].ready);
+        CHECK_EQ((long)it[0].ready, 0L, "2.3 poll: the foreign entry is NOT ready");
+        CHECK(it[1].ready != 0, "2.3 poll: THE REST OF THE MASK IS SERVED");
+        CHECK_EQ((long)r.errno_, 0L, "2.3 poll: no error for the call");
+    }
+
+    /* ---- 2.3 SELECT, PARKED PATH.  Never driven before this round.  B parks
+     * on A's descriptor alone with a timeout; the host connects to A's port
+     * meanwhile, which makes A's LISTENER read-ready.  Check on -> B times out
+     * (rc 0).  Check off -> the re-scan completes B (rc 1).  THAT is what
+     * discriminates, and it is the re-scan path specifically. -------------- */
+    {
+        NSFRQE     r;
+        NSFSELITEM it[1];
+
+        memset(it, 0, sizeof(it));
+        it[0].desc = a_desc; it[0].want = (UCHAR)SEL_READ;
+
+        wtof("TSTD1B: PARKING SELECT ON %08X -- CONNECT TO A NOW",
+             (unsigned)a_desc);
+        memset(&r, 0, sizeof(r));
+        memcpy(r.eye, NSFRQE_EYE, 4);
+        r.fn = (USHORT)RQ_SELECT; r.ubuf = it; r.ulen = 1u;
+        r.p1 = 8u;                              /* 8 s: it must PARK          */
+        r.p3 = SEL_F_TIMED;
+        nsfreq_call(&r);
+        printf("  SELECT parked: rc=%d errno=%d ready=%u\n",
                (int)r.retcode, (int)r.errno_, (unsigned)it[0].ready);
+        wtof("TSTD1B: PARKED SELECT RC=%d READY=%u",
+             (int)r.retcode, (unsigned)it[0].ready);
         CHECK_EQ((long)r.retcode, 0L,
-                 "2.3: SELECT counts the foreign entry as NOT ready");
-        CHECK_EQ((long)r.errno_, 0L,
-                 "2.3: ...and returns NO error for the call");
-        CHECK_EQ((long)it[0].ready, 0L, "2.3: the foreign entry's ready bits are 0");
+                 "2.3 parked: A becoming ready does NOT complete B's SELECT");
+        CHECK_EQ((long)it[0].ready, 0L, "2.3 parked: ...and the entry stays not-ready");
     }
 
     (void)nsf_close(s);
