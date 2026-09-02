@@ -2774,6 +2774,32 @@ fact about this instruction.
 spec §17.3 has exactly **one** residue: the probe verbs, retired by c3. **Nothing is closed on
 the tracker** — **#67 stays open** (c3's), **#88 deferred**, and **d2 remains a dated open item,
 decoupled from the milestone flip**.
+**d1's FIRST LIVE ROUND — COUNTERSIGNED (PR #99 merged), and it merged AS REPORTED.** The
+three instrument defects go into the record **as findings, not into a repair that would make
+them invisible**: a report that says *green and not evidence* is worth more than a tidied one,
+and the tidied version is unrecoverable afterwards. **§2.1 CLEARED THE STOP CONDITION** — a
+cross-AS accept works: `getpeername`, `recv` **and** `send` on the **inherited child**,
+byte-exact against the host peer. That was the case that could have invalidated everything, a
+check one degree too strict refusing every accepted connection — every server this stack
+exists for. And `test/mvs/tstd1a.c` was built so a failure would have been **the check** and
+not a new accept dance: `tstezat.c`'s live-proven verb sequence with `tstrqxm.c`'s cross-AS
+source list, i.e. **the instrument was constructed not to be a suspect**. **§2.2 IS DECIDED BY
+THE IDENTITY OF THE DESCRIPTOR, NOT BY A COUNT** — check off, B reached **`00010000`**, which
+is A's, plus its own; restored, **only its own `00010001`**. The descriptor that disappears is
+A's, and A's socket still worked at the end of its hold. **The count was never the evidence.**
+**THE THREE DEFECTS, AND THE SECOND IS THE ONE TO RECORD LOUDEST:** (1) the sweep does not
+exclude **B's own** descriptor, so `hits == 0` is the wrong assertion and the restored arm's
+single hit is **correct behaviour reported as a failure**; (2) **hit counts are not comparable
+across STC instances** — the sweep covers gen 0-1 and run 1's instance had advanced past
+gen 1, so even B's own socket fell outside the range: **a zero produced by a range that does
+not cover the target is indistinguishable from a zero that means refused**, and it was one
+step from being the headline; (3) §2.2b and §2.3 aimed at a hardcoded `0x00000000` while A's
+live descriptor was `0x00010000`, so **every arm probed a never-existing descriptor rather
+than a foreign one** — **identical output across all three arms was the tell**, the *"would
+this be green on unchanged code?"* question answering **yes, on every build**. Defect 3 also
+means **§2.3's parked path was never driven at all** — the one path nothing covered until d1
+added it. **Still live-unproven after this round:** R8 entirely (§2.4), indistinguishability
+(§2.2b), SELECT-foreign on either path (§2.3), the revert's R8 arm, and Phase 1 live.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
