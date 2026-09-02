@@ -433,12 +433,19 @@ sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_pl
 # teardown + leak gate, RETCODE/ERRNO mapping, and the EZASOH03 decoder
 # (per-code happy path + unsupported/unknown -> EOPNOTSUPP, R15 always 0). The
 # MVS full-stack proof is TSTEZAM; the asm veneer is TSTEZAH. Same source set as
-# TSTREQ + src/nsfeza.c.
+# TSTREQ + src/nsfeza.c + src/nsfreqx.c.
+#
+# S12 is THE JOINED GATE for issue #101 (ADR-0047), and src/nsfreqx.c is in the
+# source list for it alone: the `ulen` defect lived BETWEEN two green tests --
+# TSTREQX pins the crossing and never builds a SELECT, TSTSEL pins the SELECT
+# dispatcher and never crosses a boundary -- so neither could see the two halves
+# disagree about what ulen counts. This is the only binary holding facade,
+# crossing and dispatcher at once.
 [[test]]
 name = "TSTEZA"
 startup = "crt1"
 mvs = false
-sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfsel.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqx.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfsel.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-4 NSFEZA on MVS: the EZASOKET C API over the full stack (live gate) ---
 # MVS-only (host = false): TSTUDPM's live scenario rewritten against the @@NS*

@@ -24,6 +24,7 @@
 #include "nsfreq.h"
 #include "nsfsoc.h"
 #include "nsfsel.h"
+#include "nsfreqx.h"
 #include "nsfevt.h"
 #include "nsfthr.h"
 #include "nsftmr.h"
@@ -603,6 +604,249 @@ static void test_select_masks(void)
     CHECK_EQ((long)soc_count(), 0L, "selmask: TERMAPI closed all 33");
 }
 
+/* ===========================================================================
+ * S12 (#101): THE JOINED GATE -- facade -> Phase-2 crossing -> dispatcher.
+ *
+ * The `ulen` defect lives BETWEEN two green tests: TSTREQX pins the crossing
+ * (it never builds a SELECT) and TSTSEL pins the dispatcher (it never crosses
+ * a boundary).  Each is correct in isolation, which is exactly why neither
+ * found it.  This scenario is the first binary holding all three, so it is the
+ * first that can see the two halves disagree about what `ulen` counts.
+ *
+ * The crossing is modelled here as the hops src/nsfsx.c makes, with the two
+ * assembler moves (RQEIN / RQEOUT, asm/nsfvsvc.asm) written as the byte memcpy
+ * they are -- their length arithmetic is min(ulen, XFCHUNK) and is already
+ * correct for bytes, so nothing here is a model of a defect.
+ *
+ * THE ORACLE IS THE FACADE'S OWN OUTPUT, not a predicted descriptor: the
+ * transport snapshots the item array on the way in and again on the way out of
+ * the crossing, and the property asserted is that the array the facade built
+ * arrives at the dispatcher intact.
+ *
+ * WHAT THIS CANNOT PROVE: the host links the facade and the dispatcher into
+ * ONE compilation, so the facade's multiply and the dispatcher's divide cancel
+ * whatever sizeof(NSFSELITEM) happens to be.  That the two SIDES agree on the
+ * size is the sole job of NSF_SIZE_ASSERT(NSFSELITEM, 8) -- not of this test.
+ * ========================================================================== */
+
+#define XPAT   0xA5u            /* landing/staging residue: never a real desc  */
+
+static struct {
+    NSFRQE      slot;                    /* the CSA request slot's RQE image    */
+    NSFRQE      priv;                    /* the STC-private copy it dispatches  */
+    UCHAR       stage[NSFREQX_CHUNK];    /* the CSA slot's staging buffer       */
+    UCHAR       land[NSFREQX_CHUNK];     /* the STC's private landing area      */
+    UINT        xlen;                    /* SLXLEN: bytes RQEIN actually staged */
+    UINT        nitems;                  /* items the TEST built (its own count)*/
+    NSFSELITEM  sent[NSFEZA_MAXSOC];     /* what the facade encoded (the oracle)*/
+    NSFSELITEM  seen[NSFEZA_MAXSOC];     /* the DISPATCHER-side view, snapshot  */
+    UINT        nseen;                   /* the ulen the dispatcher was handed  */
+    int         crossed;
+} g_x;
+
+static void x_transport(NSFRQE *r);
+
+/* Reach the executive from inside the transport.
+ *
+ * nsfreq_submit / nsfreq_wait SHORT-CIRCUIT BACK INTO the registered transport
+ * (src/nsfreq.c: on a cross-AS transport the whole round trip happens inside
+ * the transport, so the paired wait has nothing left to do).  Calling them from
+ * within x_transport therefore re-enters it -- unbounded recursion, and it
+ * blows the stack rather than failing an assertion.  Stand the transport down
+ * for the duration: inside x_transport we ARE the STC, and the STC reaches its
+ * own executive through the ordinary queue. */
+static void x_exec(NSFRQE *r)
+{
+    nsfreq_set_transport(NULL);
+    nsfreq_submit(r);
+    nsfreq_wait(r);
+    nsfreq_set_transport(x_transport);
+}
+
+/* The Phase-2 transport, modelled (ADR-0041's hops, both directions).  Only
+ * RQ_SELECT crosses; everything else takes the ordinary Phase-1 path, so the
+ * surrounding INITAPI / SOCKET / TERMAPI traffic is untouched. */
+static void x_transport(NSFRQE *r)
+{
+    UINT staged, snap;
+
+    if (r->fn != (USHORT)RQ_SELECT) {
+        x_exec(r);
+        return;
+    }
+
+    /* The oracle: the facade's array as built, sized by the count the TEST
+     * knows it asked for -- never by r->ulen, which is the field under test. */
+    if (r->ubuf != NULL && g_x.nitems > 0u) {
+        memcpy(g_x.sent, r->ubuf, (size_t)g_x.nitems * sizeof(NSFSELITEM));
+    }
+
+    /* Hop 1 -- the client copies its RQE into the CSA slot (src/nsfreqc.c). */
+    nsfreqx_slot_in(&g_x.slot, r);
+
+    /* Hop 2 -- RQEIN stages min(ulen, XFCHUNK) BYTES of ubuf into the slot's
+     * staging buffer.  Both buffers are pre-filled with a pattern, so residue
+     * read as a descriptor is distinguishable from a zeroed buffer. */
+    memset(g_x.stage, XPAT, sizeof(g_x.stage));
+    g_x.xlen = nsfreqx_stage_len(r->ulen);
+    if (r->ubuf != NULL && g_x.xlen > 0u) {
+        memcpy(g_x.stage, r->ubuf, (size_t)g_x.xlen);
+    }
+
+    /* Hop 3 -- the executive copies the staged chunk into its private landing
+     * area and rewrites ubuf/ulen (src/nsfsx.c, the copy-IN site).  The landing
+     * area is NSFREQX_CHUNK like the real g_land, not the staged length: the
+     * dispatcher may write `ready` past the staged bytes, and that must show up
+     * as a failed assertion here rather than as an overrun of the test's own
+     * buffer. */
+    memset(g_x.land, XPAT, sizeof(g_x.land));
+    staged = nsfreqx_land_copy(g_x.land, g_x.stage, g_x.xlen);
+    nsfreqx_dispatch_in(&g_x.priv, &g_x.slot, g_x.land, staged);
+
+    /* The dispatcher-side view, snapshot BEFORE dispatch: this is what the
+     * SELECT engine is about to read, and the hop that lost data is visible
+     * here and nowhere else (the copy-back overwrites the caller's array). */
+    g_x.nseen = g_x.priv.ulen;
+    snap      = g_x.nitems * (UINT)sizeof(NSFSELITEM);
+    memcpy(g_x.seen, g_x.priv.ubuf, (size_t)snap);
+    g_x.crossed = 1;
+
+    /* Dispatch on the EXECUTIVE thread, as the STC does -- never on this one:
+     * the drainer owns the socket table and the timer queue. */
+    x_exec(&g_x.priv);
+
+    /* Hop 3a / RQEOUT -- back out, the staged bytes and the result fields. */
+    (void)nsfreqx_land_copy(g_x.stage, g_x.land, g_x.xlen);
+    nsfreqx_result_out(&g_x.slot, &g_x.priv);
+    if (r->ubuf != NULL && g_x.xlen > 0u) {
+        memcpy(r->ubuf, g_x.stage, (size_t)g_x.xlen);
+    }
+    nsfreqx_result_in(r, &g_x.slot);
+}
+
+static void test_crossing_select(void)
+{
+    UCHAR rmask[4], wmask[4];
+    UINT  desc0;
+    INT   i, rc, s;
+
+    nsfeza_init();
+    memset(&g_x, 0, sizeof(g_x));
+
+    for (i = 0; i < 2; i++) {
+        s = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+        CHECK_EQ((long)s, (long)i, "cross: socket number == i");
+    }
+    /* Make BOTH ready, so the poll form completes inline and never parks --
+     * the threaded harness must not race the drainer's timer queue
+     * (test_select_masks solved this the same way). */
+    memset(g_ready, 0, sizeof(g_ready));
+    g_ready[0] = (int)SEL_READ;
+    g_ready[1] = (int)SEL_READ;
+
+    memset(rmask, 0, sizeof(rmask));
+    memset(wmask, 0, sizeof(wmask));
+    rmask[3] = 0x03u;                          /* read interest on numbers 0,1  */
+
+    g_x.nitems = 2u;
+    nsfreq_set_transport(x_transport);
+    rc = nsf_select(2, rmask, wmask, NULL, 0, 0);   /* poll form -> immediate   */
+    nsfreq_set_transport(NULL);
+
+    CHECK(g_x.crossed == 1, "cross: the SELECT went through the transport");
+    CHECK(g_x.sent[0].desc != 0u && g_x.sent[1].desc != 0u,
+          "cross: the facade encoded two live descriptors");
+    desc0 = g_x.sent[0].desc;
+
+    /* THE GATE.  Two items were built, so 16 bytes must cross and the
+     * dispatcher must be handed a BYTE length of 16.  Item 0 is asserted as
+     * loudly as item 1: when ulen crosses as a COUNT only 2 bytes move, so item
+     * 0's own descriptor is already part residue -- it is not merely the tail
+     * that is lost. */
+    CHECK_EQ((long)g_x.xlen, (long)(2u * sizeof(NSFSELITEM)),
+             "cross: 2 items staged as 2*sizeof(NSFSELITEM) bytes");
+    CHECK_EQ((long)g_x.nseen, (long)(2u * sizeof(NSFSELITEM)),
+             "cross: dispatcher handed a BYTE length covering both items");
+    CHECK_EQ((long)g_x.seen[0].desc, (long)g_x.sent[0].desc,
+             "cross: item 0 desc arrives as the facade built it");
+    CHECK_EQ((long)g_x.seen[0].want, (long)g_x.sent[0].want,
+             "cross: item 0 want arrives as the facade built it");
+    CHECK_EQ((long)g_x.seen[1].desc, (long)g_x.sent[1].desc,
+             "cross: item 1 desc arrives as the facade built it");
+    CHECK_EQ((long)g_x.seen[1].want, (long)g_x.sent[1].want,
+             "cross: item 1 want arrives as the facade built it");
+
+    /* End to end: both ready bits made it back out to the caller's masks. */
+    CHECK_EQ((long)rc, 2L, "cross: both sockets reported ready");
+    CHECK(rmask[3] == 0x03u, "cross: read mask returns both bits set");
+
+    /* ---- control: an EMPTY set stages nothing and is not a fault ---------- */
+    memset(&g_x, 0, sizeof(g_x));
+    memset(rmask, 0, sizeof(rmask));
+    memset(wmask, 0, sizeof(wmask));
+    nsfreq_set_transport(x_transport);
+    rc = nsf_select(2, rmask, wmask, NULL, 0, 0);
+    nsfreq_set_transport(NULL);
+    CHECK(g_x.crossed == 1, "cross/empty: went through the transport");
+    CHECK_EQ((long)g_x.xlen, 0L,  "cross/empty: nothing staged");
+    CHECK_EQ((long)g_x.nseen, 0L, "cross/empty: dispatcher sees a zero length");
+    CHECK_EQ((long)rc, 0L,        "cross/empty: 0 ready, no error");
+
+    /* ---- control: TRUNCATION keeps count and bytes consistent ------------- */
+    /* NOT reachable through the facade -- it caps at NSFEZA_MAXSOC items (512
+     * bytes) and the clamp is 2048, itself a multiple of 8.  So this is the
+     * hand-built shape: a client that encodes its own RQE (tstd1b.c's shape). */
+    {
+        static UCHAR big[NSFREQX_CHUNK + 64];
+        NSFRQE       r, slot, priv;
+        UINT         staged;
+
+        memset(big, XPAT, sizeof(big));
+        memset(&r, 0, sizeof(r));
+        r.fn   = (USHORT)RQ_SELECT;
+        r.ubuf = big;
+        r.ulen = (UINT)sizeof(big);            /* over the 2048 chunk           */
+        nsfreqx_slot_in(&slot, &r);
+        staged = nsfreqx_land_copy(g_x.land, big, nsfreqx_stage_len(r.ulen));
+        nsfreqx_dispatch_in(&priv, &slot, g_x.land, staged);
+
+        CHECK_EQ((long)priv.ulen, (long)NSFREQX_CHUNK,
+                 "cross/trunc: ulen clamped to the staging chunk");
+        CHECK_EQ((long)(priv.ulen % sizeof(NSFSELITEM)), 0L,
+                 "cross/trunc: the truncated byte length is a whole item count");
+        CHECK_EQ((long)(priv.ulen / sizeof(NSFSELITEM)),
+                 (long)(NSFREQX_CHUNK / sizeof(NSFSELITEM)),
+                 "cross/trunc: derived count matches the bytes that crossed");
+    }
+
+    /* ---- control: a NON-MULTIPLE ulen is REJECTED, and visibly ------------ */
+    /* Also unreachable through the facade (it always multiplies), so this too
+     * is the hand-built shape.  The rejection must be distinguishable from an
+     * empty set: an empty set completes rc=0, this completes an error. */
+    {
+        static NSFSELITEM one[2];
+        NSFRQE            r;
+
+        memset(one, 0, sizeof(one));
+        one[0].desc = desc0;
+        one[0].want = (UCHAR)SEL_READ;
+        memset(&r, 0, sizeof(r));
+        r.fn   = (USHORT)RQ_SELECT;
+        r.ubuf = one;
+        r.ulen = (UINT)sizeof(NSFSELITEM) + 1u;     /* 9: not a whole item      */
+        r.p3   = (UINT)SEL_F_TIMED;                 /* poll form: never parks   */
+        nsfreq_submit(&r);
+        nsfreq_wait(&r);
+        CHECK(r.retcode < 0, "cross/odd: a non-multiple ulen is refused");
+        CHECK_EQ((long)r.errno_, (long)NSF_EINVAL,
+                 "cross/odd: refused NSF_EINVAL (the dispatcher convention)");
+    }
+
+    memset(g_ready, 0, sizeof(g_ready));
+    (void)nsf_termapi();
+    CHECK_EQ((long)soc_count(), 0L, "cross: TERMAPI closed both sockets");
+}
+
 /* S11: the EZASOH03 decoder for the M4-5 codes (happy path per code). */
 static void test_decoder_m4(void)
 {
@@ -736,6 +980,7 @@ int main(void)
     test_fionbio();
     test_sockopt();
     test_select_masks();
+    test_crossing_select();
     test_decoder_m4();
 
     nsfevt_stop();
