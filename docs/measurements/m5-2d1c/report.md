@@ -1,8 +1,8 @@
 # d1c — the #67 rejection, and the encoding question settled
 
-**Status: §1 DONE and offline-gated, its live gate built and NOT YET RUN.
-§2.1's blocking question SETTLED offline. §2.1's code change, §2.2 and §2.3
-NOT STARTED — they need PR #100, which is still open.**
+**Status: §1 DONE, offline-gated and LIVE-GREEN. §2.1's blocking question
+SETTLED offline. §2.3 (Phase 1 live) GREEN. §2.1's code change and §2.2 NOT
+STARTED — they need PR #100, which is still open.**
 
 Branch `m5-2d1c`, on `main` at `6046003`. Host **3469 PASS / 0 FAIL**, unchanged
 — and that is a **no-regression check only**: every file this round changes is
@@ -110,7 +110,7 @@ report *"This card was consumed as a continuation and the statement on it
 discarded"* at **severity 8**, and the statement check name **both** victims —
 the overlong card and the `BO PROBEOK` it ate.
 
-### The live gate — built, not yet run
+### The live gate — RUN, and green
 
 `asm/*.asm` must be validated on MVS before it merges (CLAUDE.md 8.4), and §1 has
 never run. Section **(E)** of `TSTRQXF`, the NSFS-side probe gate, drives two
@@ -148,6 +148,50 @@ re-induced**, because inducing it costs exactly that again.
 **is** set; those staying green is what makes this a **conditional** gate rather
 than "the verbs are refused everywhere".
 
+### The live result
+
+Stand: MVSCE, real 0500/0501, MTU 1500. All six modules deployed in **one**
+`make deploy`, so the partial-deploy hazard the sequence warns about did not
+arise. Unauthorised client throughout (`TSTRQXF` asserts `__isauth() == 0`).
+
+**NSFV half — the negative control.** `TSTSVC` / `TSTMVCK` / `TSTUBUF` /
+`TSTDEATH` / `TSTXFW`, **438 PASS / 0 FAIL, all CC 0 batch+TSO** (STC 1726).
+`TSTMVCD` excluded, #53. **438 is exactly the figure the record predicts for
+this set**, so no test was silently lost. `TSTSVC` drives `ECHO` and
+`TSTUBUF`/`TSTXFW` drive `XFER`, both against the anchor with the bit **set** —
+so this is simultaneously the positive check that the bit took and the proof the
+gate is conditional.
+
+**NSFS half — the gate.** `TSTRQXC` / `TSTRQXF`, **130 PASS / 0 FAIL, CC 0
+batch+TSO** (STC 1727). **Was 122; the delta is exactly 8 = the four new
+assertions × batch and TSO.** From the spool, in both runs:
+
+```
+TSTRQXF: (E) ECHO at NSFS -- HANGS if the #67 gate is absent
+TSTRQXF: (E) ECHO RETURNED rc=4 (it did not park)
+TSTRQXF: (E) REQFUNC 99 at NSFS -- the fall-through case
+TSTRQXF: (E) REQFUNC 99 RETURNED rc=4
+  PASS: (E) ECHO at the production STC is refused, rc in the block
+  PASS: (E) an unrecognised REQFUNC is refused, not staged as ECHO
+  (E) inflight 0->0, non-FREE slots 0->0
+  PASS: (E) the refusals took NO in-flight count
+  PASS: (E) the refusals claimed NO slot
+```
+
+**`REQFUNC 99 RETURNED rc=4` is the line the design change exists for.** It is
+the fall-through case — the instance a refuse-by-name gate would have left open
+— and it is now measured rather than reasoned.
+
+**HOW THIS DISCRIMINATES, stated exactly.** No revert arm was run, and the
+"before" behaviour is **not** re-measured here: it is on record from #100's live
+round (a parked client, a cancelled job, a leaked slot, `NSF054W`, an anchor
+retained to IPL), and re-inducing it costs precisely that again. What this round
+*does* show, on **one deployed binary with one axis varied**, is the conditional:
+**the same verb at two servers gives opposite outcomes** — `ECHO` serviced at
+NSFV (`TSTSVC` green) and refused `rc=4` at NSFS. That is the axis the design
+says controls it, and it is what a "the verbs are refused everywhere" bug would
+fail. It is not a before/after arm and is not offered as one.
+
 ---
 
 ## 2. §2.1's blocking question — SETTLED
@@ -163,7 +207,31 @@ discharged, and it was discharged **offline** — no stand time.
 
 ---
 
-## 3. NOT STARTED, and why
+## 3. §2.3 — Phase 1 live, GREEN
+
+The `NSF` module was redeployed in this round, so this is a real no-regression
+check on those bytes and not a formality.
+
+* `S NSF` clean — `NSF000I` → `NSF210I CTCI 0500/0501 UP ... MTU 1500` →
+  `NSF211I INTERFACE LNK1 CUU 0500 UP` → `NSF001I`, **no abend**.
+* **`F NSF,APPS` → `NSF808E UNKNOWN COMMAND APPS`** — the structural red line
+  holds on the machine: Phase 1 registers no classifier and no APPS verb, so
+  d1's ownership check and c1's sweep are inert there by construction, not by
+  care.
+* Ping **20/20, 0 % loss**, 0.607/0.884/1.311 ms — the receive path is
+  unaffected.
+* `P NSF` clean, same second.
+
+## 4. The stand
+
+Zero dumps for the whole round (`IEA995I` count **0**), and no `IEF450I` inside
+the round window. `NSF043I SVC 239 RESTORED` / `NSFV095I SVC 239 RESTORED` on
+every stop, **no `NSF054W`**, `INFLIGHT=0` before and after every stop, so
+nothing was retained. `EXHAUSTED=2 COLLISIONS=138` after the NSFS half are
+`TSTRQXF`'s own (D) pool tests, which deliberately fill the pool. The stand was
+left as found, with NSFS running.
+
+## 5. NOT STARTED, and why
 
 **PR #100 is still open.** `test/mvs/tstd1r.c` exists only on
 `m5-2d1-live-b`, and #100 also carries the repaired `tstd1b.c` that §2.2's
@@ -177,8 +245,9 @@ prevent — and merging is the maintainer's countersign, not mine.
 * **§2.2** — the three-state revert for both checks.
 * **§2.3** — Phase 1 live.
 
-All three are live work and would run in **one** round with §1's live gate, on
-the sequence already written down in [`sequence.md`](sequence.md).
+Both are live work and run on the sequence in [`sequence.md`](sequence.md), which
+this round executed for its own half and which held.
 
-**The stand is up and reachable** (checked: `D T` answers, `mvsdev` up 24 days),
-so the only thing missing is the merge.
+§1's round turned out to be **self-contained** — `TSTD1R` is §2.1's instrument,
+not §1's — so §1 did not wait for #100 and is live-validated, which is what
+CLAUDE.md 8.4 requires before an `asm/*.asm` change merges.
