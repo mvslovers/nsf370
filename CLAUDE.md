@@ -280,6 +280,20 @@ Violating one is a review-blocking defect, not a style nit.
 **Contracts**
 - `NSFRQE` (the app↔stack request block) **freezes at the M3 exit gate**.
   Changing it afterwards requires an ADR.
+- **`ubuf` and `ulen` are transport-owned (ADR-0047):** `ubuf` is an address in
+  the caller's address space and `ulen` is a length in **bytes, for every verb**.
+  A verb-specific meaning belongs in `sockdesc`/`p1`/`p2`/`p3`, which the
+  transport never interprets. This is the **dual of ADR-0003** — that one says
+  the protocol layer never learns the transport; this one says the transport
+  never learns the verbs, and it cannot: it moves `min(ulen, 2048)` bytes and
+  never reads `fn`. `RQ_SELECT` encoded an *item* count until #101, which cost
+  nothing in Phase 1 (same address space, nothing measures it) and made a
+  cross-AS SELECT over N sockets cross **N bytes to be read as 8N**. When the
+  two sides of such a pair are in **separately linked load modules** — the
+  facade in the application, the engine in the STC — a host test cannot see a
+  disagreement, because one compilation makes the multiply and the divide
+  cancel whatever the size is; that is what an `NSF_SIZE_ASSERT` on the element
+  is for.
 
 ---
 
@@ -2933,6 +2947,133 @@ in the gap** so nothing can branch in, and `R3` is loaded once from `REQFUNC` an
 only a `C` comparand. `QUERY`/`UNSTAGE`/`SLOT` branch out above the gate and each ends
 `BR R14`. Posted as a comment on #67; **closing is Mike's call and no state was changed**.
 c3 still deletes the rejection with the verbs — cleanup, not the fix.
+**#101 Stage 1 (`ulen` becomes a byte length for every verb) — DONE, HOST ONLY;
+no deploy, no MVS run, no live claim.** Not a milestone step; **M5 stays in
+progress and nothing flips** — #67, #88, #92 stay open, and d1 §2.3, (e), the
+milestone flip, c3 and d2 are all still ahead. **ADR-0047**, framed as **the dual
+of ADR-0003**: that one says the protocol layer never learns the transport; this
+one says **the transport never learns the verbs**, and it *cannot* — it moves
+`min(ulen, 2048)` **bytes** and never reads `fn`. One half has been in the record
+since M0; the other was an unstated habit, and **both defects of this family sit
+on the unstated half** (#80 was the other). `RQ_SELECT` alone encoded an **item**
+count (ADR-0035), which cost nothing in Phase 1 — same address space, nothing
+measures it — and in Phase 2 made a cross-AS SELECT over N sockets **cross N
+bytes to be read as 8N**. Observed live in #100 as B's own socket not reported
+ready. **The item count was RIGHT and the bytes were WRONG**, which is why
+nothing looked inconsistent: `nitems ≤ 64` under a 2048 clamp, so `staged ==
+nitems` and the dispatcher got a plausible count over a buffer holding one byte
+in eight. **The unfixed cost is worse than a wrong answer — READ FROM SOURCE,
+NEVER OBSERVED, and it is not claimed as measured anywhere:** the
+**block-forever** form parks with no timer, is re-scanned forever, never posts
+`g_priv.ecb`, so `g_busy` is never cleared and every other client's request would
+stay PENDING for the life of the STC — no abend, no message, nothing to grep for.
+It is a **consequence that goes away with the cause**; nothing here observed it
+happening or observed it gone. Bounded only **by accident**: `sel_scan` read
+`8n-1` into a 2048-byte `g_land` and 8 × 64 = 512. **THE GATE HAD TO BE NEW, AND THAT IS THE FINDING ABOUT COVERAGE:** the
+defect lives **between** two green tests — `TSTREQX` pins the crossing and never
+builds a SELECT, `TSTSEL` pins the dispatcher and never crosses a boundary — so
+each was correct in isolation and neither could see them disagree. `TSTEZA` S12
+is the first binary holding **facade + crossing + dispatcher**, which is why
+`src/nsfreqx.c` joins that one source list. **The oracle is the facade's OWN
+output** (snapshot in, snapshot out), not a predicted descriptor, and it asserts
+on the **dispatcher-side** view because the copy-back overwrites the caller's
+array and would muddy which hop lost the data. **THE FACADE'S MULTIPLY IS INSIDE
+THE TESTED PATH**, so the gate pins the multiply *and* the divide, not the divide
+alone: the request under test comes out of **`nsf_select`**, with the transport
+registered around that call. The recursion was fixed strictly **below** the
+facade — `x_exec` stands the transport down only for the inner dispatch of the
+STC-private copy — and that is checkable rather than structural, because the
+gate's first assertion reads `nsfreqx_stage_len(r->ulen)` off the facade's OWN
+RQE and the red arm reported **`got 2`**, the un-multiplied count. Had the
+multiply been outside the gate, that assertion could not have moved. The two
+CONTROLS are hand-built and have to be (§ the facade cannot produce either
+shape). **Seen RED on unmodified product
+code before anything was fixed** — 10 named failures, and the numbers name the
+mechanism: `got 2, want 16`; item 0's descriptor arrives `0xA5A50000`, two real
+bytes then residue, so **item 0 is corrupted, not merely the tail**; item 1
+arrives `0xA5A5A5A5`, nothing of it crossed; `rc 0` instead of 2 — #100's live
+symptom reproduced host-side. **`0xA5A50000` is the LITTLE-ENDIAN HOST reading**
+(the bytes are `00 00 A5 A5`; the same corruption reads `0x0000A5A5` on the
+target) — the defect is endian-free, the number is not, and **no assertion
+compares against it**: every item check is `seen[k] == sent[k]`, survival against
+what the facade wrote, with the corrupted value only in the failure message. The
+`0xA5` fill is load-bearing too — a **zeroed** landing buffer would make residue
+read as descriptor 0, a *valid* descriptor, and the gate would have been reading
+a plausible answer instead of an obvious one. **Three states, one axis** (two product lines;
+gate, assert and updated tests stay put), every figure from a **clean rebuild**
+and each row's total and per-test numbers from the **same invocation**: 3469
+baseline → **3481 PASS / 10 FAIL** (gate, product unmodified) → **3491 PASS / 0
+FAIL** (fixed) → **3408 PASS / 10 FAIL** (product reverted; per-test PASS sums to
+exactly 3408) → 3491 restored. **The reverted state fails in TWO ways and the
+second is the louder:** `TSTSEL` **aborts** (rc 134), because its arrays are
+exact-sized locals — a byte length of 24 read as an item count walks 192 bytes
+over a 24-byte stack array — so the mismatch is a **memory-safety fault**, not
+only a wrong answer. **The revert is deliberately ASYMMETRIC — product back,
+gate and updated tests kept — which is the correct revert and is exactly why
+`TSTSEL` walks 8× its arrays.** (An earlier *incremental* run of that state
+reported 3479 / 12 with its per-test listing from a second invocation, so the
+halves did not reconcile; **superseded by the clean rerun, with no mechanism
+claimed** because none was established.) **AND THE ABORT HIDES INSIDE THE
+INSTRUMENT — §8.5 one level up:** both red states report **`10 FAIL`**, so the
+totals line alone cannot tell them apart; the only tell is the PASS total
+dropping by TSTSEL's 73. It is **loud in two places and silent in one** —
+`mbt/scripts/mbttesthost.py` sets `ok = (returncode == 0)`, so the per-test row
+reads **`FAIL rc=-6`** (distinct from an assertion failure's `rc=1`) and the make
+exits non-zero, but the assertion totals are scraped from `PASS:`/`FAIL:` markers
+in captured stdout, which the abort discarded — so the *test* is reported and its
+**73 assertions vanish**. A row with `ok == False` and zero assertions IS the
+absent-vs-succeeded shape and the harness already has both facts; naming it there
+is **proposed for Mike, not implemented** (and it is an `mbt` change, another
+repo). **Decisions:** the facade multiplies, the dispatcher
+divides, a non-multiple is **REFUSED `NSF_EINVAL`** — not truncated, because
+truncating reports a **smaller set as if it had been asked for**; `NSF_EINVAL`
+is the existing dispatcher convention, not a choice. **Both the non-multiple and
+the truncation controls are hand-built and HAVE to be** — the facade always
+multiplies and its 64-item cap sits under a 2048 clamp that is itself a multiple
+of 8, so neither shape is producible through `nsf_select`. **The audit was swept
+beyond `src/`, and that is not tidiness:** an MVS-only test is **compiled but
+never run**, and `r.ulen = 2u` compiles perfectly, so a stale site there would
+survive every offline gate and surface later as a live arm failing for an
+unrelated reason. Swept: four files reference `RQ_SELECT` — `tstsel.c` and
+`tstd1b.c` hand-build and are **edited**, `tsteza.c` is the gate, `tstreq.c`
+never sets `ulen`; `tstezat.c` and the EZASOH03 `SELE` decoder both go through
+`nsf_select`, which is why the SELECT write appears **exactly once** in the tree.
+**`NSF_SIZE_ASSERT(NSFSELITEM, 8)` is load-bearing and was an EXISTING invariant
+not followed**, not an improvement: the facade links into the application and the
+engine into the STC, **separately linked**, and within one compilation the
+multiply and the divide **cancel whatever the size is** — so a host test is
+*structurally* unable to see a disagreement. **Verified to fire, and where:** the
+macro is a no-op off-target by design (`nsf.h`), so breaking it leaves the host
+suite **green at 3491** and fails the **cross** build with `size of array
+'nsf_assert_NSFSELITEM' is negative` — the host/target split in miniature.
+**A trap found while building the gate, worth keeping:** `nsfreq_submit` /
+`nsfreq_wait` **short-circuit back into the registered transport**, so calling
+them from inside one re-enters it — unbounded recursion that **blew the stack
+instead of failing an assertion**. **Red lines held:** `asm/nsfvsvc.asm`
+untouched (`RQEIN`/`RQEOUT` already move bytes), **NSFRQE frozen at 64 B**,
+anchor unmoved, `ANCVERNO` 3, no new field, no verb table anywhere, and **one
+code path for both phases** (in Phase 1 the multiply and divide simply cancel).
+`src/nsfsx.c` gains **one pointer sentence and no code**: its residue argument is
+**not refuted** — it holds *because* every protocol-side read is bounded by the
+staged byte count, and `nsfsel.c` was the one read that was not. **Offline
+gates:** `-Wall -Wextra -Werror` clean; **ASan + UBSan clean** on TSTEZA / TSTSEL
+/ TSTREQX (`TSTTRC`'s 0 assertions under sanitizers is **pre-existing and
+unrelated** — it links none of the changed files); cross-build **6 modules + 56
+test modules**; alias scan **246 unique ≤ 8, none added**; card + sock-lookup
+checkers OK. **Two corrections to the kickoff, both from source:** its read-side
+audit omitted **`nsftcp.c:2014`** (`tcp_send`; `:601` is the *parked*
+`tcp_send_resume`) — a byte count, correct, so no conclusion changed, but the
+ADR records **six** read sites; and it named a `docs/socket-provider.md` that
+**does not exist**, so the `selectex()` note lives in
+`docs/nsf370-provider-contract.md` §4, where `selectex()` is actually discussed.
+Spec **v1.36** (§10.4 + changelog). **PROVEN HOST-SIDE:** the length arithmetic
+both ways, array integrity across the crossing, the refusal, the truncation
+consistency, the end-to-end mask round trip. **NOT ESTABLISHED BY ANY OF IT:**
+that a **cross-AS SELECT works at all** (one address space, a *modelled*
+transport — d1 §2.3's round, #87's territory); that the two load modules agree on
+`sizeof(NSFSELITEM)` (the assert's sole job, compile-time, per side); the
+`tstd1b.c` edit itself (`host = false`, **unverified here**, proof in Stage 2);
+or anything about the `g_busy` wedge beyond its cause. `docs/measurements/m5-2-101/`.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
