@@ -1207,7 +1207,14 @@ nsfsx_drain(void)
         **      client's own data, exactly as it did before the landing area
         **      existed -- the residue's scope is per-slot, not global.
         **      Pinned in TSTREQX rather than left as reasoning, because "no
-        **      cross-client bytes escape" is a property, not an inspection. */
+        **      cross-client bytes escape" is a property, not an inspection.
+        **
+        **      ITS SCOPE WAS IMPLICIT AND IS NOW WRITTEN DOWN (ADR-0047 4).
+        **      The argument holds because EVERY protocol-side read of ulen is
+        **      bounded by the staged BYTE count.  nsfsel.c was the one read
+        **      that was not -- it took ulen as an item count and read 8x --
+        **      and it is now.  Nothing here is refuted; the dependency was
+        **      simply unstated. */
         (void)nsfreqx_land_copy(slot->stage, g_land, slot->xlen);
 
         nsfreqx_result_out((NSFRQE *)slot->rqe, &g_priv);

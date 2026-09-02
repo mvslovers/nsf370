@@ -848,3 +848,29 @@ Nothing in this ADR's own subject moved: anchor layout unchanged,
 `NSFV_ANCHOR_VER` stays 3, **NSFRQE stays frozen at 64 bytes**, and the
 C / EZASOKET / EZASMI surfaces are untouched.
 
+
+---
+
+## Annotation (2026-09-02, M5-2, issue #101) — "count" meant bytes, and one verb read it otherwise
+
+Append-only. Nothing in this ADR is refuted; one word in it turned out to be
+load-bearing in a way it does not say.
+
+§2's table reads:
+
+> | `ulen`@24 | the length the caller **requested** | the count **actually staged** |
+
+That **count is a BYTE count** — `RQEIN` stages `min(ulen, 2048)` bytes and
+`nsfreqx_dispatch_in` is handed what `nsfreqx_land_copy` moved. Which is correct,
+and was correct for every verb that reached it. **`RQ_SELECT` did not agree**:
+ADR-0035 encoded its `ulen` as an *item* count, so a cross-AS SELECT over N
+sockets crossed N bytes and `nsfsel_dispatch` read 8N.
+
+The word *count* is where the two meanings hid — the transport's own text could
+be read either way and stayed true, because the transport by design (§ADR-0003)
+never reads `fn` and so cannot tell which reading a caller intended.
+
+**ADR-0047** makes the rule explicit — `ubuf` is an address and `ulen` is a byte
+length **for every verb** — and is where the write-side and read-side audits
+live. Nothing in this ADR's mechanism changes: no new field, no layout move,
+`NSFV_ANCHOR_VER` stays 3, **NSFRQE stays frozen at 64 bytes**.

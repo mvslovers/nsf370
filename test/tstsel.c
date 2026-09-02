@@ -85,7 +85,7 @@ static INT do_select(NSFRQE *r, NSFSELITEM *items, UINT n,
     memcpy(r->eye, NSFRQE_EYE, 4);
     r->fn      = (USHORT)RQ_SELECT;
     r->ubuf    = (n > 0u) ? items : NULL;
-    r->ulen    = n;
+    r->ulen    = n * (UINT)sizeof(NSFSELITEM);   /* BYTES (ADR-0047)  */
     r->p1      = sec;
     r->p2      = usec;
     r->p3      = p3;
@@ -424,7 +424,7 @@ static void test_ownership_mask(void)
     memcpy(r.eye, NSFRQE_EYE, 4);
     r.fn      = (USHORT)RQ_SELECT;
     r.ubuf    = it;
-    r.ulen    = 3u;
+    r.ulen    = 3u * (UINT)sizeof(NSFSELITEM);  /* BYTES (ADR-0047)  */
     r.p3      = SEL_F_TIMED;                /* poll form: 0/0 -> never parks     */
     r.retcode = PARKED;
     nsfreq_dispatch_id(&r, S11_ASCB_B, S11_ASID_B);
@@ -445,7 +445,7 @@ static void test_ownership_mask(void)
     memcpy(r.eye, NSFRQE_EYE, 4);
     r.fn      = (USHORT)RQ_SELECT;
     r.ubuf    = it;
-    r.ulen    = 1u;
+    r.ulen    = 1u * (UINT)sizeof(NSFSELITEM);  /* BYTES (ADR-0047)  */
     r.p3      = SEL_F_TIMED;
     r.retcode = PARKED;
     nsfreq_dispatch_id(&r, S11_ASCB_A, S11_ASID_A);
@@ -473,7 +473,7 @@ static void test_ownership_mask(void)
         memcpy(rp.eye, NSFRQE_EYE, 4);
         rp.fn      = (USHORT)RQ_SELECT;
         rp.ubuf    = ip;
-        rp.ulen    = 1u;
+        rp.ulen    = 1u * (UINT)sizeof(NSFSELITEM);  /* BYTES         */
         rp.p1      = 5u;                            /* 5 s: parks              */
         rp.p3      = SEL_F_TIMED;
         rp.retcode = PARKED;
@@ -504,7 +504,7 @@ static void test_ownership_mask(void)
             memcpy(rA.eye, NSFRQE_EYE, 4);
             rA.fn      = (USHORT)RQ_SELECT;
             rA.ubuf    = iA;
-            rA.ulen    = 1u;
+            rA.ulen    = 1u * (UINT)sizeof(NSFSELITEM);  /* BYTES     */
             rA.p1      = 5u;
             rA.p3      = SEL_F_TIMED;
             rA.retcode = PARKED;
@@ -535,7 +535,7 @@ static void test_ownership_mask(void)
     memcpy(r.eye, NSFRQE_EYE, 4);
     r.fn      = (USHORT)RQ_SELECT;
     r.ubuf    = it;
-    r.ulen    = 1u;
+    r.ulen    = 1u * (UINT)sizeof(NSFSELITEM);  /* BYTES (ADR-0047)  */
     r.p3      = SEL_F_TIMED;
     r.retcode = PARKED;
     nsfreq_dispatch(&r);                    /* == dispatch_id(r, 0, 0) */

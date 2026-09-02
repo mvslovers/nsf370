@@ -1,7 +1,7 @@
 # NSF — Network Services Facility for MVS 3.8j
 ## Architecture Specification
 
-*Version 1.35 — Draft for implementation. Companion document to the frozen
+*Version 1.36 — Draft for implementation. Companion document to the frozen
 Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
@@ -1258,6 +1258,19 @@ cross-memory POST and MVCK/MVCSK for `ubuf` moves. Protocols and sockets
 never know which transport delivered it. Changing NSFRQE after M3
 therefore requires an ADR.
 
+**`ubuf` and `ulen` are transport-owned (ADR-0047).** `ubuf` is an address in
+the caller's address space and `ulen` is a length in **bytes, for every verb**;
+a verb-specific meaning belongs in `sockdesc`/`p1`/`p2`/`p3`, which the
+transport never interprets. This is the dual of the layering rule above: the
+transport does not know which verb it carries — it moves `min(ulen, 2048)` bytes
+and never reads `fn` — so it cannot discover that one verb meant something else.
+`RQ_SELECT` encoded an *item* count until issue #101, which was free in Phase 1
+(same address space, nothing measures it) and made a cross-AS SELECT over N
+sockets cross N bytes to be read as 8N. Where such an element crosses between
+separately linked load modules, its size needs an `NSF_SIZE_ASSERT`: a host
+test links both halves into one compilation and cannot see the two sides
+disagree.
+
 **FROZEN at M3-2 (M3 exit gate).** M3-2 (NSFREQ) is the first real user of the
 contract; its transport round-trip and lost-request guard exercised the layout,
 so the **64-byte core is FROZEN**. One reserved word was named in the process:
@@ -2261,6 +2274,29 @@ unchanged (relink only) on the native stack on TK4-/TK5.
 ---
 
 ## Appendix A — Change Log
+
+**v1.36: #101 — `ubuf`/`ulen` are transport-owned (ADR-0047).** §10.4 gains the
+rule beneath the NSFRQE definition: `ubuf` is an address in the caller's address
+space and `ulen` is a length in **bytes, for every verb**; a verb-specific
+meaning belongs in `sockdesc`/`p1`/`p2`/`p3`. The dual of the layering rule
+already stated there — the protocol layer never learns the transport (ADR-0003),
+and the transport never learns the verbs, because it moves `min(ulen, 2048)`
+bytes and never reads `fn`. `RQ_SELECT` alone encoded an *item* count
+(ADR-0035), free in Phase 1 where nothing measures it and wrong in Phase 2: a
+cross-AS SELECT over N sockets crossed N bytes and was read as 8N, observed live
+in M5-2d1's second round (#100). The facade now multiplies, `nsfsel_dispatch`
+divides, and a `ulen` that is not a whole number of items is **refused
+`NSF_EINVAL`** rather than silently truncated — reachable only from a client
+that hand-builds its RQE, since the facade always multiplies and its 64-item cap
+sits under a 2048 clamp that is itself a multiple of 8.
+`NSF_SIZE_ASSERT(NSFSELITEM, 8)` carries the element size across the two
+separately linked load modules (facade in the application, engine in the STC), a
+disagreement a host test is structurally unable to see. **No layout change**:
+NSFRQE stays frozen at 64 B, the anchor is unmoved, `ANCVERNO` stays 3, and no
+assembler was edited (`RQEIN`/`RQEOUT` already move bytes). §17.3's `ulen` row is
+unaffected — that is the caller-side extent question, a different one.
+Host 3469 → **3491 PASS / 0 FAIL**. **Proof is HOST ONLY**; the cross-AS SELECT
+is M5-2d1 §2.3's live round.
 
 **v1.35: M4-6 — the loss-injection harness (drop/dup/reorder) + TIME_WAIT reclaim
 under pool pressure; the M4 exit gate.** A HOST-only harness `test/tstloss.c`

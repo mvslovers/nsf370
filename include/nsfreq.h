@@ -143,6 +143,13 @@ typedef struct nsfrqe {
     UINT    sockdesc;           /*  4  @16  (gen<<16)|id -- the target socket    */
     void   *ubuf;               /*  4  @20  user buffer (P1 same-space pointer;  */
     UINT    ulen;               /*  4  @24   P2 keyed cross-memory move length)  */
+    /* ubuf/ulen ARE TRANSPORT-OWNED (ADR-0047): ubuf is an address in the
+     * caller's address space and ulen is a length in BYTES, for EVERY verb.
+     * A verb-specific meaning belongs in sockdesc/p1/p2/p3 below, which the
+     * transport never interprets.  The transport moves min(ulen, 2048) bytes
+     * and by ADR-0003's design never reads `fn`, so it cannot discover that
+     * one verb meant something else -- RQ_SELECT encoded an ITEM count until
+     * #101 and a cross-AS SELECT crossed N bytes to be read as 8N. */
     UINT    p1;                 /*  4  @28  fn-specific (addr / backlog / ...)   */
     UINT    p2;                 /*  4  @32  fn-specific (port / option / ...)    */
     UINT    p3;                 /*  4  @36  fn-specific                          */

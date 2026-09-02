@@ -511,7 +511,7 @@ INT nsf_select(INT maxsoc, void *rmask, void *wmask, void *emask,
 
     eza_rqe(&r, RQ_SELECT, 0u);
     r.ubuf = (nitems > 0u) ? (void *)items : NULL;
-    r.ulen = nitems;
+    r.ulen = nitems * (UINT)sizeof(NSFSELITEM);     /* BYTES (ADR-0047)          */
     r.p1   = (UINT)((tv_sec < 0) ? 0 : tv_sec);
     r.p2   = (UINT)((tv_sec < 0) ? 0 : tv_usec);
     r.p3   = (tv_sec < 0) ? 0u : (UINT)SEL_F_TIMED; /* absent flag => wait forever*/

@@ -36,7 +36,7 @@ typedef struct selcb {
     UCHAR       timed;          /* a finite-timeout TMR is armed                */
     NSFRQE     *req;            /* the parked SELECT request (app-owned)        */
     NSFSELITEM *items;          /* the app-side descriptor/interest array (ubuf)*/
-    UINT        nitems;         /* item count (r->ulen)                         */
+    UINT        nitems;         /* item count (r->ulen / sizeof, ADR-0047)      */
     UINT        ascb;           /* M5-2d1: the caller identity this parked WITH */
     UINT        asid;           /*         -- re-scans run as that client       */
     TMR         tmr;            /* timeout (embedded; tmr_cancel mandatory)     */
@@ -194,13 +194,26 @@ static void sel_timeout(void *arg)
 static void nsfsel_dispatch(NSFRQE *r)
 {
     NSFSELITEM *items = (NSFSELITEM *)r->ubuf;
-    UINT        n     = (items != NULL) ? r->ulen : 0u;
+    /* ulen is a BYTE length for every verb (ADR-0047), so the item count is
+     * derived here -- the facade multiplied by the same sizeof.  A length that
+     * is not a whole number of items is REFUSED rather than truncated: the
+     * transport moves min(ulen, 2048) bytes and never inspects `fn`, so a
+     * partial trailing item is a request this engine cannot honour, and
+     * silently dropping it would report a smaller set as if it had been asked
+     * for.  Unreachable through NSFEZA (which always multiplies); it is the
+     * hand-built RQE -- and the hostile one -- that can arrive this way. */
+    UINT        ulen  = (items != NULL) ? r->ulen : 0u;
+    UINT        n     = ulen / (UINT)sizeof(NSFSELITEM);
     UINT        count;
     UINT        ascb, asid;
     SELCB      *cb;
 
     r->sockdesc = 0u;                          /* not parked on any pend_ slot   */
 
+    if ((ulen % (UINT)sizeof(NSFSELITEM)) != 0u) {
+        soc_complete(r, NSF_RETERR, NSF_EINVAL);   /* the dispatcher convention  */
+        return;
+    }
     nsfreq_caller_id(&ascb, &asid);
     count = sel_scan(items, n, ascb, asid);
     if (count > 0u) {
