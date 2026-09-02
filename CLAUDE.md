@@ -2800,6 +2800,79 @@ this be green on unchanged code?"* question answering **yes, on every build**. D
 means **§2.3's parked path was never driven at all** — the one path nothing covered until d1
 added it. **Still live-unproven after this round:** R8 entirely (§2.4), indistinguishability
 (§2.2b), SELECT-foreign on either path (§2.3), the revert's R8 arm, and Phase 1 live.
+**M5-2d1c (the #67 rejection pulled forward, and the encoding question settled) — 1 DONE
+and live-green; 2.1's code change and 2.2 NOT STARTED, blocked on PR #100.** Not a milestone
+step; **M5 stays in progress and nothing flips** — #67, #88 and #92 stay open, and the `ulen`
+gap, (e), the milestone flip, c3 and d2 are all still ahead. **#67's rejection came out of c3
+for a reason that is not the security one it was filed for: our own rounds keep walking into
+it** — #100 issued `XFER` at NSFS, parked forever, and paid a cancelled job, a leaked slot and
+an anchor plus router retained to IPL, in the round told not to fix it. **THE SHAPE CHANGED ON
+EVIDENCE, and the trace is the finding:** the kickoff said *refuse by name*, and `CLAIMOK`'s
+staging dispatch is a **fall-through chain ending in ECHO**, so **any** unrecognised `REQFUNC`
+— one wrong word in a client, no knowledge of the verb set needed — stages as ECHO and hangs
+identically. That is the *cheapest* instance of #67 and refuse-by-name leaves it open, so the
+production STC **permits exactly `FNRQE`**: one compare-branch pair instead of two, closing the
+class rather than two members of it (Mike ratified the change before it was written). Refused
+**ahead of the claim**, so it costs **no slot and no in-flight count by position, not by
+argument** (M5-2c2's `FNORPH` form); `BADFUNC` not `BADREQ`, so the rc reaches the **caller's
+block** and cannot be confused with the client's own initialised value. **Placement is LAST in
+the pre-claim chain, not first** — what must be true is only *ahead of the claim*; it has to
+follow the `QUERY`/`UNSTAGE`/`SLOT` branches, which are serviced at BOTH servers. The gate is
+**`NSFV_ANCHOR_PROBE`** in the existing `flags` word, set by the probe STC and nothing else —
+**fail-closed by polarity** (the bit says *permitted*, so a zeroed anchor refuses), in `flags`
+rather than `rsvd0` (the **last** slack word, reserved for the lost-race counter), and
+**`ANCVERNO` stays 3 because neither skew direction is silent**: a stale router does not test
+the bit, a new router against a stale STC takes the whole Stage-0 set red at once. **It does
+NOT close #67** — ECHO/XFER still strand a slot each at the probe STC, the `HELD` arm is
+unreachable rather than correct, and **c3 deletes this gate together with the verbs**, said at
+the code so it is not left as unattributable dead code. **Offline gates:** card columns OK;
+`as370` rc 0; **all 1368 source cards present in the listing in source order**;
+`TM ANCFLAG(R2),ANCPROBE` = `9140 200C` (**base R2 not dropped to 0**), `BO PROBEOK` =
+`4710 609C`, `C R3,=A(FNRQE)` = `5930 6540` with the literal reading `00000006`, `BNE BADFUNC`
+= `4770 64DA`, every branch target matching its label; **all three assembler gates verified to
+discriminate** against a deliberate 74-byte comment (card check FAILED, as370 *"consumed as a
+continuation"* at **severity 8**, statement check naming **both** victims). **Instruction
+stream: 364 → 368 emitted own statements, delta exactly the four inserted; 274 identical, 90
+differing by a uniform displacement shift, 0 by anything else** — offset asserts byte-identical
+to `main`, anchor layout unmoved, **NSFRQE frozen at 64 B**. Cross-build clean (6 modules + 55
+test modules); alias scan **248 unique ≤ 8, none added**; host **3469 PASS / 0 FAIL**, a
+no-regression check only (every changed file is MVS-only). **VALIDATED LIVE on MVSCE** —
+required, since `asm/*.asm` must be on-MVS validated before it merges (8.4), and **1's round
+turned out to be self-contained**: `TSTD1R` is 2.1's instrument, not 1's. All six modules in
+**one** deploy, so the partial-deploy hazard did not arise. **NSFV half (the negative control):
+`TSTSVC`/`TSTMVCK`/`TSTUBUF`/`TSTDEATH`/`TSTXFW` 438 PASS / 0 FAIL CC 0 batch+TSO** —
+**exactly the figure the record predicts for the set**, so no test was silently lost, and
+`TSTSVC`'s ECHO passing is at once the **positive check that the bit took** (nothing reports
+it) and the proof the gate is conditional. **NSFS half: `TSTRQXC`/`TSTRQXF` 130 PASS / 0 FAIL
+CC 0 batch+TSO, was 122 — delta exactly the four new assertions × batch and TSO.** From the
+spool: `ECHO RETURNED rc=4 (it did not park)`, **`REQFUNC 99 RETURNED rc=4`** — the
+fall-through case, the line the design change exists for, now **measured rather than reasoned**
+— `inflight 0->0, non-FREE slots 0->0`. **NO REVERT ARM, AND THE ROUND SAYS SO:** the before
+behaviour is on record from #100 and re-inducing it costs that debt again; what this shows
+instead, on **one binary with one axis varied**, is the **conditional** — the same verb
+serviced at NSFV and refused at NSFS. **And the slot/in-flight assertions CANNOT FAIL** —
+without the gate the request parks, so their "after" side is never evaluated; what proves the
+refusal cost nothing is that the request **returned at all** with `rc` 4 against an initialised
+−1. **2.3 (Phase 1 live) GREEN** — the `NSF` module was redeployed, so this is a real check on
+those bytes: `S NSF` clean (`NSF000I`→`NSF210I ... MTU 1500`→`NSF001I`), **`F NSF,APPS` still
+`NSF808E`** (d1's check and c1's sweep inert in Phase 1 **by construction**), ping **20/20 0 %**
+(0.607/0.884/1.311 ms). **Zero dumps**, `SVC 239` stolen and restored by both STCs, no
+`NSF054W`, `INFLIGHT=0` at every stop, stand left as found. **THE ENCODING QUESTION IS SETTLED,
+OFFLINE, AND IT REVERSES #100's HALF:** `NSFV_REQ_EYE` is **EBCDIC** — `cc370 -S` emits
+`DC C'NSFV'`, `as370` assembles that to **`D5E2C6E5`** (read from the listing), and that is
+EBCDIC CP037 where ASCII would be `4E 53 46 56`; corroborated twice without the stand, since
+#100's own measured `D6 E3 C7 E6` is exactly that **+1 per byte** (an ASCII source would give
+`4F 54 47 57`), and the router compares `=CL4'NSFV'`, so **an ASCII literal could never have
+passed a Stage-0 gate**. **So #100's `4E 53 46 56` was NOT OBSERVED** — the captured line
+**stops after eight bytes** and never contains the `(wanted …)` segment the `printf` would have
+produced. Established as exactly that and no more; *how* it came to be written is left as
+inference. Four consequences recorded for case 2, including that **the rc alone cannot
+attribute the refusal** (`BADREQ` returns in R15 only and *both* the eyecatcher and TPROT checks
+land there), so the discriminator is reading the eyecatcher back — **as a gate that SKIPS**,
+never a PASS printed under a failed precondition. **BLOCKED on PR #100** (open): `test/mvs/
+tstd1r.c` and the repaired `tstd1b.c` live only on its branch, and copying either here would
+duplicate its diff — the trap #98's retarget check exists to prevent. **#67 comment drafted,
+NOT posted** (8). `docs/measurements/m5-2d1c/`.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
