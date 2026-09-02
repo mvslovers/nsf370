@@ -1,8 +1,13 @@
 # d1c — the #67 rejection, and the encoding question settled
 
-**Status: §1 DONE, offline-gated and LIVE-GREEN. §2.1's blocking question
-SETTLED offline. §2.3 (Phase 1 live) GREEN. §2.1's code change and §2.2 NOT
-STARTED — they need PR #100, which is still open.**
+**Status: ALL FOUR ITEMS DONE. §1 offline-gated and LIVE-GREEN. §2.1's blocking
+question SETTLED offline and case 2 ESTABLISHED live — the case #100 could not
+earn. §2.2 done in three states for BOTH checks. §2.3 (Phase 1 live) GREEN. One
+assertion is red in all three states of §2.2 and is out of scope: the `ulen` gap
+#100 found.**
+
+PR #100 was merged at the start of this round and `main` merged in, so the
+kickoff's base is now true.
 
 Branch `m5-2d1c`, on `main` at `6046003`. Host **3469 PASS / 0 FAIL**, unchanged
 — and that is a **no-regression check only**: every file this round changes is
@@ -15,8 +20,8 @@ MVS-only (`asm/nsfvsvc.asm` never compiles on host; `src/nsfv.c` and
 |---|---|---|
 | 1 | §1 refusing pre-claim, rc in the caller's block, comment naming c3 | **MET** — and the shape changed to *permit one* on evidence (§1) |
 | 2 | instruction-stream diff confined; `as370 -a=` listing quoted | **MET** — 364 → 368, delta exactly the four inserted, 0 non-displacement changes |
-| 3 | §2.1 with its ASCII/EBCDIC question settled, refusal attributed to the key check | **PARTIAL** — the *question* is settled (§2); the *case* needs #100's file |
-| 4 | §2.2 in three states for both checks | **NOT MET** — R8 arm's instrument absent, ownership arm's known-defective (§5) |
+| 3 | §2.1 with its ASCII/EBCDIC question settled, refusal attributed to the key check | **MET** — question settled offline (§2), case 2 established live (§4) |
+| 4 | §2.2 in three states for both checks | **MET** — both checks, one axis each (§5) |
 | 5 | §2.3 live | **MET** (§3) |
 | 6 | #67 updated — proposed, not applied | **MET** — drafted in `issue-67-comment-draft.md`, not posted |
 | 7 | `make test-host` ≥ 3469 PASS, 0 FAIL | **MET** — 3469 / 0, unchanged |
@@ -262,56 +267,164 @@ check on those bytes and not a formality.
   unaffected.
 * `P NSF` clean, same second.
 
-## 4. The stand
+---
 
-Zero dumps for the whole round (`IEA995I` count **0**), and no `IEF450I` inside
-the round window. `NSF043I SVC 239 RESTORED` / `NSFV095I SVC 239 RESTORED` on
-every stop, **no `NSF054W`**, `INFLIGHT=0` before and after every stop, so
-nothing was retained. `EXHAUSTED=2 COLLISIONS=138` after the NSFS half are
-`TSTRQXF`'s own (D) pool tests, which deliberately fill the pool. The stand was
-left as found, with NSFS running.
+## 4. §2.1 — case 2 ESTABLISHED
 
-## 5. NOT STARTED, and why
+`TSTD1R` **CC 0 batch+TSO, 10 PASS / 0 FAIL** at NSFV. **CC 0 rather than CC 20
+is itself the proof case 2 ran** — the repaired gate returns 20 when its
+precondition fails, so a green return can no longer be earned by skipping.
 
-**PR #100 is still open.** `test/mvs/tstd1r.c` exists only on
-`m5-2d1-live-b`, and #100 also carries the repaired `tstd1b.c` that §2.2's
-ownership arm must be measured with. Copying either onto this branch would
-duplicate #100's diff into this PR — the trap #98's retarget check exists to
-prevent — and merging is the maintainer's countersign, not mine.
+```
+case 2: sent     D4 E1 C5 E4  (= NSFV_REQ_EYE - 1)
+case 2: landed   D5 E2 C6 E5  (in CSA, after +1)
+case 2: wanted   D5 E2 C6 E5  (= NSFV_REQ_EYE)
+case 2: readback D5 E2 C6 E5  (XFEROUT -> ubuf)
+case 2: readable=1 storable=0 (both as required)
+case 2: target rc 5AC0F001 -> 5AC0F001, seq 5AC0F001 -> 5AC0F001
+PASS: 2.4(2): a foreign R8 was REFUSED and the block NOT written
+```
 
-The two remaining items are blocked for **different reasons**, and the difference
-decides the remedy:
+**The refusal is now ATTRIBUTABLE, which is exactly what #100 could not earn:**
+the eyecatcher **provably landed** (`landed` == `wanted`, and `readable=1` is a
+`memcmp` against the literal), so the eyecatcher check is not what refused; the
+target is **provably key-0** (a key-8 read succeeds, a key-8 store faults under
+`___try`), so it is not merely a bad address; and the block was **not written**.
+TPROT is what is left.
 
-* **§2.1's code change — INSTRUMENT ABSENT.** `test/mvs/tstd1r.c` does not exist
-  on `main`. The change itself is specified precisely in
-  `eyecatcher-encoding.md` §"Consequences"; it is four edits to a file this
-  branch does not have.
-* **§2.2's R8 arm — INSTRUMENT ABSENT.** Same file.
-* **§2.2's descriptor-ownership arm — INSTRUMENT PRESENT BUT KNOWN-DEFECTIVE.**
-  `tstd1a.c` and `tstd1b.c` are both on `main`, so this one *could* be run here.
-  It is not, and the reason is #100's own defect 2: **a zero produced by a sweep
-  range that does not cover the target is indistinguishable from a zero that
-  means refused.** Running the revert against main's `tstd1b.c` would produce
-  exactly that uninterpretable result — a measurement whose null cannot be told
-  from a broken instrument — and #100's repair (sweep before owning anything,
-  positive-control the range, derive A's descriptor at run time) is on its
-  branch. Running it here would not be blocked; it would be **worthless**, which
-  is a stronger reason to wait, not a weaker one.
+### A false label, caught by the case's own first run
 
-**§2.3 is DONE** — see §3 above.
+The first live run printed `sent D5 E2 C6 E5 (= NSFV_REQ_EYE - 1)` — the
+literal, not its minus-one. **`XFER` is a round trip**: `XFEROUT` copies
+`stage[]` back into `ubuf` after the STC replies, so the buffer held the
+*transformed* bytes by the time the diagnostic read it.
 
-Both are live work and run on the sequence in [`sequence.md`](sequence.md), which
-this round executed for its own half and which held.
+The label was false on a real measurement — **the same defect class this round
+exists to remove** — and it *looked* right, because the transformed value is the
+one a reader expects to see. Fixed by snapshotting the sent bytes before the
+call; the read-back is now its own row rather than being silently mistaken for
+the send. Recorded rather than quietly corrected, because the run that produced
+it is the reason the repair is trustworthy.
 
-§1's round turned out to be **self-contained** — `TSTD1R` is §2.1's instrument,
-not §1's — so §1 did not wait for #100 and is live-validated, which is what
-CLAUDE.md 8.4 requires before an `asm/*.asm` change merges. Checking the
-remaining items the same way, per item rather than per round, is what separates
-the three cases above.
+---
 
-**Worth naming: §1's evidence has the structure §2.2 asks for**, on the one axis
-available without a redeploy — the same verb, one binary, opposite outcomes at
-the two servers, with the restored state re-measured. It is *not* a before/after
-revert and §1 does not claim to be one; but the "one assertion moving" discipline
-§2.2 exists to enforce was applied, and it is the reason the conditional is
-established rather than assumed.
+## 5. §2.2 — the three-state revert, both checks
+
+Both arms vary **one axis**, and in both the restored state is confirmed
+identical to the baseline rather than merely green.
+
+### Arm 1 — the R8 check (d1b), at NSFV
+
+Reverted by commenting out the four TPROT cards, and **verified out of the
+listing** rather than assumed: **2 emitted `E501` instructions in the restored
+build, 0 in the reverted one**. The restored object deck is **byte-identical**
+to the pre-revert build.
+
+| state | result | case 2 |
+|---|---|---|
+| restored | **CC 0**, 10 PASS / 0 FAIL | refused; `rc 5AC0F001 -> 5AC0F001` |
+| **reverted** | **CC 1**, 8 PASS / **2 FAIL** | **ACCEPTED**; `rc -> 00000000, seq -> 00000001` |
+| restored | **CC 0**, 10 PASS / 0 FAIL | refused again |
+
+**Exactly one assertion moved** — `2.4(2)`, in both the batch and the TSO run.
+`2.4(1)` (no eyecatcher) and `2.4(3)` (the never-referenced tail) pass in **all
+three** states: the eyecatcher check is untouched, and case 3 is the negative
+control that is *supposed* to pass in both arms.
+
+The reverted arm renders the hole **positively**: `rc -> 00000000` and
+`seq -> 00000001` are the router completing a `QUERY` **into key-0 storage the
+caller cannot write** — the 20 key-0 stores d1b's TPROT probe exists to stop.
+
+### Arm 2 — descriptor ownership (d1), at NSFS
+
+Reverted by disabling the ownership comparison **only**; the resolution above it
+is deliberately left intact, so the axis varied is the ownership test and not
+whether a descriptor resolves at all.
+
+| state | result | what B reached |
+|---|---|---|
+| restored | 12/13 | `SWEEP pre-own 0`; `foreign(00010000) rc=-1 errno=9` |
+| **reverted** | **9/13** | **`SWEEP pre-own 1 REACHED 00010000`**; `foreign(00010000) rc=0 errno=0` |
+| restored | 12/13 | identical to the baseline |
+
+**Exactly three assertions moved** (`2.2`, and `2.2b` retcode and errno). **The
+decision is by IDENTITY, not by count**: owning nothing, B reached
+**`00010000`** — which its own `00010001` derives A's descriptor to be — and
+**drove it successfully** (`rc=0`). A never-existing descriptor still returned
+`rc=-1 errno=9` in the reverted arm, so the revert did not simply break
+everything.
+
+### The one assertion red in all three states
+
+`2.3 poll: THE REST OF THE MASK IS SERVED` fails in **every** state, restored and
+reverted alike. It is **#100's `ulen` product defect**, not an ownership result:
+NSFSEL and the EZASOKET facade read `ulen` as an **item count** while the
+transport stages `min(ulen, 2048)` **bytes**, so a cross-AS SELECT over *N*
+sockets stages *N* bytes instead of *N* × 8 and B's own socket is not reported
+ready. Being constant across the arms is what identifies it as unrelated to the
+axis. **Out of scope by the kickoff** — d1's §2.3 goes with the `ulen` fix, and
+must be re-run after it, because a different code path will execute.
+
+### A sequencing lesson that cost a run
+
+State 3 of arm 2 failed on the first attempt, and the cause was mine: the
+readiness poll matched A's console line **by timestamp**, A announced at a time
+the pattern did not cover, and B was submitted **60 s later, after A had already
+ended**. The repaired instrument **caught it and refused to report** —
+
+```
+SWEEP post-own: 0 reached out of 128 attempts
+FAIL: B's OWN socket is inside the swept range (the range is adequate)
+THE SWEPT RANGE DOES NOT COVER LIVE DESCRIPTORS -- sweep 1's result means
+nothing and is NOT reported as a refusal.
+```
+
+— which is #100's **defect 2 repair working exactly as designed**, on a real
+occurrence rather than a constructed one. The fix is to **record the console
+log's length before submitting A and match only new lines**; matching on
+timestamps is fragile, and the two earlier runs passed only because their
+timestamps happened to fit.
+
+---
+
+## 6. What this round did NOT do
+
+**Nothing in the kickoff's scope remains open.** Two things are deliberately
+untouched:
+
+* **The `ulen` gap.** A design decision with ADR weight and its own issue; the
+  red line said not to fix it here, and it is what keeps `2.3 poll` red in all
+  three states of §5.
+* **#67 is not closed.** `ECHO` and `XFER` still strand a slot each at the probe
+  STC, which services them; the `HELD` arm is now unreachable from a client at
+  NSFS, which is not the same as correct. c3 retires the verbs and deletes the
+  gate with them. The comment is **drafted, not posted**.
+
+**And three limits on §1's evidence, restated so a green round does not bury
+them:** no before/after arm was run; the slot and in-flight assertions **cannot
+fail**, so they are a record rather than a proof; and `TSTDEATH` corroborates
+`BADFUNC` after its relocation but exercises **nothing** of the new `TM`/`BNE`
+pair.
+
+---
+
+## 7. The stand
+
+The round ran 07.30–08.30, across six deploys and nine STC starts (NSFS 1727,
+1729, 1734, 1735, 1736; NSFV 1726, 1731, 1733 and the restored-build instance),
+because §5's two revert arms each need three deployed states.
+
+**Zero dumps** — `IEA995I` count **0** for the whole log. `NSF043I SVC 239
+RESTORED` / `NSFV095I SVC 239 RESTORED` on every stop, and `INFLIGHT=0` checked
+**before** every `P`, so nothing was retained. **The one `NSF054W` in the log is
+at 03.58.12 on STC 1715 — #100's round, not this one**, checked rather than
+assumed. The two `IEF450I` are likewise both older than 07.30.
+
+`EXHAUSTED=2 COLLISIONS=138` after the first NSFS half are `TSTRQXF`'s own (D)
+pool tests, which deliberately fill the pool; the final instance reads
+`BUSY=0 INFLIGHT=0 EXHAUSTED=0 COLLISIONS=0 REAPED=0`.
+
+**Both reverts are undone in the tree and on the machine**: `asm/nsfvsvc.asm`
+and `src/nsfreq.c` are byte-identical to their committed state, the restored
+router's object deck is byte-identical to the pre-revert build, and the stand
+was left running NSFS on the restored build — as it was found.
