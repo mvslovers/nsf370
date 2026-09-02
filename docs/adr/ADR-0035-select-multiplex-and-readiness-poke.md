@@ -244,3 +244,32 @@ connect with select-for-write" idiom.
   poke-completion, and timeout are all exercised by direct calls (`nsfreq_dispatch` +
   `nsftmr_run` for the timeout), because the host STIMER seam never posts the loop's
   timer ECB — the same reason the M0-5 timer tests drive `nsftmr_run` directly.
+
+
+---
+
+## Annotation (2026-09-02, M5-2, issue #101) — the `ulen` encoding is superseded
+
+Append-only; nothing above is rewritten. **ADR-0035 as a whole stays Accepted.**
+One partial decision in it — the `RQ_SELECT` encoding of `ulen` — is
+**Superseded by ADR-0047**.
+
+The superseded sentence, verbatim (§"The NSFRQE encoding", line 120):
+
+> - `r->ubuf = items`, `r->ulen = nitems`;
+
+`ulen` is now a length in **bytes** for every verb: the facade sets
+`nitems * sizeof(NSFSELITEM)` and `nsfsel_dispatch` derives the count by
+dividing. `SELCB.nitems` (line 87, commented `r->ulen`) is still an item count —
+it is the engine's own field, derived after the division.
+
+**Why the original was reasonable and stopped being so.** In Phase 1 `ubuf`
+points at the caller's array in the same address space and nothing measures it,
+so a count cost nothing. Phase 2's transport moves `min(ulen, 2048)` **bytes**
+and, by ADR-0003's design, never reads `fn` — so it cannot know that this one
+verb meant something else. A cross-AS SELECT over N sockets crossed N bytes and
+was read as 8N. Observed live in M5-2d1's second round (#100).
+
+ADR-0035's own summary line still reads correctly: SELECT rides
+`ubuf`/`ulen`/`p1`/`p2`/`p3` and **the NSFRQE freeze holds** — ADR-0047 changes
+what one field counts, not the layout.

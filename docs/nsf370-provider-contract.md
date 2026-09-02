@@ -91,6 +91,16 @@ such a POST reaches an ECB in the target address space's **private key-8 storage
 design (which ECB, who posts when, what happens on client death) and belongs after M5-2 at the
 earliest.
 
+**One rule that design inherits before it starts (ADR-0047).** An ECB list is an array
+crossing through `ubuf`, which is the identical fork to `RQ_SELECT`'s item array — and that
+one was encoded as an *element count* and cost issue #101: the Phase-2 transport moves
+`min(ulen, 2048)` **bytes** and never reads `fn`, so a cross-AS SELECT over N sockets crossed
+N bytes to be read as 8N. `ulen` is a **byte length for every verb**; a count belongs in
+`p1`/`p2`/`p3`. If the element ever crosses a load-module boundary — and here it would, the
+facade linking into the application and the engine into the STC — it needs an
+`NSF_SIZE_ASSERT`, because a host test links both halves into one compilation and cannot see
+the two sides disagree about the size.
+
 ---
 
 ## 5. Open questions (NSF side)

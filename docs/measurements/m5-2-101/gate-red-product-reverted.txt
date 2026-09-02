@@ -1,0 +1,185 @@
+=== nsf370 NSFEZA (EZASOKET API) tests ===
+  PASS: buf_init
+  PASS: soc_reserve (SOCKET pool)
+  PASS: nsfevt_init (EVT pool)
+  PASS: nsfthr_setup
+  PASS: register dummy protocol at 17
+  PASS: register dummy protocol at 6 (STREAM verbs)
+  PASS: first socket is number 0 (0-based)
+  PASS: BIND ok
+  PASS: GETSOCKNAME ok
+  PASS: GETSOCKNAME returned the bound addr
+  PASS: GETSOCKNAME returned the bound port
+  PASS: GETSOCKNAME set namelen=16
+  PASS: SENDTO returned the byte count (4)
+  PASS: non-blocking RECVFROM on empty -> -1
+  PASS:   errno EWOULDBLOCK
+  PASS: CLOSE ok
+  PASS: BIND after CLOSE -> -1
+  PASS:   errno EBADF
+  PASS: double CLOSE -> -1
+  PASS:   errno EBADF
+  PASS: TERMAPI ok
+  PASS: no sockets left after TERMAPI
+  PASS: implicit INITAPI: SOCKET without INITAPI succeeds
+  PASS: one socket created
+  PASS: TERMAPI closed the implicitly-init'd socket
+  PASS: INITAPI(maxsoc=2) ok
+  PASS: MAXSNO = clamped_maxsoc - 1 (1)
+  PASS: socket 0
+  PASS: socket 1
+  PASS: 3rd socket over MAXSOC -> -1
+  PASS:   errno EMFILE
+  PASS: INITAPI(maxsoc=1000) ok
+  PASS: MAXSNO clamped to pool limit-1
+  PASS: INITAPI(default) ok
+  PASS: default MAXSNO = pool limit-1
+  PASS: double INITAPI -> -1
+  PASS:   errno EINVAL
+  PASS: INITAPI ok
+  PASS: opened a socket (no close -- abandoned)
+  PASS: opened a socket (no close -- abandoned)
+  PASS: opened a socket (no close -- abandoned)
+  PASS: 3 sockets open
+  PASS: TERMAPI ok
+  PASS: TERMAPI closed all abandoned sockets
+  PASS: SOCKET pool back to baseline (leak gate)
+  PASS: round-trip: app still blocked (not woken)
+  PASS: round-trip: SENDTO trigger returned its count
+  PASS: round-trip: RECVFROM returned the delivered count
+  PASS: RECVFROM peer addr
+  PASS: RECVFROM peer port
+  PASS: round-trip: no sockets left
+  PASS: decoder returns 0 (R15 always 0)
+  PASS: unknown code -> RETCODE -1
+  PASS: unknown code -> ERRNO EOPNOTSUPP
+  PASS: GETH (unsupported) -> RETCODE -1
+  PASS: GETH (unsupported) -> ERRNO EOPNOTSUPP
+  PASS: decoder INIT -> RETCODE 0
+  PASS: decoder INIT set MAXSNO
+  PASS: decoder SOCK -> a descriptor (>= 0) in RETCODE
+  PASS: decoder SOCK -> ERRNO 0 on success
+  PASS: decoder CLOS -> RETCODE 0
+  PASS: decoder TERM emptied the app
+  PASS: m4: stream socket
+  PASS: m4: CONNECT ok
+  PASS: m4: GETPEERNAME ok
+  PASS: m4: peer addr
+  PASS: m4: peer port
+  PASS: m4: SEND byte count
+  PASS: m4: SHUTDOWN(WR) ok
+  PASS: m4: LISTEN ok
+  PASS: m4: ACCEPT -> a socket number
+  PASS: m4: ACCEPT number differs from the listener
+  PASS: m4: ACCEPT peer addr
+  PASS: m4: ACCEPT namelen=16
+  PASS: m4: GETPEERNAME on a listener -> -1
+  PASS:   errno ENOTCONN
+  PASS: m4: CONNECT closed -> -1
+  PASS:   CONNECT EBADF
+  PASS: m4: SEND closed -> -1
+  PASS:   SEND EBADF
+  PASS: m4: RECV closed -> -1
+  PASS:   RECV EBADF
+  PASS: m4: SHUTDOWN closed -> -1
+  PASS:   SHUTDOWN EBADF
+  PASS: m4: LISTEN closed -> -1
+  PASS: m4: ACCEPT closed -> -1
+  PASS: m4: GETPEERNAME closed -> -1
+  PASS: m4: TERMAPI emptied the app (listener + child)
+  PASS: fionbio: socket
+  PASS: fionbio: default blocking
+  PASS: fionbio: IOCTL FIONBIO on
+  PASS: fionbio: F_GETFL shows O_NONBLOCK
+  PASS: fionbio: non-blocking RECV -> -1
+  PASS:   errno EWOULDBLOCK
+  PASS: fionbio: IOCTL FIONBIO off
+  PASS: fionbio: cleared
+  PASS: fionbio: F_SETFL path -> EWOULDBLOCK
+  PASS: sockopt: SET SO_REUSEADDR accepted
+  PASS: sockopt: SET TCP_NODELAY accepted
+  PASS: sockopt: SET unknown -> -1
+  PASS:   errno EOPNOTSUPP
+  PASS: sockopt: GET SO_RCVBUF ok
+  PASS: sockopt: SO_RCVBUF value
+  PASS: sockopt: SO_SNDBUF value
+  PASS: sockopt: GET unknown -> -1
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: socket number == i
+  PASS: selmask: 3 sockets ready
+  PASS: selmask: read word0 = 0x00000001 (desc 0)
+  PASS: selmask: read word1 = 0x00000001 (desc 32)
+  PASS: selmask: write word0 = 0x80000000 (desc 31)
+  PASS: selmask: write word1 empty
+  PASS: selmask: TERMAPI closed all 33
+  PASS: cross: socket number == i
+  PASS: cross: socket number == i
+  PASS: cross: the SELECT went through the transport
+  PASS: cross: the facade encoded two live descriptors
+  FAIL: cross: 2 items staged as 2*sizeof(NSFSELITEM) bytes (got 2, want 16)
+  FAIL: cross: dispatcher handed a BYTE length covering both items (got 2, want 16)
+  FAIL: cross: item 0 desc arrives as the facade built it (got 2779054080, want 720896)
+  FAIL: cross: item 0 want arrives as the facade built it (got 165, want 1)
+  FAIL: cross: item 1 desc arrives as the facade built it (got 2779096485, want 327681)
+  FAIL: cross: item 1 want arrives as the facade built it (got 165, want 1)
+  FAIL: cross: both sockets reported ready (got 0, want 2)
+  FAIL: cross: read mask returns both bits set
+  PASS: cross/empty: went through the transport
+  PASS: cross/empty: nothing staged
+  PASS: cross/empty: dispatcher sees a zero length
+  PASS: cross/empty: 0 ready, no error
+  PASS: cross/trunc: ulen clamped to the staging chunk
+  PASS: cross/trunc: the truncated byte length is a whole item count
+  PASS: cross/trunc: derived count matches the bytes that crossed
+  FAIL: cross/odd: a non-multiple ulen is refused
+  FAIL: cross/odd: refused NSF_EINVAL (the dispatcher convention) (got 0, want 22)
+  PASS: cross: TERMAPI closed both sockets
+  PASS: decm4: SOCK -> descriptor
+  PASS: decm4: CONN -> RETCODE 0
+  PASS: decm4: GETP -> RETCODE 0
+  PASS: decm4: GETP peer addr
+  PASS: decm4: SHUT -> RETCODE 0
+  PASS: decm4: GOPT -> RETCODE 0
+  PASS: decm4: GOPT SO_RCVBUF value
+  PASS: decm4: LIST -> RETCODE 0
+  PASS: decm4: ACCE -> a new socket number
+  PASS: decm4: SELE -> RETCODE 1 (socket 0 ready)
+  PASS: decm4: SELE RRETMSK = 0x00000001 (number 0)
+  PASS: decm4: SELE WRETMSK cleared
+  PASS: decm4: SELE ERETMSK always zero (no TAKESOCKET)
+  PASS: no sockets left open
+  PASS: SOCKET pool fully returned
+  PASS: EVT pool fully returned
+
+=== TSTEZA: 172/182 passed (10 FAILED) ===
