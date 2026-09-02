@@ -66,14 +66,16 @@ case 2: target[0..7] = D6 E3 C7 E6 01 01 01 05
 
 The line **stops after eight bytes**. The `printf` that produced it
 (`test/mvs/tstd1r.c`) carries a trailing `  (wanted %02X %02X %02X %02X)`
-segment, and **that segment is not in the captured line at all**. The `wanted`
-value was derived by reading the C source with an ASCII mindset and then
-reported in the shape of a measurement.
+segment, and **that segment is not in the captured line at all**.
 
-That is the same failure class the round was otherwise careful about, one level
-down: **a derived value presented as an observation.** #100 was right to stop —
-the contradiction was real — but the half that was wrong is the ASCII half, and
-it was never on the machine.
+What is established is exactly that and no more: **the value is absent from the
+captured output, so it was not observed** — while the literal is EBCDIC by three
+independent routes. How it came to be written is inference and is left as such.
+
+That makes it the same failure class the round was otherwise careful about, one
+level down: **a value that did not come from the machine, reported in the shape
+of one that did.** #100 was right to stop — the contradiction was real — but the
+half that was wrong is the ASCII half, and it was never on the machine.
 
 ## Consequences for case 2
 

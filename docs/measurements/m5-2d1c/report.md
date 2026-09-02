@@ -121,9 +121,19 @@ requests:
   `ECHO` would pass against a refuse-by-name gate that leaves the fall-through
   open, so the gate would not discriminate between the two designs.
 
-Each asserted three ways: the rc reaches the **caller's block** (initialised to
-−1, so `rc == 4` also proves the block was written), `inflight` unchanged, and no
-slot changed state — both counts read straight out of CSA before and after.
+**The assertion that carries the gate is `rc == NSFV_RC_INVALID` against an
+initialised −1**: it proves the request was refused *and* that the caller's block
+was written (`BADFUNC`'s shape, not `BADREQ`'s R15-only), and it is the one that
+can go **red** rather than hang.
+
+`inflight` unchanged and no slot changed state — both read straight out of CSA
+before and after — are kept as a record, but they are **not** what proves "no
+slot claimed", and are not presented as such: without the gate the request parks,
+so the "after" side is never evaluated and those two can only ever run on the
+passing path. **What proves no slot was claimed is that the request returned at
+all**, with rc 4. (`busy_before` is read after sections (A)–(D), which claim and
+release slots; any residue they leave is seen by both sides, so the equality
+holds regardless.)
 
 **Its failure mode is a HANG, not a failed assertion**, so each request is
 bracketed by `wtof` markers: the console log survives the cancel a hang forces,
