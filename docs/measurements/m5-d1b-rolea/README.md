@@ -42,9 +42,17 @@ different statements in `do_listen` (`src/nsfreq.c`):
 | `EBADF` (9) | `req_socket` returned NULL — the descriptor did not resolve, **or is not owned by this caller**. Foreign and never-existing are indistinguishable here by construction (ADR-0046), which is exactly why `EBADF` cannot carry this claim. |
 | `EINVAL` (22) | the descriptor **resolved**, ownership **held**, the TCB exists and is **not CLOSED**. |
 
-So `EINVAL` is the isolation statement in **positive form**: A's socket
-survived B, still belongs to A, and is still listening. `EBADF` here would mean
-B had broken the owner — the failure this gate exists for.
+So `EINVAL` is the isolation statement in **positive form**: A's socket survived
+B and is still listening. `EBADF` here would mean B had broken the owner — the
+failure this gate exists for.
+
+**SCOPED PRECISELY, because the obvious phrasing overclaims:** `role_a` is an
+**owner-not-broken** check, NOT an ownership-enforcement check. `EINVAL` proves
+the descriptor resolved *for A* and the TCB is not CLOSED — and it would resolve
+for A with the ownership check reverted too, because A is querying its **own**
+descriptor. Nothing on this path discriminates check-on from check-off. **The
+enforcement is proven by B** (§3's 2.2 / 2.2b), and A's job is only to show that
+refusing everyone else did not break the owner.
 
 The errno read path was **verified, not assumed**: `nsf_listen` puts
 `r->errno_` into `g_eza_errno` **unremapped** (`src/nsfeza.c:371`) and
@@ -113,17 +121,41 @@ port meanwhile, which makes A's LISTENER read-ready. Check on -> B times out
 (rc 0). Check off -> the re-scan completes B (rc 1)."*
 
 **`tun0` does not exist on this stand** (see the post-IPL record), so no host
-connect was possible and **A never became read-ready**. B's parked SELECT
-therefore timed out at `rc=0 ready=0` — which is precisely what both parked
-assertions expect. They would read identically on a build with the ownership
-check removed, because the stimulus that discriminates never occurred:
+connect was possible and **A never became read-ready**. Anything whose
+discriminating stimulus is "A's listener has a pending connection" therefore
+reads the same with the ownership check on or off:
 
+- `2.3 poll: the foreign entry is NOT ready` — **vacuous here**
 - `2.3 parked: A becoming ready does NOT complete B's SELECT` — **vacuous here**
 - `2.3 parked: ...and the entry stays not-ready` — **vacuous here**
 
-The other eleven are not: A genuinely held a live socket (console-confirmed),
-B genuinely derived and was refused A's real descriptor, and the poll path ran
-against it.
+**THREE, NOT TWO — and the third was in this file's own "real" list until it
+was checked against the same standard as the other two.** `tcp_poll`
+(`src/nsftcp.c:2142-2147`) makes a socket READ-ready only on a non-empty `rxq`
+or `acceptq`, or `TCB_F_RCVFIN`. A's listener had an **empty acceptq**, so
+`it[0].ready == 0` is what a *resolved* listener yields too — the assertion
+cannot separate "refused" from "resolved and idle" here. Catching this one
+assertion over from where the vacuity was first noticed is the round's own
+lesson landing on the round.
+
+**The assertions are sound; this stand cannot exercise them.** The poll
+assertion HAS discriminated historically: d1c's revert arm rendered the hole
+positively as `SELECT counted exactly ONE ready socket (got 2, want 1)`, which
+is only possible when A's entry actually becomes ready — i.e. with the device
+up. Nothing here is evidence against the check.
+
+**What does still discriminate on this stand, and it is the load-bearing half:**
+
+- `2.2: owning nothing, B reached NO descriptor (all foreign)` — 0 of 128. With
+  the check reverted B reaches A's; d1c measured exactly that.
+- `2.2b: foreign and never-existing return the SAME retcode / errno` — with the
+  check reverted the foreign probe succeeds (`rc=0`) and the never-existing one
+  does not, so the pair diverges. Observed here as `rc=-1 errno=9` for both,
+  **against a socket confirmed live**.
+
+So **2.2 and 2.2b carry the ownership claim in this run**, and the SELECT half
+is carried by `own.ready=2` (the rest of the mask is served) plus `errno=0` —
+real observations, but properties of mask handling rather than of ownership.
 
 **This round did not make the parked path worse and did not improve it** — d1's
 own first round already recorded that §2.3's parked path "was never driven at
@@ -143,6 +175,15 @@ Checked before deploying, too: the new text was confirmed present in
 `build/TSTD1B` **in EBCDIC** (`iconv -t IBM-1047`), because `make test`'s log
 listed only `tstrqxc.c` and a build that reports "56 modules" while rebuilding
 nothing looks identical to one that did the work.
+
+**An unexplained observation, reported and not chased:** that log discrepancy
+is unresolved. `build/tstd1b.o` carried a **newer** mtime than the edited
+source and the module demonstrably contains the new strings, so the rebuild
+happened — but `make test` printed a `[cc370]` line only for `tstrqxc.c`.
+Either mbt's incremental output is incomplete or something else drove the
+compile. On a round whose theme is *did the change take effect*, **an
+instrument that under-reports what it built is worth a line**, even though it
+under-reports in the harmless direction here. Not investigated; not a blocker.
 
 ## 6. Hygiene, and the second free-block reading
 
