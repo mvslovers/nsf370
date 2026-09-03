@@ -33,6 +33,19 @@
  *   PARM='RESET'         release every CLAIMED/HELD slot.  A recovery aid for
  *                        a run that died mid-phase; NOT part of any gate.
  *
+ * M5-2e ADDS FOUR MEASUREMENT ROLES.  b4's roles answer yes/no questions from
+ * end-totals and read no clock; (e) needs progress across a window, a
+ * per-request delay distribution, and a window bounded by TIME rather than by
+ * a request count.  See "THE MEASUREMENT ROLES" further down for what each
+ * one reports and why the discard boundary is a compile-time constant.
+ *
+ *   PARM='MS'            measure, one client -- the reference arm for MA/MB.
+ *   PARM='MA' / 'MB'     measure, two address spaces, barriered at the start.
+ *   PARM='MSP'           MS with a deliberate pause inside the timed region:
+ *                        the discriminating gate on the INSTRUMENT.
+ *   ...'MS90' etc.       a trailing decimal shortens the window and stamps
+ *                        the run a TRIAL.  It never scales the discard.
+ *
  * ------------------------------------------------------------------------
  * WHY THE GATE IS SHAPED THIS WAY -- the observability problem first.
  *
@@ -123,6 +136,7 @@
  */
 #include "nsfvsvc.h"
 #include "nsfreq.h"         /* NSFRQE -- the image the request carries         */
+#include "nsftime.h"        /* nsf_now -- STCK, the measurement roles          */
 #include <clibecb.h>        /* ecb_timed_wait -- the poll pause                */
 #include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                      */
 #include <clibtry.h>        /* ___try -- capture the abend, no dump            */
@@ -705,6 +719,391 @@ xc_run_b(void)
     return 0;
 }
 
+/* ==========================================================================
+ * M5-2e stage a: THE MEASUREMENT ROLES.
+ *
+ * TSTRQXC was built to prove a claim discipline, not to measure one.  The
+ * b4 roles above answer yes/no questions with end-totals, and three things
+ * (e) needs are absent from them by construction:
+ *
+ *   - PROGRESS ACROSS THE WINDOW.  A total at the end cannot tell a client
+ *     that ran evenly from one that starved for four minutes and caught up
+ *     at teardown.  The measurement roles record a CHECKPOINT every
+ *     XC_CHK_S seconds and print the per-interval deltas.
+ *   - PER-REQUEST DELAY.  b4 reads no clock at all.  Each request is now
+ *     timed across the SVC with nsf_now (STCK), and the samples go into a
+ *     fixed histogram -- a histogram and not an array because memory is the
+ *     #1 target constraint, and min/max/sum alongside it so a badly chosen
+ *     bucket boundary costs resolution rather than the whole reading.
+ *   - A TIMED WINDOW.  b4 loops a fixed REQUEST COUNT, which makes the
+ *     window length an output rather than an input.  These roles run for
+ *     XC_WIN_S seconds and stop on their own clock.
+ *
+ * THE START-UP PHASE IS DISCARDED FROM THE FIGURES, NOT FROM THE RUN.  The
+ * first XC_DISCARD_S seconds are measured like any other and then reported
+ * SEPARATELY: `_all` covers the whole window, `_rep` starts at the crossing.
+ * Both are printed, so the discard is auditable rather than asserted, and
+ * the boundary is a compile-time constant -- it cannot be chosen after
+ * seeing the data.
+ *
+ * ROLES.  MS is the single-client reference for MA/MB: the same instrument,
+ * the same verb, no second address space.  Without it "two clients are no
+ * faster than one" has no one-client number of its own to stand on.
+ *
+ *   PARM='MS'   measure, one client (the reference arm)
+ *   PARM='MA'   measure, leader   -- barriers with MB, then measures
+ *   PARM='MB'   measure, follower -- barriers with MA, then measures
+ *   PARM='MSP'  MS with a DELIBERATE pause inside the timed region: the
+ *               discriminating gate on the instrument itself (see below).
+ *
+ * A TRAILING DECIMAL SHORTENS THE WINDOW AND STAMPS THE RUN AS A TRIAL --
+ * 'MS90' is a 90-second window.  The discard is NOT scaled with it: it stays
+ * XC_DISCARD_S whatever the window, because a discard chosen to fit the run
+ * is the thing 5's red line forbids.  A plain 'MS'/'MA'/'MB' is always the
+ * full window, so a measurement run cannot inherit a trial's shape by
+ * accident.
+ *
+ * WHY MSP EXISTS.  A latency figure that is simply wrong looks exactly like
+ * a fast transport, and a histogram whose samples all land in bucket 0
+ * looks exactly like a well-behaved one.  MSP pauses ~XC_PACE_CS centiseconds
+ * INSIDE the timed region, so the instrument must report at least that much
+ * or it is broken: it asserts min, mean AND that every bucket below 5 ms is
+ * EMPTY -- min/max alone would pass with the bucketing broken.  It measures
+ * the instrument, not the transport, and says so.
+ * ========================================================================== */
+
+#define XC_WIN_S        300u    /* the measurement window, seconds            */
+#define XC_DISCARD_S     60u    /* start-up phase, EXCLUDED FROM THE FIGURES  */
+#define XC_CHK_S         15u    /* checkpoint interval                        */
+#define XC_CHK_MAX       48u    /* 300/15 = 20 needed; the cap is a backstop  */
+#define XC_PACE_CS        1u    /* MSP: 1 centisecond = 10 ms                 */
+#define XC_MEAS_CAP 4000000u    /* runaway backstop; the clock ends the run   */
+
+/* Bucket upper bounds in microseconds, FIXED HERE and not derived from any
+ * run.  13 buckets: twelve bounds plus everything above the last. */
+#define XC_NBUCKET      13u
+static const UINT g_bound_us[XC_NBUCKET - 1u] = {
+    100u, 250u, 500u, 750u, 1000u, 1500u,
+    2500u, 5000u, 10000u, 50000u, 250000u, 1000000u
+};
+
+typedef struct xc_hist {
+    UINT n;
+    UINT sum_us;                /* <= the window in us, so it cannot wrap     */
+    UINT min_us;
+    UINT max_us;
+    UINT b[XC_NBUCKET];
+} XC_HIST;
+
+typedef struct xc_chk {
+    UINT t_ms;                  /* ms since the window opened                 */
+    UINT served;
+    UINT refused;
+    UINT bad;
+} XC_CHK;
+
+static XC_HIST g_srv_all, g_srv_rep;    /* served-request latency             */
+static XC_HIST g_ref_all, g_ref_rep;    /* refused-request (NOBUF) latency    */
+static XC_CHK  g_chk[XC_CHK_MAX];
+static UINT    g_nchk;
+static UINT    g_pace;                  /* MSP: centiseconds inside the timing*/
+static UINT    g_win_s = XC_WIN_S;      /* overridden by a trailing decimal   */
+static int     g_trial;                 /* 1 when the window was shortened    */
+
+/* Microseconds between two STCK readings: (b - a) >> 12 (TOD bit 51 == 1 us).
+ * Lifted from test/mvs/tsttmacc.c, which is where this arithmetic was first
+ * written and checked against a known 100 ms interval. */
+static UINT
+xc_tod_us(const NSFTIME *a, const NSFTIME *b)
+{
+    UINT dlo    = b->lo - a->lo;
+    UINT borrow = (b->lo < a->lo) ? 1u : 0u;
+    UINT dhi    = b->hi - a->hi - borrow;
+
+    return (dhi << 20) | (dlo >> 12);
+}
+
+static void
+xc_hist_reset(XC_HIST *h)
+{
+    UINT i;
+
+    h->n = 0u;
+    h->sum_us = 0u;
+    h->min_us = 0xFFFFFFFFu;
+    h->max_us = 0u;
+    for (i = 0u; i < XC_NBUCKET; i++) h->b[i] = 0u;
+}
+
+static void
+xc_hist_add(XC_HIST *h, UINT us)
+{
+    UINT i;
+
+    h->n++;
+    h->sum_us += us;
+    if (us < h->min_us) h->min_us = us;
+    if (us > h->max_us) h->max_us = us;
+    for (i = 0u; i < XC_NBUCKET - 1u; i++) {
+        if (us <= g_bound_us[i]) { h->b[i]++; return; }
+    }
+    h->b[XC_NBUCKET - 1u]++;
+}
+
+static void
+xc_hist_print(const char *what, const XC_HIST *h)
+{
+    UINT i;
+
+    if (h->n == 0u) {
+        printf("  %-8s n=0 -- no samples\n", what);
+        return;
+    }
+    printf("  %-8s n=%u  min=%u us  mean=%u us  max=%u us\n",
+           what, (unsigned)h->n, (unsigned)h->min_us,
+           (unsigned)(h->sum_us / h->n), (unsigned)h->max_us);
+    for (i = 0u; i < XC_NBUCKET; i++) {
+        if (h->b[i] == 0u) continue;
+        if (i < XC_NBUCKET - 1u) {
+            printf("             <=%8u us : %u\n",
+                   (unsigned)g_bound_us[i], (unsigned)h->b[i]);
+        } else {
+            printf("             > %8u us : %u\n",
+                   (unsigned)g_bound_us[XC_NBUCKET - 2u], (unsigned)h->b[i]);
+        }
+    }
+}
+
+/* Requests per second, computed so it cannot overflow at the rates this
+ * transport reaches: n*1000 stays inside a UINT up to ~4.2M requests, and the
+ * raw n and ms are printed beside it so any other rate can be recomputed. */
+static UINT
+xc_rate(UINT n, UINT ms)
+{
+    if (ms == 0u) return 0u;
+    return (n * 1000u) / ms;
+}
+
+/* --------------------------------------------------------------------------
+ * The driver.  One timed window; MS/MA/MB/MSP differ only in the barrier and
+ * in what they assert afterwards.
+ * -------------------------------------------------------------------------- */
+static void
+xc_measure(UINT id, const char *what)
+{
+    NSFTIME  t_win, t0, t1, t_now;
+    UINT     srv = 0u, ref = 0u, bad = 0u;
+    UINT     srv_w = 0u, ref_w = 0u, bad_w = 0u;   /* counts at the crossing */
+    UINT     el_us = 0u, warm_us = 0u;
+    UINT     next_chk = 0u;
+    UINT     k, slot, us;
+    int      mine, rc, warm = 0;
+
+    xc_hist_reset(&g_srv_all); xc_hist_reset(&g_srv_rep);
+    xc_hist_reset(&g_ref_all); xc_hist_reset(&g_ref_rep);
+    g_nchk = 0u;
+
+    printf("\n--- %s: %u s window, first %u s discarded from the figures ---\n",
+           what, (unsigned)g_win_s, (unsigned)XC_DISCARD_S);
+    if (g_trial) {
+        printf("  *** TRIAL SHAPE (window shortened) -- NOT A MEASUREMENT"
+               " RUN ***\n");
+    }
+    /* Printed whether or not it is armed: a paced arm whose pace silently
+     * failed to arm reports the same clean pass as an unpaced one, which is
+     * exactly how the first MSP trial passed 8/8 having tested nothing. */
+    printf("  pace inside the timed region: %u cs\n", (unsigned)g_pace);
+    nsf_now(&t_win);
+    printf("  window opens at TOD %08X%08X\n",
+           (unsigned)t_win.hi, (unsigned)t_win.lo);
+    wtof("TSTRQXC: %s window opens TOD %08X%08X", what,
+         (unsigned)t_win.hi, (unsigned)t_win.lo);
+
+    for (k = 0u; k < XC_MEAS_CAP; k++) {
+        nsf_now(&t0);
+        rc = xc_request(id, k, &slot, &mine);
+        if (g_pace != 0u) xc_pause(g_pace);   /* MSP only: times the clock   */
+        nsf_now(&t1);
+        us = xc_tod_us(&t0, &t1);
+
+        if (rc == NSFV_RC_NOBUF) {
+            ref++;
+            xc_hist_add(&g_ref_all, us);
+            if (warm) xc_hist_add(&g_ref_rep, us);
+        } else if (rc != NSFV_RC_OK || !mine || slot >= NSFV_NSLOTS) {
+            bad++;
+        } else {
+            srv++;
+            xc_hist_add(&g_srv_all, us);
+            if (warm) xc_hist_add(&g_srv_rep, us);
+        }
+
+        el_us = xc_tod_us(&t_win, &t1);
+
+        /* The crossing.  Snapshot the counters; the `_rep` histograms simply
+         * start filling here, so the reported region needs no subtraction. */
+        if (!warm && el_us >= XC_DISCARD_S * 1000000u) {
+            warm = 1;
+            warm_us = el_us;
+            srv_w = srv; ref_w = ref; bad_w = bad;
+            printf("  discard boundary crossed at %u ms:"
+                   " served=%u refused=%u bad=%u\n",
+                   (unsigned)(el_us / 1000u), (unsigned)srv, (unsigned)ref,
+                   (unsigned)bad);
+        }
+
+        /* Progress, at several points across the window.  This is the whole
+         * reason the figures are not a single end-total. */
+        if (g_nchk < XC_CHK_MAX && el_us >= next_chk) {
+            g_chk[g_nchk].t_ms    = el_us / 1000u;
+            g_chk[g_nchk].served  = srv;
+            g_chk[g_nchk].refused = ref;
+            g_chk[g_nchk].bad     = bad;
+            g_nchk++;
+            /* Advance to the next grid point PAST `el_us`, not by a fixed
+             * increment: a single request that stalls over two boundaries
+             * would otherwise leave next_chk behind el_us, fire again on the
+             * very next iteration, and report an interval that is not
+             * XC_CHK_S at all.  Under #64 a multi-second stall is not
+             * hypothetical.  A skipped grid point shows up as a t_ms column
+             * that jumps by 2*XC_CHK_S -- visible, which a silently short
+             * interval would not be. */
+            do {
+                next_chk += XC_CHK_S * 1000000u;
+            } while (next_chk <= el_us);
+        }
+
+        if (el_us >= g_win_s * 1000000u) break;
+    }
+    nsf_now(&t_now);
+    el_us = xc_tod_us(&t_win, &t_now);
+
+    printf("  window closes at TOD %08X%08X (%u ms elapsed, %u attempts)\n",
+           (unsigned)t_now.hi, (unsigned)t_now.lo,
+           (unsigned)(el_us / 1000u), (unsigned)k);
+    wtof("TSTRQXC: %s closes TOD %08X%08X srv=%u ref=%u bad=%u", what,
+         (unsigned)t_now.hi, (unsigned)t_now.lo,
+         (unsigned)srv, (unsigned)ref, (unsigned)bad);
+
+    /* ---- progress ------------------------------------------------------- */
+    printf("\n  PROGRESS (per interval, not cumulative):\n");
+    printf("      t_ms   served   refused   bad\n");
+    for (k = 0u; k < g_nchk; k++) {
+        UINT ps = (k == 0u) ? g_chk[0].served  : g_chk[k].served  - g_chk[k-1].served;
+        UINT pr = (k == 0u) ? g_chk[0].refused : g_chk[k].refused - g_chk[k-1].refused;
+        UINT pb = (k == 0u) ? g_chk[0].bad     : g_chk[k].bad     - g_chk[k-1].bad;
+
+        printf("    %7u  %7u   %7u  %4u\n", (unsigned)g_chk[k].t_ms,
+               (unsigned)ps, (unsigned)pr, (unsigned)pb);
+    }
+
+    /* ---- totals, both regions ------------------------------------------- */
+    printf("\n  WHOLE WINDOW      : %u ms  served=%u refused=%u bad=%u"
+           "  (%u served/s)\n",
+           (unsigned)(el_us / 1000u), (unsigned)srv, (unsigned)ref,
+           (unsigned)bad, (unsigned)xc_rate(srv, el_us / 1000u));
+    xc_hist_print("served", &g_srv_all);
+    xc_hist_print("refused", &g_ref_all);
+
+    if (warm) {
+        UINT rep_ms = (el_us - warm_us) / 1000u;
+
+        printf("\n  REPORTED (first %u s discarded at %u ms): %u ms"
+               "  served=%u refused=%u bad=%u  (%u served/s)\n",
+               (unsigned)XC_DISCARD_S, (unsigned)(warm_us / 1000u),
+               (unsigned)rep_ms, (unsigned)(srv - srv_w),
+               (unsigned)(ref - ref_w), (unsigned)(bad - bad_w),
+               (unsigned)xc_rate(srv - srv_w, rep_ms));
+        xc_hist_print("served", &g_srv_rep);
+        xc_hist_print("refused", &g_ref_rep);
+    } else {
+        printf("\n  REPORTED: NOTHING -- the window ended before the %u s"
+               " discard boundary.\n", (unsigned)XC_DISCARD_S);
+    }
+
+    /* ---- what every measurement role asserts ----------------------------- */
+    CHECK_EQ((long)bad, 0L,
+             "every served request came back with ITS OWN identity -- no slot"
+             " was handed to two clients");
+    CHECK(srv > 0u, "the client was served at least once");
+    /* THE POSITIVE CONTROL ON THE SAMPLING ITSELF.  A checkpoint table of
+     * zeros because sampling never fired reads exactly like a client that
+     * made no progress (CLAUDE.md 8.5). */
+    CHECK(g_nchk > 1u,
+          "progress was SAMPLED at more than one point -- an unsampled window"
+          " would print a table that looks like a starved client");
+    CHECK(g_srv_all.n == srv,
+          "every served request contributed a latency sample -- the timing"
+          " covered the run rather than part of it");
+    CHECK(warm != 0,
+          "the window outlived the discard boundary, so the reported region"
+          " is not empty");
+}
+
+/* MSP -- the discriminating gate on the instrument, not on the transport. */
+static void
+xc_assert_paced(void)
+{
+    UINT i, below = 0u;
+
+    for (i = 0u; i < 6u; i++) below += g_srv_rep.b[i];   /* every bucket <5 ms */
+
+    printf("\n  PACED SELF-TEST: pause %u cs inside the timed region\n",
+           (unsigned)XC_PACE_CS);
+    printf("  samples below 5 ms: %u (must be 0)\n", (unsigned)below);
+    CHECK(g_pace != 0u,
+          "the pace was ARMED -- an un-armed paced arm measures nothing and"
+          " would otherwise report the same clean pass as MS");
+    CHECK(g_srv_rep.n > 0u, "the paced arm produced samples to judge");
+    CHECK(g_srv_rep.min_us >= 9000u,
+          "PACED: the FASTEST request measured at least 9 ms -- a clock that"
+          " does not advance would report 0");
+    CHECK(g_srv_rep.n > 0u && (g_srv_rep.sum_us / g_srv_rep.n) >= 9000u,
+          "PACED: and so did the mean");
+    CHECK_EQ((long)below, 0L,
+          "PACED: NO sample landed in a bucket below 5 ms -- which min/max"
+          " alone would not catch if the BUCKETING were wrong");
+}
+
+static int
+xc_run_measure(const char *role)
+{
+    UINT free_now = 0u, k;
+
+    if (role[1] == 'A' || role[1] == 'B') {
+        UINT mine   = (role[1] == 'A') ? XC_FLAG_A : XC_FLAG_B;
+        UINT theirs = (role[1] == 'A') ? XC_FLAG_B : XC_FLAG_A;
+
+        if (xc_barrier(mine, theirs) != 0) {
+            wtof("TSTRQXC: %s BARRIER FAILED -- measurement skipped", role);
+            return -1;
+        }
+        xc_measure((role[1] == 'A') ? XC_ID_A : XC_ID_B, role);
+        CHECK_EQ((long)xc_slot_cas(mine, NSFV_REQ_HELD, NSFV_REQ_FREE),
+                 (long)NSFV_RC_OK, "the flag slot was lowered again");
+    } else {
+        /* ONE flag drives both the arming and the assertion.  The first
+         * version tested role[1] here -- 'S' in "MSP" -- so the pace never
+         * armed, xc_assert_paced never ran, and the job reported 8/8 having
+         * tested nothing (CLAUDE.md 8.5, in the self-test itself). */
+        int paced = (role[2] == 'P');
+
+        if (paced) g_pace = XC_PACE_CS;
+        xc_measure(XC_ID_SOLO, role);
+        if (paced) xc_assert_paced();
+    }
+
+    /* REPORTED, not asserted: with two clients the other one is legitimately
+     * still running, so "the pool is clean" belongs to whoever leaves last --
+     * and in a timed window neither client is reliably last. */
+    for (k = 0u; k < NSFV_NSLOTS; k++) {
+        if (g_anchor->slots[k].req_state == NSFV_REQ_FREE) free_now++;
+    }
+    printf("\n  slots FREE as %s leaves: %u of %u\n", role,
+           (unsigned)free_now, (unsigned)NSFV_NSLOTS);
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * LEAK -- the retain-branch induction.  See "THE INDUCTION" in the header.
  * -------------------------------------------------------------------------- */
@@ -868,6 +1267,37 @@ xc_run_reset(void)
     return 0;
 }
 
+/* 'MS' / 'MA' / 'MB' / 'MSP', each optionally followed by a decimal window in
+ * seconds.  Returns 1 and fills `kind` (4 bytes) when `role` names a valid
+ * measurement role, 0 when it is not one at all, and -1 when it LOOKS like one
+ * but does not parse -- which must not fall through to SOLO, because a run
+ * that silently measured nothing reads exactly like one that did (8.5).
+ * A trailing decimal stamps the run as a TRIAL and never touches
+ * XC_DISCARD_S: a discard chosen to fit the window is what 5 forbids. */
+static int
+xc_parse_measure(const char *role, char *kind)
+{
+    unsigned i, n = 0u, digits = 0u;
+
+    if (role[0] != 'M') return 0;
+    if (role[1] != 'S' && role[1] != 'A' && role[1] != 'B') return 0;
+    kind[0] = 'M'; kind[1] = role[1]; kind[2] = '\0'; kind[3] = '\0';
+    i = 2u;
+    if (role[1] == 'S' && role[2] == 'P') { kind[2] = 'P'; i = 3u; }
+    for (; role[i] != '\0'; i++) {
+        if (role[i] < '0' || role[i] > '9') return -1;
+        n = n * 10u + (unsigned)(role[i] - '0');
+        digits++;
+    }
+    if (digits > 0u) {
+        if (n < 5u) n = 5u;             /* a window shorter than this measures
+                                         * the barrier, not the transport     */
+        g_win_s = n;
+        g_trial = 1;
+    }
+    return 1;
+}
+
 /* -------------------------------------------------------------------------- */
 static int
 xc_finish(int skipped)
@@ -889,7 +1319,9 @@ int
 main(int argc, char **argv)
 {
     const char *role = (argc > 1 && argv[1] != NULL) ? argv[1] : "";
+    char        kind[4];
     int         rc;
+    int         meas;
 
     wtof("TSTRQXC: POOL CONTENTION TESTS START (ROLE '%s')", role);
     printf("=== TSTRQXC -- M5-2b4: the slot pool under contention ===\n");
@@ -936,6 +1368,21 @@ main(int argc, char **argv)
         g_anchor->nslots  != NSFV_NSLOTS) {
         wtof("TSTRQXC: ANCHOR LAYOUT MISMATCH -- gate skipped");
         return xc_finish(1);
+    }
+
+    meas = xc_parse_measure(role, kind);
+    if (meas < 0) {
+        printf("  role '%s' begins with M but is not a measurement role.\n",
+               role);
+        wtof("TSTRQXC: BAD MEASUREMENT ROLE '%s' -- nothing measured", role);
+        CHECK(0, "the measurement role parsed (a malformed one must NOT fall"
+                 " through to SOLO and report a clean pass)");
+        return xc_finish(1);
+    }
+    if (meas > 0) {
+        rc = xc_run_measure(kind);
+        wtof("TSTRQXC: MEASUREMENT DONE (%s)", kind);
+        return xc_finish(rc != 0);
     }
 
     if      (strcmp(role, "A")     == 0) rc = xc_run_a();

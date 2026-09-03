@@ -1,0 +1,53 @@
+Spool file: SYSPRINT (ID #101, Step: M)
+=== TSTRQXC -- M5-2b4: the slot pool under contention ===
+role: 'MSP90'
+  PASS: the client is UNAUTHORISED (TESTAUTH FCTN=1 == 0)
+  chase CVT    -> 0001D048
+  chase SCVT   -> 0001D510
+  chase SVCT   -> 0000FA60
+  chase EPA    -> 00A82108
+  chase EP     -> 00A82108 (SVC 239 routine, in CSA)
+  chase ANCHOR -> 00A8B7C8
+  chase EYE    -> 00000000
+  anchor = 00A8B7C8, version 3, 64 slots
+  PASS: the anchor carries the layout version this build was made for
+  PASS: and the slot count the scan is bounded by
+--- MSP: 90 s window, first 60 s discarded from the figures ---
+  *** TRIAL SHAPE (window shortened) -- NOT A MEASUREMENT RUN ***
+  pace inside the timed region: 1 cs
+  window opens at TOD E336730206F4D040
+  discard boundary crossed at 60003 ms: served=5606 refused=0 bad=0
+  window closes at TOD E3367357DD1D6800 (90006 ms elapsed, 8410 attempts)
+  PROGRESS (per interval, not cumulative):
+      t_ms   served   refused   bad
+         11        1         0     0
+      15000     1400         0     0
+      30007     1402         0     0
+      45009     1402         0     0
+      60003     1401         0     0
+      75001     1403         0     0
+      90006     1402         0     0
+  WHOLE WINDOW      : 90006 ms  served=8411 refused=0 bad=0  (93 served/s)
+  served   n=8411  min=10423 us  mean=10694 us  max=13155 us
+             <=   50000 us : 8411
+  refused  n=0 -- no samples
+  REPORTED (first 60 s discarded at 60003 ms): 30002 ms  served=2805 refused=0 bad=0  (93 served/s)
+  served   n=2805  min=10482 us  mean=10689 us  max=13155 us
+             <=   50000 us : 2805
+  refused  n=0 -- no samples
+  PASS: every served request came back with ITS OWN identity -- no slot was handed to two clients
+  PASS: the client was served at least once
+  PASS: progress was SAMPLED at more than one point -- an unsampled window would print a table that looks like a starved client
+  PASS: every served request contributed a latency sample -- the timing covered the run rather than part of it
+  PASS: the window outlived the discard boundary, so the reported region is not empty
+  PACED SELF-TEST: pause 1 cs inside the timed region
+  samples below 5 ms: 0 (must be 0)
+  PASS: the pace was ARMED -- an un-armed paced arm measures nothing and would otherwise report the same clean pass as MS
+  PASS: the paced arm produced samples to judge
+  PASS: PACED: the FASTEST request measured at least 9 ms -- a clock that does not advance would report 0
+  PASS: PACED: and so did the mean
+  PASS: PACED: NO sample landed in a bucket below 5 ms -- which min/max alone would not catch if the BUCKETING were wrong
+  slots FREE as MSP leaves: 64 of 64
+=== TSTRQXC: 13/13 passed ===
+
+Spool file: UNK0104 (ID #104, Step: JES2)
