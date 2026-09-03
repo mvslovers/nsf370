@@ -195,7 +195,23 @@ SOCKCB  *sock_alloc(void) asm("NSFSOALO");
  * use-after-free guard for application descriptors (spec 10.2). */
 SOCKCB  *sock_lookup(UINT desc) asm("NSFSOLKP");
 
-/* The application descriptor for `s`: (gen<<16)|id. */
+/* The application descriptor for `s`: (gen<<16)|id.
+ *
+ * A SWEEP OVER THIS SPACE IS EVIDENCE ONLY INSIDE ITS GENERATION WINDOW, and
+ * that is a property of the encoding rather than of any one test.  `id` is
+ * bounded by the table, but `gen` advances every time a slot is reused, so a
+ * sweep that enumerates a FIXED gen range stops covering live descriptors as
+ * soon as an STC instance has served enough sockets to advance past it.  When
+ * that happens the sweep returns the same zero as a refusal -- a null produced
+ * by a range that does not cover the target is indistinguishable from a null
+ * that means "refused", and it is the more flattering of the two readings.
+ *
+ * So any sweep-based proof must establish that its range covers a descriptor
+ * known to be live, and report that alongside its result.  The cost of getting
+ * this wrong is a burned run, not a wrong result -- test/mvs/tstd1b.c's sweep
+ * detects it and refuses to report ("RANGE INADEQUATE -- SWEEP 1 IS NOT
+ * EVIDENCE"), which has fired live twice.  The practical consequence is that a
+ * sweep-based arm wants a FRESHLY STARTED stack. */
 UINT     soc_desc(const SOCKCB *s) asm("NSFSODSC");
 
 /* Create a socket: sock_alloc, set domain/type/proto/ops, then run the protocol
