@@ -222,3 +222,106 @@ printed is a result nobody can read.
   drainer path; this round reached it only via the mixed build, which is not a
   configuration anyone should rely on. It remains proved on one path, and that is
   proportionate because the decision produced one path.
+
+---
+
+## ANNOTATION 2026-09-03 — arms 1 and 2 rest on an UNCONFIRMED stimulus
+
+**Appended, nothing above rewritten.** This is a **scope correction to a
+record**, not a new round and not a retraction: every assertion named below is
+sound, every code path exercised is the right one, and **no result is
+withdrawn**. What changes is what the evidence in this directory can be read as
+proving.
+
+It arrived from the other end. The `role_a` round
+(`docs/measurements/m5-d1b-rolea/`) ran on a stand with **no `tun0`**, noticed
+that two of B's assertions had passed vacuously, and then — checking the poll
+path against the same standard — found a third. That standard applies here too,
+and this round did not apply it.
+
+### What the evidence in this directory actually contains
+
+**Arm 3's stimulus is confirmed on the wire.** `Ncat: Connected to
+192.168.200.1:3013` — W's listener, port `D1B_W_PORT`.
+
+**Arms 1 and 2 have no such confirmation anywhere.** `Ncat`/`Connected` does not
+appear in a single arm-1/2 evidence file; the only occurrence in this directory
+is the arm-3 line quoted above, in this README. What the arm-1/2 spools contain
+is:
+
+```
+16.57.49 JOB 3031  +TSTD1B: PARKING SELECT ON 00010000 -- CONNECT TO A NOW
+16.57.58 JOB 3031  +TSTD1B: PARKED SELECT RC=0 READY=0
+```
+
+Nine seconds and a prompt. **Nothing records that the connect was made, and
+nothing records that A ever became read-ready.**
+
+### The sentence that claims more than the evidence carries
+
+From §"P1 / P2", verbatim:
+
+> On the parked path a readiness change on a socket B does not own does **not**
+> complete B's SELECT
+
+That presupposes **a readiness change occurred**. On this record it is not
+established. `rc=0 ready=0` is equally consistent with *"A never became
+ready"* — the absent-vs-succeeded shape (CLAUDE.md §8.5), sitting inside a
+countersigned round.
+
+**And the same question reaches P1's poll assertion**, which the round listed
+among its positives. `tcp_poll` (`src/nsftcp.c:2142-2147`) makes a socket
+READ-ready only on a non-empty `rxq` or `acceptq`, or `TCB_F_RCVFIN`. With no
+connection pending, A's listener has an **empty acceptq**, so
+`foreign.ready == 0` is exactly what a *resolved, idle* listener yields.
+**Neither arm separates "refused" from "resolved and idle".**
+
+### What survives, and it is the load-bearing half
+
+**The crossing-level ownership claim rests on 2.2 / 2.2b, not on the SELECT
+arms** — and 2.2 carries its **own positive control**, independent of the wire:
+
+- **0 of 128** descriptors reached while B owned nothing;
+- **1 of 128** after B had its own — and the one reached was **its own**,
+  `00010001`, while A's, derived as `00010000`, was refused;
+- foreign and never-existing both `rc=-1 errno=9`, indistinguishable.
+
+None of that needs a connect. It needs A to be **holding a live socket**, which
+the console marker establishes. So the round's ownership conclusion stands; what
+does not stand is attributing it to the SELECT arms.
+
+**`own.ready=2` also survives** as a real observation — the rest of the mask is
+served, so a green arm is not a broken instrument — but it is a property of
+**mask handling**, not of ownership.
+
+### Arm 3 is NOT weakened
+
+Its stimulus is confirmed on the wire, its three-state revert varied one axis,
+and its result is untouched by any of the above. The bounded-measurement caveat
+it already carries (*"not within 45 seconds"*; "never" is the deduction) is
+unchanged.
+
+### No re-run
+
+Deliberately. Re-running arms 1 and 2 with a **confirmed** stimulus needs
+`tun0`, hence a Hercules restart, and it is a decision for whoever schedules the
+next d1 round — not a correction to be smuggled into an annotation. The
+assertions are already written and already correct; only the stand was unable to
+exercise them.
+
+### The rule this yields
+
+> **When a stimulus is missing or unconfirmed, check EVERY assertion that could
+> depend on it, not only the obvious one — and a record whose stimulus is not
+> evidenced claims more than it proves, however sound its assertions.**
+
+Recorded here with its siblings — *a chain read out of source is a PREDICTION
+until a run* (Stage 1) and *a falsification clause is a claim, and needs the
+same check as the prediction it guards* (Stage 2 §4). Promotion to CLAUDE.md
+§8.5 is Mike's convention call.
+
+**Its first application was retroactive, and that is the argument for it
+existing.** It was not derived and then applied; it was forced by a later round
+noticing the shape on its own stand, and it then found a gap in a round that had
+already been reviewed and countersigned. A rule that only ever fires on the
+round that invented it is a platitude. This one reached backwards.
