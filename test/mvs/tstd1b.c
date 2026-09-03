@@ -13,7 +13,12 @@
  *                socket table, lowest free index, idx in 0..63 -- so the sweep
  *                IS the demonstration, not an assertion about it.
  *           2.3  SELECT with a foreign descriptor in the mask.
- *   'R8'  2.4, single job, no partner needed.
+ *   'W'   #101 arm 3, the WEDGE: park a block-forever cross-AS SELECT.
+ *   'V'   #101 arm 3, the VICTIM: an ordinary request while W is parked.
+ *
+ * Gate 2.4 (the R8/TPROT validation) is NOT here -- it is its own single-job
+ * test, TSTD1R. An earlier version of this header advertised an 'R8' role that
+ * has no function and no dispatch in this file.
  *
  * WHY THE SWEEP REPORTS ATTEMPTS AS WELL AS HITS: a sweep that finds nothing
  * looks exactly like a sweep run against an NSFS where A never opened a socket.
@@ -39,12 +44,21 @@
 #define D1B_HOLD_HS  6000u              /* A holds ~60 s                      */
 #define D1B_CC_SKIP  20
 #define D1B_SWEEP_N  64                 /* the whole socket table             */
+#define D1B_W_PORT   3013u              /* arm 3: the parker's listener       */
 #define D1B_GENS     2                  /* gen 0 and 1 -- a fresh STC's range */
 
 static void d1b_pause(unsigned hsec)
 {
     ECB local = 0;
     ecb_timed_wait(&local, hsec, 0);
+}
+
+/* Facade masks are numbered right-to-left, byte-wise; on a big-endian target a
+ * UINT 1u<<n in memory matches that read exactly (byte 3 = the LSB end). Same
+ * reasoning as tstezat.c mask_of; this file is target-only. */
+static UINT mask_of(INT n)
+{
+    return (n >= 0 && n < 32) ? (1u << (UINT)n) : 0u;
 }
 
 static void mk_sa(NSF_SOCKADDR_IN *sa, UINT addr, USHORT port)
@@ -278,6 +292,92 @@ static int role_b(void)
     return 0;
 }
 
+/* ---- ARM 3 (issue #101 Stage 2): the wedge ------------------------------
+ *
+ * WHAT THE FIX CHANGES HERE IS PERMANENCE, NOT THE WEDGE.  Read from source
+ * before this arm was written: soc_complete is the only thing that posts
+ * g_priv.ecb (nsfsoc.c), nsfsel_dispatch's PARK path calls no soc_complete,
+ * and g_busy has exactly one clear (nsfsx.c) gated on that POSTED bit.  So a
+ * parked block-forever SELECT holds g_busy on the FIXED module too -- that is
+ * serialised service (ADR-0042 10), not the ulen defect.
+ *
+ * What the defect adds is that the wedge can never LIFT: nsfsel_on_notify
+ * re-scans the STORED array (sel_scan(cb->items, cb->nitems, ...)), and with a
+ * count-valued ulen those items are residue, so no readiness poke can ever
+ * match and the parked SELECT is never completed.
+ *
+ * Hence the arm makes W's socket BECOME ready mid-run:
+ *   FIXED    poke matches -> sel_finish -> soc_complete -> g_busy clears -> V served
+ *   UNFIXED  items are residue -> poke never matches -> W parked forever -> V never served
+ *
+ * THE EXECUTIVE IS NOT HUNG EITHER WAY.  Only cross-AS request service stalls;
+ * timers, devices and the console keep running, so `F NSFS,STATS` answering
+ * during the window is the positive control that distinguishes "V was not
+ * served" from "the STC died".  Both roles mark the console with wtof rather
+ * than printf: a job that hangs loses its buffered SYSPRINT to the cancel
+ * (the M4-5 lesson), and on the unfixed arm hanging is the expected outcome. */
+
+/* Role W: park a BLOCK-FOREVER SELECT (tv_sec < 0 -> no SEL_F_TIMED) on its own
+ * listener, through the FACADE, which is the path a real application takes. */
+static int role_w(void)
+{
+    NSF_SOCKADDR_IN local;
+    UINT  rmask;
+    INT   s, rc;
+
+    rc = nsf_initapi(0, "TCPIP   ", "NSF     ", "TSTD1BW ", NULL);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "W: INITAPI across the boundary");
+
+    s = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+    CHECK(s >= 0, "W: SOCKET across the boundary");
+    mk_sa(&local, D1B_SRC, (USHORT)D1B_W_PORT);
+    rc = nsf_bind(s, &local, (INT)sizeof(local));
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "W: BIND");
+    rc = nsf_listen(s, 5);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "W: LISTEN");
+
+    rmask = mask_of(s);
+    wtof("TSTD1B: W PARKING BLOCK-FOREVER SELECT ON PORT %u (facade %d)"
+         " -- RUN V NOW", (unsigned)D1B_W_PORT, (int)s);
+    printf("  W parking a block-forever SELECT on facade socket %d\n", (int)s);
+
+    rc = nsf_select(s + 1, &rmask, NULL, NULL, -1, 0);   /* no timeout at all */
+
+    /* Reached only if a readiness poke completed it. On the unfixed module this
+     * line is never printed and the job must be cancelled -- which IS the
+     * result, and why the marker above is a WTO. */
+    wtof("TSTD1B: W SELECT COMPLETED RC=%d ERRNO=%d MASK=%08X",
+         (int)rc, (int)nsf_lasterrno(), (unsigned)rmask);
+    printf("  W SELECT completed rc=%d errno=%d mask=%08X\n",
+           (int)rc, (int)nsf_lasterrno(), (unsigned)rmask);
+    CHECK(rc > 0, "arm3 W: the readiness poke COMPLETED the parked SELECT");
+    CHECK((rmask & mask_of(s)) != 0u, "arm3 W: ...and it named W's own socket");
+
+    (void)nsf_close(s);
+    (void)nsf_termapi();
+    wtof("TSTD1B: W DONE");
+    return 0;
+}
+
+/* Role V: the victim -- an ordinary cross-AS request issued while W is parked.
+ * Served or not served is the whole observation, and both markers are WTOs. */
+static int role_v(void)
+{
+    INT s, rc;
+
+    wtof("TSTD1B: V REQUEST ISSUED -- WAITING TO BE SERVED");
+    rc = nsf_initapi(0, "TCPIP   ", "NSF     ", "TSTD1BV ", NULL);
+    wtof("TSTD1B: V SERVED RC=%d", (int)rc);
+    CHECK_EQ((long)rc, (long)NSF_RETOK, "arm3 V: served while W was parked");
+
+    s = nsf_socket(NSF_AF_INET, NSF_SOCK_STREAM, 0);
+    CHECK(s >= 0, "arm3 V: and a second request is served too");
+    if (s >= 0) (void)nsf_close(s);
+    (void)nsf_termapi();
+    wtof("TSTD1B: V DONE");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *role = (argc > 1 && argv[1] != NULL) ? argv[1] : "";
@@ -294,10 +394,12 @@ int main(int argc, char **argv)
         return D1B_CC_SKIP;
     }
 
-    if      (role[0] == 'A') rc = role_a();
+    if      (role[0] == 'W') rc = role_w();      /* arm 3: the parker        */
+    else if (role[0] == 'V') rc = role_v();      /* arm 3: the victim        */
+    else if (role[0] == 'A') rc = role_a();
     else if (role[0] == 'B') rc = role_b();
     else {
-        printf("  no role given (PARM='A' or PARM='B') -- nothing to do\n");
+        printf("  no role given (PARM='A'/'B'/'W'/'V') -- nothing to do\n");
         wtof("TSTD1B: NO ROLE -- SKIPPED");
         return D1B_CC_SKIP;
     }

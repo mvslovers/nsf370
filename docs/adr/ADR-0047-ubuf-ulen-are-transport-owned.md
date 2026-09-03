@@ -280,3 +280,23 @@ and what this paragraph asserts is what that control demonstrates.
   different failure from an unchecked property or an assumed mechanism — there
   is no wrong hop here — and **the tell is the tense of the sentence, not the
   quality of the reasoning**.
+
+  **A SECOND RULE, from the live round that ran this prediction (Stage 2).** The
+  prediction above was amended before its run, on a source finding: `g_busy` is
+  held by a parked block-forever SELECT on the **fixed** module too, because
+  `nsfsel_dispatch`'s park path calls no `soc_complete` and `g_busy` clears only
+  on the POSTED bit. So the wedge is serialised service (ADR-0042 §10), and what
+  this defect adds is that it can never **lift** — `nsfsel_on_notify` re-scans the
+  stored array, which residue cannot match. **The prediction was defensible; its
+  falsification clause was not.** Run as written it would have produced "served in
+  neither", which that clause read as *"something other than `g_busy` holds it"* —
+  a **false conclusion from a true observation**.
+
+  > **A falsification clause is a claim and needs the same check as the prediction
+  > it guards.** Writing predictions before runs is the discipline; it does not
+  > help if the conditions under which the prediction would be abandoned are
+  > themselves unverified.
+
+  Also recorded rather than promoted, and for the same reason. The first rule is
+  about the claim; this one is about its guard. Both live in
+  `docs/measurements/m5-2-d1-select/`.
