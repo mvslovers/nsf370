@@ -427,6 +427,22 @@ never hardcode them.
   complains — this is the project's most expensive failure class in pure form.
   It cost a full diagnostic cycle in M5-2b2, where three runs of "different" routers
   returned byte-identical numbers. **Re-run rather than reason about it.**
+- **The MIXED build tells the INVERSE, and it is the more dangerous of the two.**
+  The tell above catches *"the deploy did not happen"*. A **half**-deploy — one
+  side of a two-module pair replaced, the other not — catches nothing there,
+  because a mixed build **looks like a working system**. Its tell is the
+  opposite: **a value NEITHER pure build can produce.** #101 Stage 2's instance:
+  a cross-AS `RQ_SELECT` returned `ERRNO=22` (`NSF_EINVAL`) immediately instead
+  of parking, and the **pre**-#101 dispatcher has no `EINVAL` path at all — its
+  only other `RQ_SELECT` error is `NSF_EOPNOTSUPP` (`src/nsfreq.c:920-926`; the
+  `EINVAL` #101 added lives one module over, `src/nsfsel.c:214`). So
+  NSFS was fixed while the client was reverted. **The habit that makes this a
+  check rather than hindsight:** when a change alters a verb's **error set**,
+  note the difference *before* deploying — it is a free build marker, and often
+  the only surface available when a change adds no field and no message.
+  **The prerequisite goes with it:** the tell only reads as *impossible* once
+  each pure build's error paths have been enumerated. Written down without that
+  enumeration it promises a loudness it will not deliver.
 - **`ssh mvsdev`** (host-side work: `tun0` captures, reading Hercules source,
   `/proc`) is hardened **keychain-independent** — on-disk `~/.ssh/id_rsa`,
   `IdentityAgent none`, `accept-new`, via the `mvsdev` block in `~/.ssh/config`

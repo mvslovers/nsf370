@@ -93,10 +93,44 @@ static int role_a(void)
 
     d1b_pause(D1B_HOLD_HS);
 
-    /* A's own socket must STILL work at the end -- the check must not have
-     * broken the owner while refusing everyone else. */
+    /* A's own socket must still be A's, and still LISTENING, at the end -- the
+     * check must not have broken the owner while refusing everyone else.
+     *
+     * THE ASSERTION IS THE REFUSAL, AND THE ERRNO IS WHAT MAKES IT ONE.
+     * tcp_listen returns NSF_EINVAL unless the TCB is TCP_CLOSED
+     * (src/nsftcp.c:1959, "only a fresh socket may listen"), and there is no
+     * close between the first listen and this one -- so a second LISTEN on a
+     * listening socket can only ever be refused.  The original assertion here
+     * (rc == NSF_RETOK, "its OWN socket still works after B") was therefore
+     * STRUCTURALLY ALWAYS-FALSE, and it stayed that way because A's CC appears
+     * never to have been read: #100 ran B after A had ended, and the d1c record
+     * quotes B's counts and not A's.  A job whose result nobody looks at is
+     * CLAUDE.md 8.5 one level out -- so record A's result, not only B's.
+     *
+     * `rc == NSF_RETERR` ALONE WOULD NOT BE AN ASSERTION: it is green for any
+     * failure at all, which is the absent-vs-succeeded shape moved inside the
+     * check.  The two refusals are different statements in do_listen
+     * (src/nsfreq.c):
+     *
+     *   EBADF  -- req_socket returned NULL: the descriptor did not resolve, or
+     *             is not owned by this caller.  Foreign and never-existing are
+     *             indistinguishable here BY CONSTRUCTION (ADR-0046), which is
+     *             exactly why EBADF cannot carry this claim.
+     *   EINVAL -- the descriptor RESOLVED, ownership HELD, the TCB exists and
+     *             is not CLOSED.
+     *
+     * So EINVAL is the isolation statement in POSITIVE form: A's socket
+     * survived B, still belongs to A, and is still listening.  EBADF here
+     * would mean B had broken the owner -- the failure this gate exists for.
+     *
+     * The errno read path is verified, not assumed: nsf_listen puts r->errno_
+     * into g_eza_errno UNREMAPPED (src/nsfeza.c:371) and nsf_lasterrno returns
+     * it. */
     rc = nsf_listen(s, 5);
-    CHECK_EQ((long)rc, (long)NSF_RETOK, "A: its OWN socket still works after B");
+    CHECK_EQ((long)rc, (long)NSF_RETERR,
+             "A: a second LISTEN on A's OWN socket is refused");
+    CHECK_EQ((long)nsf_lasterrno(), (long)NSF_EINVAL,
+             "A: refused EINVAL -- resolved, owned and still listening (not EBADF)");
     (void)nsf_close(s);
     (void)nsf_termapi();
     wtof("TSTD1B: A DONE");
