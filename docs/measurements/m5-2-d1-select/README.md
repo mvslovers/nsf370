@@ -1,0 +1,190 @@
+# #101 Stage 2 — the live round (M5-2d1 §2.3 + the wedge)
+
+**Date:** 2026-09-02 · **Stand:** MVSCE on mvsdev, real CTCI pair 0500/0501, MTU 1500
+**Predictions:** `predictions.md`, written before any deploy and **not edited since**.
+**Proof kind: LIVE.** Host evidence is Stage 1's (PR #103) and is not repeated here.
+
+All three predictions **hold**. One of them (P3) was amended before the run on a
+source finding, with the original kept verbatim in `predictions.md`.
+
+---
+
+## Results against the predictions
+
+| | prediction | result |
+|---|---|---|
+| **P0** | the deploy is seen to take effect | **held** — see below |
+| **P0b** | `2.3 poll` is the single assertion that moves | **held** — B 12/13 → **13/13** |
+| **P1** | arm 1, poll form | **held** — `rc=1 errno=0 foreign.ready=0 own.ready=2` |
+| **P2** | arm 2, parked form | **held** — `rc=0 ready=0` |
+| **P3** | arm 3, the wedge, both directions | **held** — see below |
+| **C3** | the executive answers while wedged | **held, three ways** |
+
+### P0 — how the deploy was proved to take effect
+
+This round adds no field and no message, so the check had to be behavioural.
+**`2.3 poll` was RED in all three states of the d1c round** (CLAUDE.md §7 records
+it as the one assertion red throughout, and names this defect as its cause), so
+it passing is **impossible on the pre-#101 module**. That is a positive proof,
+not an absence.
+
+The §5 tell — identical values across supposedly different builds — was checked
+explicitly at every deploy. It did not appear; a *different* failure did, below.
+
+### P1 / P2 — arms 1 and 2 (`TSTD1B` roles A + B, JOB03030 / JOB03031)
+
+```
+SELECT poll:   rc=1 errno=0 foreign.ready=0 own.ready=2
+SELECT parked: rc=0 errno=0 ready=0
+=== TSTD1B: 13/13 passed ===
+```
+
+The foreign entry is not ready; **B's own entry IS served** (`ready=2`, the
+positive control, so a green arm is not a broken instrument); the call is not an
+error, so SELECT does not become an existence oracle. On the parked path a
+readiness change on a socket B does not own does **not** complete B's SELECT —
+that is the re-scan path, which reads its identity from the SELCB rather than
+the request, and it is a different code path from the poll form.
+
+2.2 corroborates on the same run: 0 of 128 descriptors reached before B owned
+one, 1 of 128 after (its own); foreign and never-existing both return
+`rc=-1 errno=9`, indistinguishable.
+
+### P3 — arm 3, the wedge (`TSTD1B` roles W + V), three states, one axis
+
+| state | W (block-forever SELECT) | V (ordinary request) | `SERVED` |
+|---|---|---|---|
+| **fixed** (JOB03010/11) | `COMPLETED RC=1 MASK=00000001` | `SERVED RC=0`, same second | 276 → 283 |
+| **unfixed** (JOB03021/22) | **never completed**, 45 s after a *successful* connect | **never served** | **4 → 4** |
+| **restored** (JOB03026/27) | `COMPLETED RC=1 ERRNO=0 MASK=00000001` | `SERVED RC=0`, same second | advanced |
+
+**The wedge itself is NOT the defect, and the round confirms that first.** With
+W parked, `F NSFS,STATS` read **`BUSY=1 BUSYSLOT=0 INFLIGHT=2`** — W holds the
+single private NSFRQE and V's slot is taken but unserved — and `COLLISIONS=1`,
+which independently proves V's claim scan found W's slot occupied, i.e. V really
+did publish. That is serialised service (ADR-0042 §10) and it happens on **both**
+modules. What the fix changes is whether the wedge can ever **lift**.
+
+**The unfixed arm is decisive because the stimulus provably occurred:**
+`Ncat: Connected to 192.168.200.1:3013` — W's listener was live and the readiness
+edge really happened — and 45 s later neither W nor V had completed, against a
+fixed module that completed **in the same second**.
+
+### C3 — the control, satisfied three ways
+
+"V was not served" and "the STC died" produce the same silence.
+
+1. `F NSFS,DISPLAY` issued **after** W parked answered `NSF800I/801I/802I`.
+2. `F NSFS,STATS` answered throughout the wedge window.
+3. Strongest, because it is a counter rather than a reply: across the 45-second
+   unfixed window **`EVTPASSES` moved 616 → 784** while `SERVED` stayed at 4. The
+   executive is alive and looping; it simply cannot serve anyone.
+
+---
+
+## Findings
+
+### 1. A stale deploy, caught by an IMPOSSIBLE value rather than an identical one
+
+The first unfixed attempt returned `RC=-1 ERRNO=22` (`NSF_EINVAL`) **immediately**
+instead of parking. `EINVAL` is only producible by the **fixed** dispatcher's
+non-multiple rejection; the unfixed one has no `EINVAL` path at all (the only
+other `RQ_SELECT` error is `EOPNOTSUPP`, `src/nsfreq.c:920-926`). So the running
+NSFS was **fixed** while the client was **reverted** — a mixed build.
+
+Forcing the recompile (`touch` + `make modules`, which then showed
+`[cc370] src/nsfsel.c`) and redeploying produced the predicted park.
+
+**This is a new shape of CLAUDE.md §5's most expensive failure class.** §5's tell
+is *identical values across supposedly different builds*. Here the tell was the
+opposite: **a value neither pure build can produce.** A mixed build has its own
+signature, and it is louder than the documented one — but only if you know what
+each pure build is capable of returning, which is why the source enumeration of
+error paths was what resolved it.
+
+Not fixed here, and not diagnosed beyond the fact: `make deploy` after an
+in-place source edit did not always recompile before packing. Recorded rather
+than chased, because forcing the recompile is a one-line habit and the round's
+subject is elsewhere.
+
+### 2. `role_a`'s final assertion is structurally always-false (pre-existing)
+
+`A: its OWN socket still works after B (got -1, want 0)` fails, and **always
+has**: `tcp_listen` returns `NSF_EINVAL` unless the TCB is `TCP_CLOSED` —
+*"only a fresh socket may listen"* (`src/nsftcp.c:1959`) — and `role_a` re-issues
+`nsf_listen` on the socket it already listened on, with no intervening close.
+`do_listen` passes that rc straight through.
+
+Module-independent and reproduced on two separate fixed-module runs (JOB03008,
+JOB03030). It is **not** a product defect: refusing a second `listen` is
+deliberate, since re-initialising the acceptq would discard queued children.
+
+**Why it surfaced only now:** A's result appears to have never been read. #100's
+round submitted B after A had already ended, and the d1c record quotes B's counts
+(12/13 → 9/13 → 12/13) and never A's. A job whose CC nobody looks at is §8.5 one
+level out.
+
+**Reported, not fixed** — it is unrelated to #101 and changing another gate's
+assertions inside this round is the Kitchen-Sink pattern. The fix is to assert
+the documented behaviour (a second `listen` is refused `EINVAL`) or to close and
+re-listen; that is a decision for whoever owns d1's gates.
+
+### 3. B's own range self-check fired, and was right
+
+One arm-1 run reported `RANGE INADEQUATE -- SWEEP 1 IS NOT EVIDENCE` and refused
+to report. Correct: that STC instance had served several earlier jobs, so slot
+generations had advanced past the sweep's gen-0/1 window and B's own descriptor
+fell outside the swept range — the exact condition under which a zero means
+nothing. This is #100's defect-2 repair working on a real occurrence, for the
+second time on record. Re-run on a fresh STC: 13/13.
+
+**Operational consequence worth knowing:** arms 1 and 2 need a **freshly started
+NSFS**, because the sweep's evidence depends on the generation range.
+
+### 4. An instrument gap of mine
+
+`role_w` printed `RC` but not `ERRNO`, so the first anomalous result could not be
+read at all and cost a redeploy to instrument. Fixed in the same file; the
+`ERRNO=0` in the restored-arm line is that fix. A failure whose errno is not
+printed is a result nobody can read.
+
+---
+
+## Round hygiene
+
+- **Zero dumps** (`IEA995I` = 0) against **2** `IEF450I ... ABEND S222` — exactly
+  the two deliberate cancels of the wedged W and V. The non-zero cancel count is
+  the positive control for the zero dump count.
+- **The retain branch fired, correctly and incidentally.** Cancelling the wedged
+  clients left their slots claimed, so `P NSFS` reported
+  **`NSF054W 2 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE RETAINED`** rather
+  than freeing storage a client might be executing in. The next start came up on
+  a **different anchor (`00ACF7C8`, was `00AAD7C8`) and a different router EP
+  (`00AAD248`, was `00A8B248`)** — the evidence the old ones were retained — and
+  `LARGEST FREE BLOCK` fell 933888 → **794624**, exactly −139264 = pool + router,
+  matching the figure on record. **~136 KB of CSA is retained until IPL** as a
+  cost of the unfixed arm.
+- Final state clean: `BUSY=0 BUSYSLOT=-1 INFLIGHT=0 EXHAUSTED=0 COLLISIONS=0`.
+- Every deploy was `P NSFS` → deploy → `S NSFS`, and every deploy's output was
+  read for the mid-chain `HTTP 500` / `Dataset delete failed` signature. None
+  appeared.
+- The restored source is **byte-identical to `main`** (`git diff main` on
+  `src/nsfeza.c` and `src/nsfsel.c` = 0 lines) and was force-recompiled before
+  the final deploy.
+
+---
+
+## What this round does NOT establish
+
+- **Anything host-side.** That is Stage 1's, and it is not repeated or re-claimed.
+- **That the wedge is the only consequence of the defect.** Arm 3 shows one
+  reachable consequence in both directions; it does not enumerate them.
+- **Why `make deploy` shipped a stale object** (finding 1). The fact is measured;
+  the mechanism is not.
+- **That `role_a`'s assertion never passed on some earlier build.** The source
+  argument is module-independent and two runs reproduce it, but no archived run
+  of A's CC exists to compare against.
+- **The `EINVAL` refusal across the crossing.** Stage 1 proved it on the Phase-1
+  drainer path; this round reached it only via the mixed build, which is not a
+  configuration anyone should rely on. It remains proved on one path, and that is
+  proportionate because the decision produced one path.

@@ -3093,6 +3093,74 @@ same code either way), but is said rather than assumed. The truncation control
 pins arithmetic consistency and needs nothing more: **2048 is itself a multiple
 of 8**, so the clamp can never manufacture a non-multiple, and truncation and
 refusal are disjoint. `docs/measurements/m5-2-101/`.
+**#101 Stage 2 (the live round) — DONE, live-green; all three predictions HELD.**
+Not a milestone step; **M5 stays in progress and nothing flips** — #67, #88 stay
+open, d1's remaining items, (e), c3 and d2 are still ahead, and **#101 stays open
+(Mike closes it)**. **No product source changed**: the diff is `test/mvs/tstd1b.c`,
+two JCL files and the evidence. Predictions were written **before any deploy** and
+not edited (`docs/measurements/m5-2-d1-select/predictions.md`).
+**ARM 3's PREDICTION WAS AMENDED BEFORE THE RUN, ON A SOURCE FINDING, and the
+original is kept verbatim.** It read *"On the fixed module, B is served"* — and
+the source refutes that half: `soc_complete` is the only thing posting
+`g_priv.ecb` (`nsfsoc.c:303`), `nsfsel_dispatch`'s **park path calls no
+`soc_complete`**, and `g_busy` has exactly one clear (`nsfsx.c:1239`) gated on
+POSTED. **So a parked block-forever SELECT holds `g_busy` on the FIXED module
+too** — that is serialised service (ADR-0042 §10), **not** the `ulen` defect, and
+run as written the arm would have produced "served in neither" and licensed the
+false conclusion its own falsification clause names. **What the defect adds is
+PERMANENCE:** `nsfsel_on_notify` re-scans the **stored** array, so with a
+count-valued `ulen` the items are residue, nothing can ever match, and no
+readiness poke can ever complete it. The amended arm therefore makes W's socket
+**become ready mid-run**. **Results, three states, one axis:** fixed → `W SELECT
+COMPLETED RC=1` and `V SERVED RC=0` **in the same second**; unfixed → **neither
+completed 45 s after a connect that provably succeeded** (`Ncat: Connected`),
+`SERVED` frozen at 4; restored → completes again. **The wedge itself was
+confirmed first and separately** — with W parked, `BUSY=1 BUSYSLOT=0 INFLIGHT=2`
+and `COLLISIONS=1`, which independently proves V's claim scan found W's slot
+occupied, i.e. V really published. **C3, the control, three ways:** `F
+NSFS,DISPLAY` answered *after* W parked, `F NSFS,STATS` answered throughout, and
+— strongest, a counter not a reply — **`EVTPASSES` moved 616 → 784 across the
+45 s window while `SERVED` stayed at 4**: the executive is alive and looping and
+simply cannot serve anyone. **Arms 1 and 2 green, B 12/13 → 13/13** (`poll
+rc=1 errno=0 foreign.ready=0 own.ready=2`; `parked rc=0 ready=0`), and **`2.3
+poll` passing IS the deploy-took-effect proof** — it was red in ALL THREE states
+of the d1c round, so it cannot pass on the pre-#101 module; this round adds no
+field or message, so a behavioural positive check was the only one available.
+**A STALE DEPLOY WAS CAUGHT BY AN *IMPOSSIBLE* VALUE, WHICH IS A NEW SHAPE OF §5'S
+FAILURE CLASS.** The first unfixed attempt returned `RC=-1 ERRNO=22` immediately
+instead of parking — and `EINVAL` is producible **only** by the FIXED dispatcher's
+rejection (the unfixed one has no `EINVAL` path; the only other `RQ_SELECT` error
+is `EOPNOTSUPP`). So NSFS was fixed while the client was reverted: a **mixed**
+build. §5's documented tell is *identical* values across builds; **a mixed build's
+tell is the opposite — a value NEITHER pure build can produce** — and it is louder,
+but only legible if you first enumerate what each pure build can return. Forcing
+the recompile (`touch` → `[cc370] src/nsfsel.c`) and redeploying produced the
+predicted park. Recorded, not diagnosed: `make deploy` after an in-place edit did
+not always recompile before packing. **TWO FINDINGS REPORTED, NOT FIXED.**
+(1) **`role_a`'s final assertion is structurally always-false and always has
+been**: `tcp_listen` returns `EINVAL` unless the TCB is `TCP_CLOSED` (*"only a
+fresh socket may listen"*, `nsftcp.c:1959`) and `role_a` re-issues `nsf_listen` on
+an already-listening socket. Module-independent, reproduced on two fixed-module
+runs; **not** a product defect (a second listen would re-init the acceptq and
+discard queued children). **It surfaced only now because A's CC appears never to
+have been read** — #100 ran B after A had ended, and the d1c record quotes B's
+counts and never A's: §8.5 one level out. Fixing another gate's assertions inside
+this round is the Kitchen-Sink pattern, so it is left to whoever owns d1's gates.
+(2) B's **`RANGE INADEQUATE -- SWEEP 1 IS NOT EVIDENCE`** fired and was right (the
+STC had advanced past the sweep's gen-0/1 window) — #100's defect-2 repair working
+on a real occurrence for the second time, and the **operational consequence is
+that arms 1 and 2 need a freshly started NSFS**. **An instrument gap of mine:**
+`role_w` printed `RC` but not `ERRNO`, so the anomalous result could not be read
+and cost a redeploy to instrument. **Hygiene:** zero dumps (`IEA995I` 0) against
+**2** deliberate `S222` cancels as the positive control; **the retain branch fired
+correctly and incidentally** — cancelling the wedged clients left slots claimed, so
+`P NSFS` gave `NSF054W 2 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE
+RETAINED` and the next start came up on a **different anchor AND router EP** with
+`LARGEST FREE BLOCK` 933888 → **794624** (exactly −139264 = pool + router), so
+**~136 KB of CSA is retained until IPL** as the arm's cost; restored source
+**byte-identical to `main`** and force-recompiled before the final deploy; host
+**3491 PASS / 0 FAIL** unchanged (a no-regression check only — `tstd1b.c` is
+`host = false`). `docs/measurements/m5-2-d1-select/`.
 **COUNTERSIGNED (PR #103 merged); ADR-0047 Proposed → Accepted.** Both states were
 **reproduced independently in a clean clone of the PR head** — 3491/0 at head,
 3408 PASS / 10 FAIL with the two product lines reverted, `TSTSEL` `rc=-6` — and the
