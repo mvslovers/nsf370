@@ -3114,7 +3114,10 @@ readiness poke can ever complete it. The amended arm therefore makes W's socket
 **become ready mid-run**. **Results, three states, one axis:** fixed → `W SELECT
 COMPLETED RC=1` and `V SERVED RC=0` **in the same second**; unfixed → **neither
 completed 45 s after a connect that provably succeeded** (`Ncat: Connected`),
-`SERVED` frozen at 4; restored → completes again. **The wedge itself was
+`SERVED` frozen at 4; restored → completes again. **The measurement is BOUNDED
+and the record says so: what was observed is "not within 45 s"; "never" is the
+DEDUCTION** (the re-scan reads the stored array, which residue cannot match), and
+it sits in that round's "does NOT establish" list. **The wedge itself was
 confirmed first and separately** — with W parked, `BUSY=1 BUSYSLOT=0 INFLIGHT=2`
 and `COLLISIONS=1`, which independently proves V's claim scan found W's slot
 occupied, i.e. V really published. **C3, the control, three ways:** `F
@@ -3149,9 +3152,18 @@ this round is the Kitchen-Sink pattern, so it is left to whoever owns d1's gates
 (2) B's **`RANGE INADEQUATE -- SWEEP 1 IS NOT EVIDENCE`** fired and was right (the
 STC had advanced past the sweep's gen-0/1 window) — #100's defect-2 repair working
 on a real occurrence for the second time, and the **operational consequence is
-that arms 1 and 2 need a freshly started NSFS**. **An instrument gap of mine:**
-`role_w` printed `RC` but not `ERRNO`, so the anomalous result could not be read
-and cost a redeploy to instrument. **Hygiene:** zero dumps (`IEA995I` 0) against
+that arms 1 and 2 need a freshly started NSFS**. **AND THE RULE THE ROUND YIELDS, recorded not promoted** (round README +
+ADR-0047 §8; its home in §8.5 is Mike's convention call): the amended prediction
+was **defensible — its FALSIFICATION CLAUSE was not.** Run as written the arm
+would have produced "served in neither", which the clause read as *"something
+other than `g_busy` holds it"* — **a false conclusion from a true observation**.
+So: **a falsification clause is a claim and needs the same check as the prediction
+it guards**; writing predictions before runs is the discipline, and it does not
+help if the conditions for abandoning them are themselves unverified. It sharpens
+rather than supersedes *a chain read out of source is a prediction until a run* —
+that one is about the claim, this one about its guard. **An instrument gap of
+mine:** `role_w` printed `RC` but not `ERRNO`, so the anomalous result could not
+be read and cost a redeploy to instrument. **Hygiene:** zero dumps (`IEA995I` 0) against
 **2** deliberate `S222` cancels as the positive control; **the retain branch fired
 correctly and incidentally** — cancelling the wedged clients left slots claimed, so
 `P NSFS` gave `NSF054W 2 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE

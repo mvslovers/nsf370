@@ -55,7 +55,7 @@ one, 1 of 128 after (its own); foreign and never-existing both return
 | state | W (block-forever SELECT) | V (ordinary request) | `SERVED` |
 |---|---|---|---|
 | **fixed** (JOB03010/11) | `COMPLETED RC=1 MASK=00000001` | `SERVED RC=0`, same second | 276 → 283 |
-| **unfixed** (JOB03021/22) | **never completed**, 45 s after a *successful* connect | **never served** | **4 → 4** |
+| **unfixed** (JOB03021/22) | **not completed within 45 s** of a *successful* connect | **not served** in that window | **4 → 4** |
 | **restored** (JOB03026/27) | `COMPLETED RC=1 ERRNO=0 MASK=00000001` | `SERVED RC=0`, same second | advanced |
 
 **The wedge itself is NOT the defect, and the round confirms that first.** With
@@ -67,8 +67,14 @@ modules. What the fix changes is whether the wedge can ever **lift**.
 
 **The unfixed arm is decisive because the stimulus provably occurred:**
 `Ncat: Connected to 192.168.200.1:3013` — W's listener was live and the readiness
-edge really happened — and 45 s later neither W nor V had completed, against a
+edge really happened — and **45 s later neither W nor V had completed**, against a
 fixed module that completed **in the same second**.
+
+**That is the measurement, and it is bounded.** What was observed is *not within
+45 seconds*; **"never" is the deduction** — `nsfsel_on_notify` re-scans the stored
+array and residue cannot match any socket, so nothing can ever complete it. The
+argument is sound and it is not an observation. Carried into §"does NOT
+establish" below, where the rest of the record's limits live.
 
 ### C3 — the control, satisfied three ways
 
@@ -141,7 +147,30 @@ second time on record. Re-run on a fresh STC: 13/13.
 **Operational consequence worth knowing:** arms 1 and 2 need a **freshly started
 NSFS**, because the sweep's evidence depends on the generation range.
 
-### 4. An instrument gap of mine
+### 4. A falsification clause is a claim, and needs the same check as its prediction
+
+The prediction this round amended was countersigned, and a correction written a
+round earlier had already fixed its **mood** — recording that the wedge was a
+deduction and not an observation — while leaving its **content** unexamined. What
+was wrong was not the prediction, which was defensible; it was the clause naming
+the conditions under which it would be abandoned.
+
+Had the arm run as written, it would have produced "served in neither", and the
+falsification clause would have read that as *"something other than `g_busy`
+holds it"* — **a false conclusion from a true observation**, in a round whose
+whole purpose is to settle the question.
+
+> **A falsification clause is a claim and needs the same check as the prediction
+> it guards.** Writing predictions before runs is the discipline; it does not help
+> if the conditions under which the prediction would be abandoned are themselves
+> unverified.
+
+Recorded here and in ADR-0047 §8, **not promoted** into CLAUDE.md §8.5 — where it
+belongs is a convention call, and it is Mike's. It supersedes nothing; it sharpens
+the rule this project already carries, that *a chain read out of source is a
+prediction until a run*. That one is about the claim; this one is about its guard.
+
+### 5. An instrument gap of mine
 
 `role_w` printed `RC` but not `ERRNO`, so the first anomalous result could not be
 read at all and cost a redeploy to instrument. Fixed in the same file; the
@@ -176,6 +205,11 @@ printed is a result nobody can read.
 
 ## What this round does NOT establish
 
+- **That W would NEVER have completed on the unfixed module.** What is measured is
+  that it did not complete **within 45 seconds** of a connect that provably
+  succeeded, against a fixed module that completed in the same second. "Never"
+  follows from the source — the re-scan reads the stored array, and residue
+  cannot match — and that is a deduction, not the observation.
 - **Anything host-side.** That is Stage 1's, and it is not repeated or re-claimed.
 - **That the wedge is the only consequence of the defect.** Arm 3 shows one
   reachable consequence in both directions; it does not enumerate them.
