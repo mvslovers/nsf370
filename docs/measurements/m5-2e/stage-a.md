@@ -287,6 +287,124 @@ would pass, and no gate was built that goes red and reads as a broken build.
 gate records a finding, not a pass — or the facade contract, with the
 transport gap filed separately?
 
+---
+
+### ANNOTATION 2026-09-03 — §6's finding has been overtaken; BOTH halves are closed
+
+**Appended, not rewritten.** §6 above stands as measured. It was authored
+2026-08-31 14:40; `nsfreq_sock_owned` and ADR-0046 were committed the same
+evening at 22:49 (`9f899d0`, "M5-2d1: close descriptor ownership at the request
+boundary"). So §6 is the **prehistory** of that ADR — it recorded the gap
+eight hours before the gap was closed, and whether it caused the closure or
+merely coincided with it is not something this annotation claims either way.
+
+What must not survive is a reader finding an **open** hole here that is not
+open. Hence this block.
+
+#### The descriptor half — CLOSED
+
+The superseded sentence, verbatim:
+
+> **Measured from source, by exhaustive enumeration: there is no such check.**
+> `req_socket()` (src/nsfreq.c:544-547) is `sock_lookup(r->sockdesc)` and
+> nothing else
+
+On `main` today that function reads:
+
+```c
+static SOCKCB *req_socket(NSFRQE *r)
+{
+    return nsfreq_sock_owned(r->sockdesc, g_cur_ascb, g_cur_asid);
+}
+```
+
+`nsfreq_sock_owned` (`src/nsfreq.c:640-666`) resolves **and** checks in one
+function — deliberately, because a function handing back a SOCKCB for the
+caller to validate is how the gap came to exist. It takes the socket's own
+`apptok`, resolves it through `app_index`, and compares that registry slot's
+`ascb`/`asid` against **the identity the FLIH captured**, never anything the
+client supplied. A foreign descriptor returns `NULL` through the *same*
+statement as a non-existent one, so all nine `req_socket` callers map both to
+`NSF_EBADF` and no verb becomes an existence oracle. `sel_scan` is the second
+caller — the wider door, one descriptor per SELECT mask item.
+
+§6's "guessable in tens of attempts" observation is therefore historical: the
+descriptor is still `(gen<<16)|idx` over one table, and that is still guessable,
+but guessing it no longer buys anything.
+
+#### The apptok half — ALSO closed, and it was checked, not assumed
+
+§6's second concern was narrower and was explicitly **not** covered by the
+sentence above:
+
+> what is missing is any binding between the *caller* and the token, so a
+> client holding or guessing a **live** token can use it.
+
+That binding now exists. `app_authenticate` (`src/nsfreq.c:356-376`) performs
+exactly the comparison §6 said was absent, and `nsfreq_dispatch_id` calls it
+**once at the boundary** (`:891`) so every reader downstream sees a token that
+has been corroborated:
+
+```c
+if (r->fn != RQ_INITAPI) {
+    r->apptok = app_authenticate(r->apptok, caller_ascb, caller_asid);
+}
+```
+
+How this was checked, so the claim is auditable rather than a reading of one
+function:
+
+1. **Enumerated every `apptok` consumer** in `src/` and `include/` — the
+   `do_termapi` path (`:491`, `:498`), `do_socket`'s stamp (`:617`),
+   `nsfreq_sock_owned` (`:658`), `tcp_child_create`'s inheritance
+   (`src/nsftcp.c:1407`), and the transport's copy in/out
+   (`src/nsfreqx.c:89`, `:105`). All of them read `r->apptok` *after* the
+   boundary call, or read `s->apptok`, which `do_socket` can only stamp from
+   an already-authenticated token.
+2. **`RQ_INITAPI` is exempt explicitly, not by ordering** — the request
+   arrives with no token and `do_initapi` writes `r->apptok` as its *output*.
+   Authenticating a non-existent input would break the one verb that creates
+   the binding.
+3. **A forged token cannot collide with the rejection value.** The mismatch
+   path returns `0u`, and token 0 (gen 0, idx 0) can never name a live slot:
+   `nsfreq_init` sets every slot's `gen = 1` (`:183`) and `app_free` never
+   wraps a generation back to 0 (`:280-281`). Verified in source, because
+   otherwise "refused" and "app slot 0's first token" would be the same word.
+
+#### Scope — what these two closures do NOT cover
+
+- **They are inert in Phase 1.** Both checks take the zero-identity red line
+  (`ascb == 0u` → return unchanged), which is every direct-call test and the
+  whole `NSF` module. This is why the host suite cannot exercise either.
+- **The unit is the ADDRESS SPACE, not the app instance.** Two app instances
+  in the *same* address space still resolve each other's descriptors — one AS
+  is one protection key and one storage image, and `identity → token` is
+  one-to-many so the reverse lookup has no unique answer. ADR-0046 §2.3 pins
+  this deliberately, with an assertion that *allows* it, so flipping the
+  decision is one named line.
+- **Nothing here touches the probe verbs.** §6's closing paragraph filed this
+  under the category of M5-2c0's "an unauthorised caller can dispatch a probe
+  verb at NSFS". `ECHO`/`XFER`/`UNSTAGE`/`SLOT` at **NSFV** are still
+  reachable from an unauthorised caller and are c3's, after (e). What did
+  change since §6: M5-2d1c made the production STC **permit exactly `FNRQE`**,
+  so at NSFS the probe verbs are refused pre-claim.
+
+#### Consequence for (e), which is why this annotation is worth its length
+
+§6 ended by asking Mike to rule: *"does (e) assert the transport property — in
+which case the gate records a finding, not a pass — or the facade contract,
+with the transport gap filed separately?"*
+
+**For the descriptor half that question is now moot.** The transport property
+holds, so §1.2's first half is a gate that can be asserted and is expected to
+**pass**, not a finding to be recorded. The ruling is still Mike's for how (e)
+words it; it is no longer blocked on a missing check.
+
+**§7 is unaffected and stands as written** — `TSTRQXC`'s verb is
+side-effect-free with `ubuf = NULL`, so it remains the wrong shape for Job A by
+construction. Nothing since 2026-08-31 has changed that, and it is (e)'s
+scheduling problem.
+
 ## 7. Job A's instrument does not exist, and Job A is the exit gate
 
 Stage a was scoped to `TSTRQXC` as a measurement instrument, and `TSTRQXC` is
