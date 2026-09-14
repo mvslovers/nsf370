@@ -475,3 +475,164 @@ without requiring anything on the box to have changed.
 one that fails; what it looked like on 2 September is not recoverable from the
 box, because the shell history, the process and the logs from that period are
 all gone.
+
+---
+
+## FOURTH ROUND 2026-09-14 — the latent-cause test, and two source findings
+
+**Appended; nothing above rewritten.** Read-only: no instance stopped or
+started, **no interface created, deleted or modified**, no rebuild, no `sudo`,
+`~/hercules/hyperion` read only.
+
+### §0 wording correction: SIGHUP is UNSUPPORTED, not refuted
+
+The previous section said SIGHUP was "refuted". That is too strong and the
+distinction matters. What the control established is that the caught set is a
+**build-line property** (4.10.0 catches it, TK5's 4.9.1 does not) and that it
+was caught on 2 September when the pair worked. **That refutes *"the signal
+handling changed"*. It does not refute *"SIGHUP is the signal being
+delivered"*** -- being caught is the **precondition**, not the event. With no
+delivery mechanism anywhere in the launch context, the hypothesis is
+**unsupported**. The earlier heading's conclusion stands; its wording does not.
+
+### §1 -- THE READING: NO TUN DEVICE EXISTS, with Hercules running
+
+Three independent readings agree:
+
+- `ip -br link` shows **`lo`, `ens18`, `docker0`** and nothing else.
+- `/sys/class/net/` contains the same three.
+- **No interface carries `tun_flags`**, the sysfs marker present only on
+  tun/tap devices.
+- `ip tuntap list` is empty, rc 0.
+
+*Controls:* sysfs is readable and the loop reached 3 devices; `lo/type` reads
+`772`, so an empty tun scan is a real absence and not an unread tree.
+
+**This is the second branch, not the interesting one.** No device was created,
+so `hercifc` did not quietly succeed, there is no orphaned interface, and the
+attach failure is real rather than a misread wait. **Mike's recollection --
+that a device should be present while Hercules runs -- is settled the other
+way by this reading**, which is why it was taken rather than assumed.
+
+### §2 -- persistence: the configuration mechanism is refuted, one variant is not
+
+**Nothing on the box sets up a persistent device.** No `ip tuntap`, `tunctl`,
+`TUNSETPERSIST` or `IFF_PERSIST` in the three MVSCE trees, `~/.bashrc`,
+`~/.profile`, `/etc/network` or any readable systemd unit. The only matches for
+"persist" are English prose inside an MVS package file. *Coverage:*
+`~/.bash_profile` does not exist and so was not searched; unreadable systemd
+units are a limit. *Control:* the same grep finds `hercules` in
+`start_mvs.sh`.
+
+**The leaked descriptor cannot be the mechanism either.** Exactly one process
+holds a `/dev/net/tun` fd -- MVSCE-DEV's own, fd 37, from its failed attach --
+and **since §1 shows no device was ever created, that descriptor is not keeping
+one alive**. *Coverage:* 27 `/proc/*/fd` directories scanned, 120 unreadable
+(other users), a stated limit.
+
+**So the CONFIGURATION form of the latent-cause hypothesis is refuted -- the
+fourth refuted candidate in this document.** One variant survives and is
+**not falsifiable from here**: a persistent device created by hand, ad hoc,
+leaves no trace in any file, and its removal between 2 and 3 September would
+fit every measured fact. The §3 test that would discriminate cannot be run
+(below). **That is a second question for Mike, not a conclusion.**
+
+### The standing "lost capability" refutation: UPHELD, and strengthened
+
+It was upheld for a weaker reason than the right one. The review asked whether
+it survives only if the setuid arrangement was the one in use -- a Hercules
+carrying the capability would never have needed `hercifc`. **From the build
+system, that configuration does not exist:**
+
+```
+if OPTION_CAPABILITIES
+    setcap 'cap_sys_nice=eip' ./hercules      <- NOT cap_net_admin
+    setcap 'cap_sys_nice=eip' ./herclin
+    setcap 'cap_net_admin+ep' ./hercifc       <- the network capability goes HERE
+endif
+```
+
+**`cap_net_admin` is never applied to `hercules` in any supported arrangement**
+-- it goes to `hercifc`, exactly as the setuid bit does. So **the parent's
+`TUNSETIFF` returns `EPERM` by design in BOTH arrangements**, and no lost
+capability on `hercules` can be the change. Upheld, on better grounds.
+
+**And the setuid bit was applied deliberately, which is now measured rather
+than asserted.** `hercifc`: mtime `11:03:53.096`, ctime `11:04:00.828` -- the
+mode/ownership was changed **7.7 seconds after the file was written**. *Control:*
+`hercules` beside it has ctime **identical** to mtime. The build's own
+`SETUID_HERCIFC` recipe produces `0750`+s (`-rwsr-x---`); the observed mode is
+`4755`, which that recipe does not produce, and Hercules-Helper does nothing
+about setuid (and is configured `opt_usesudo=false`). So a separate, deliberate
+step set it.
+
+### §3 -- the discriminating test: NOT APPLICABLE, and not manufactured
+
+`tunsetiff-probe.c` against an **existing** device cannot be run, because §1
+established there is no tun device to run it against. Pointing it at `docker0`
+or `ens18` would return `EINVAL` (not a tun) and answer a different question.
+**The precondition was not manufactured**: creating a device is a state change
+and is forbidden here, and it would also destroy the very condition being
+measured. Reported as not run, with the reason.
+
+### §4.1 -- why the call does not restart, and a correction to the premise
+
+**No handler in the tree sets `sa_flags` at all.** `grep` for
+`sa_flags|SA_RESTART|SA_NODEFER|SA_SIGINFO` across every `.c` and `.h` returns
+**nothing**; `sa_CRASH` is `= {0}`. So the four crash handlers
+(`bootstrap.c:56-63`: FPE, ILL, SEGV, BUS) carry **no `SA_RESTART`**. The
+handlers installed with `signal()` -- SIGINT, SIGTERM (`impl.c:146`, `:184`,
+`:1636`, `:1645`), SIGPIPE ignored (`:1704`), and `printer.c:1745` -- get
+`SA_RESTART` from glibc's BSD `signal()` semantics.
+
+**But for this call that distinction does not matter, and the premise that it
+does is wrong.** From `man 7 signal` on this box, primary source:
+
+> *"Folgende Schnittstellen werden nach einer Unterbrechung durch einen
+> Signal-Handler, **unabhängig von der Verwendung von SA_RESTART** nie erneut
+> gestartet; sie schlagen immer mit dem Fehler EINTR fehl: … Schnittstellen,
+> die Dateideskriptoren mehrfach nutzen: epoll_wait(2), epoll_pwait(2),
+> poll(2), ppoll(2), **select(2)** und pselect(2)."*
+
+**`select()` is never restarted, with or without `SA_RESTART`.** So "with
+`SA_RESTART` the kernel restarts the call and none of this would have been
+visible" is **false for `select()`** -- it would have been visible anyway.
+
+**What that changes for the fix**, which is the reason it is worth stating:
+
+- If the `EINTR` came from **`select()`**, `SA_RESTART` is irrelevant and an
+  **explicit retry loop is the only correct fix**.
+- If it came from **`read()`** -- which *is* restartable -- then a handler
+  carrying `SA_RESTART` would have masked it, and none in this tree does.
+
+Either way the retry is correct; the `SA_RESTART` framing is not a more precise
+statement of the defect, it is a different and partly inapplicable one.
+**Source finding only. Nothing changed.**
+
+### §4.2 -- which call returned EINTR: the honest set is TWO, not one
+
+The attribution to `select()` was an elimination argument over a set that was
+never enumerated. Enumerated now, for every call between the fork and the
+failure report:
+
+| call | verdict |
+|---|---|
+| `socketpair()`, `fork()` | **excluded** -- neither returns `EINTR` |
+| `write()` (in `VERIFY`) | **excluded by the observed messages.** A failed write leaves the child with no request, so `select` would time out at 5 s -> `rc == 0` -> **`HHC00135`** and errno forced to **`EPERM`**, reporting "Operation not permitted". We see neither that message nor that errno. |
+| **`select()`** | **CANDIDATE** -- `rc = -1`, neither the `rc > 0` nor the `rc == 0` branch runs, `rc` stays -1, errno `EINTR` |
+| **`read()`** | **CANDIDATE** -- reached when `select` returns > 0; `rc = -1` fails the `if (rc > 0)`, `rc` stays -1, errno `EINTR`. Identical report. |
+| `close()`, `kill()`, `waitpid()` | **excluded by the code itself** -- `sv_err = errno` is saved *before* them and restored *after*, so any errno they set is overwritten. `waitpid` is `EINTR`-capable and still cannot be the source. |
+
+**So the surviving set is `{select, read}`.** `select` is the more likely of the
+two -- a `read` of data whose readability was just reported usually completes --
+but **that is a plausibility argument, not evidence, and the attribution to
+`select()` alone is NOT established.** Discriminating needs `strace`, which is
+absent. An honest set of two.
+
+### Two questions for Mike, both unanswerable from the box
+
+1. **Did the way `MVSCE-DEV` is started change around 2-3 September?** (carried
+   forward from the previous round)
+2. **Was a tun device ever created by hand -- `ip tuntap add … persist` or
+   equivalent -- and removed around then?** It would leave no file trace, and it
+   would fit every measured fact.
