@@ -3286,3 +3286,26 @@ isolated so M0–M4 already deliver a usable in-process stack.
 | NSFSTC | STC startup + NSFCFG→init wiring (M0-8) | 5 / 14 | 000–099 |
 | NSFFMT | Safe formatting seam (`nsf_vsnprintf`/`nsf_snprintf`; libc370 truncation fix, ADR-0026, issue #25) | — | — |
 | (recovery) | ESTAE via libc370 `__estae` + C `nsf_recover` (ADR-0018; no NSFESTAE CSECT) | 17 | 900–999 |
+
+## SMP4 FMID — one per release
+
+The id is the release: `T` + three product letters + the three version digits.
+One id per release, **spent exactly once**, and each release's SYSMOD deletes
+its predecessor:
+
+```toml
+[distribution.smp]
+fmid   = "TNSF010"
+```
+
+**No version component may ever exceed 9** — a 7-character id has no room for
+a second digit. At patch 9 cut the next minor, at minor 9 the next major;
+nsf370 0.1.10 cannot be expressed and must not be released.
+
+Proposed: **`TNSF010`** for 0.1.0. Nothing has ever been installed, so the first
+level carries no `delete`; every level after it deletes the one before.
+
+Never re-spend an id, and never install a test package under the real one: a
+test needs a throwaway id **and** throwaway module names, because SMP keys
+element ownership on `MOD(name)`, not on the target library. See the root
+`CLAUDE.md` for the full rule and the measurements behind it.
