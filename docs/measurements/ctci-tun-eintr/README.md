@@ -365,3 +365,113 @@ rather than fitting a story to the remainder.
 measurement**; the configuration is **ruled out by identity**; and what is open
 is a **signal inside a one-day window**, with two candidate signals refuted and
 no third proposed.
+
+---
+
+## THIRD ROUND 2026-09-14 — the launch context, and SIGHUP refuted
+
+**Appended; nothing above rewritten.** Read-only: no instance stopped or
+started, no rebuild, no `sudo`, `~/hercules/hyperion` untouched.
+
+Everything ruled out so far is **a file or a machine** -- the binary, its
+capabilities, the device node, group membership, the kernel, the uptime, the
+instance, its configuration. The **launch context** had never been examined,
+and a file-by-file ladder walks past it because it is not a file.
+
+### The decode, verified independently
+
+Not taken from the prompt. Read from `/proc/805760/status` and named from the
+**system's own signal table** (`python3 -c 'signal.Signals(n).name'`):
+
+```
+SigCgt = 00000001000044cb  ->  1 SIGHUP, 2 SIGINT, 4 SIGILL, 7 SIGBUS,
+                               8 SIGFPE, 11 SIGSEGV, 15 SIGTERM, 33 (reserved)
+```
+
+SIGCHLD absent, so **its refutation stands**. And the set is now fully
+accounted for in source: FPE/ILL/SEGV/BUS are `install_crash_handler()`
+(`bootstrap.c:56-63`), INT/TERM are explicit (`impl.c:146`, `:184`), 33 is NPTL.
+**SIGHUP is registered nowhere** -- the only occurrences in the entire tree are
+a `strsignal.c` table entry and a `CHANGES` line reading **"28 Nov 2001 Remove
+SIGHUP usage - Jan Jaeger"**. Hercules deliberately stopped using it a
+quarter-century ago, and a handler is installed anyway.
+
+### The launch context reads unchanged and unremarkable
+
+| | MVSCE-DEV (*CTCI, fails*) | the other four |
+|---|---|---|
+| chain | `tmux(1292)` -> `bash(1293)` -> `start_mvs.sh` -> `hercules` | same shape, one via `bash -c source mvs_ipl` |
+| controlling terminal | **present**, `(136,1)` = a pts | present, all of them |
+| orphaned to init? | **no** -- parent `start_mvs.sh` alive | no |
+| session | 1293 (the oldest pane) | 544438 … 1039440 (newer) |
+
+*Controls:* `tty_nr` is shown to be **populated when a terminal exists** (three
+processes listed with non-zero values), so a zero would have been a real "none"
+rather than an unread field; and `ppid` 1 is resolved explicitly (`pid 1 comm =
+systemd`), so "parent is init" could not read as "no parent recorded".
+
+`start_mvs.sh` is three lines -- `ulimit -c unlimited` and the `hercules`
+invocation -- with **no `nohup`, `setsid`, `trap`, `exec`, `disown`, no
+background `&`, no `</dev/null`**. Its only difference from the other stands'
+copies is the `ulimit` line, mtime **2026-08-18**, which predates the working
+run and so cannot be the change.
+
+**The differential the round wanted is UNAVAILABLE, and that is stated rather
+than worked around:** only MVSCE-DEV configures CTCI at all, so no other
+instance would reach the `tuntap` path and none can discriminate. The reading
+stands alone.
+
+### A real difference was found, and it still is not the change
+
+The five instances do **not** share a caught-signal set:
+
+```
+MVSCE-EXP  (no CTCI)            00000001000044cb   SIGHUP caught
+MVSCE-DEV  (CTCI, FAILS)        00000001000044cb   SIGHUP caught
+MVSCE-LAB  (no CTCI)            00000001000044cb   SIGHUP caught
+MVSTK5-REF (different binary)   00000001000044ca   SIGHUP NOT caught
+MVSTK5-BLD (different binary)   00000001000044ca   SIGHUP NOT caught
+```
+
+Exactly one bit apart, and the bit is SIGHUP. The TK5 stands run Hercules
+**4.9.1**; ours is **4.10.0**. So it is a property of the **build line**, not of
+the stand, not of the launch, and not of the fork's own code (the git history
+shows no fork commit adding it).
+
+**Therefore SIGHUP is refuted as the change, by the same argument that killed
+the other two:** the working run of 2 September was on
+`4.10.0.11739-SDL-DEV-g60dd927e` -- the same 4.10.0 line -- so **SIGHUP was
+caught on the day it worked as well as on the day it failed.**
+
+It is left in the record as an **unexplained observation, not a lead**: a
+handler is installed for a signal the source removed in 2001 and registers
+nowhere by name, so it is installed with a numeric or computed signal number
+somewhere not found by grep. That is worth knowing and is not evidence here.
+
+### Three hypotheses, three refutations, and the boundary
+
+SIGCHLD (bit clear), SIGSETXID (the motivating bit is NPTL boilerplate present
+in every threaded program on the box; no `setxid` call in Hercules; timers
+empty), and now SIGHUP (a 4.10.0 build-line property, present on the working
+day). **No fourth candidate is proposed**, because there is no evidence for one
+-- the remaining caught signals are faults a healthy process does not take and
+shutdown signals that would not leave the instance running.
+
+Identifying the signal needs `strace` on the startup window: **not installed**,
+and installing it needs `sudo`. **That is where this stops, for the third
+time**, and the record says so rather than fitting a story to the remainder.
+
+### THE CHEAPEST REMAINING CHECK IS NOT ON THE BOX -- it is a question for Mike
+
+Everything measurable on the host is identical across the working and failing
+periods. **Did the way `MVSCE-DEV` is started change around 2-3 September?** A
+different session or pane, a script where an interactive shell had been, a new
+wrapper, a different terminal, something started under a different parent. A
+reorganisation was plainly under way -- the rename followed on 4 September --
+and a launch-method change on 3 September would fit **every measured fact**
+without requiring anything on the box to have changed.
+
+**This is asked, not guessed at.** The launch context as it stands today is the
+one that fails; what it looked like on 2 September is not recoverable from the
+box, because the shell history, the process and the logs from that period are
+all gone.
