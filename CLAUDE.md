@@ -3205,6 +3205,101 @@ landing area is `NSFREQX_CHUNK` rather than the staged length, so a `ready`
 written past the staged bytes **fails an assertion instead of overrunning the
 test's own buffer**. **#101 STAYS OPEN — Stage 2 closes it**; nothing flips to
 proven.
+**M5-2e Job A (the exit gate: two clients at once) — DONE, live-green; both jobs
+CC 0000, A 18/18 and B 23/23.** Not a milestone flip; **M5 stays in progress** — Job B
+(the measurement) runs after this, after an IPL, and #67/#88 stay open. A new
+`host = false` file `test/mvs/tstrqx2.c` (`TSTRQX2`) + `jcl/RQX2A.jcl`/`RQX2B.jcl` + one
+`project.toml` block; **no module source** — anchor unmoved, `ANCVERNO` 3, **NSFRQE frozen
+at 64 B**. **A SEPARATE FILE FROM TSTRQXM ON PURPOSE:** folding (e)'s exit gate into
+M5-2a's merged live gate would hang **two milestones on one return code**. It talks to the
+**private SVC directly** and links only itself plus `asm/nsftime.asm` — forced, because
+§1.2 needs a client to NAME a foreign descriptor and the EZASOKET facade numbers sockets in
+the *client's own* table, so the arm is unreachable from there; given that, a gate whose
+subject is entirely STC-side is better off with no copy of the stack in the client, so
+"which copy ran" is never a question (`nsfreqx_result_out` carries
+`retcode`/`errno_`/`apptok`/`p1`/`p2`/`p3` back, checked in source before the shape was
+chosen). **§1.2's CONTROL IS THE SAME DESCRIPTOR VALUE DRIVEN BY ITS OWNER** — B refused
+`EBADF` on A's `00010000`, A then **served RETOK on that exact value** — because **`EBADF`
+alone is not evidence**: ADR-0046 makes foreign and never-existing indistinguishable *by
+construction*, so a refusal must be paired with a demonstration that the value resolves.
+**And the aim is a DETERMINATION, not a derivation:** both clients assert their descriptors
+against **exact compile-time constants** (`00010000`/`00010001`), because TSTD1B's
+index-minus-one gets the *index* right and says nothing about the *generation* — and a stale
+generation refuses through the same `NULL`. A mismatch **SKIPS (CC 20)** rather than
+reporting a refusal it cannot attribute. **A's OWN BEFORE/AFTER ROW IS WHAT STOPS B's
+SURVIVAL ARM BEING VACUOUS:** A's `LISTEN` on `00010000` is RETOK before its TERMAPI and
+**`EBADF` after**, so TERMAPI is shown to tear down; B's stream socket then answers
+**`EINVAL`, not EBADF** (the positive form: resolved, still B's, still LISTENING), its
+datagram socket is **driven** not merely resolved, and its app slot answers by granting a
+NEW socket on B's token. `NSFSOC opens 5 closes 5` — leak gate clean. **§1.1 is progress at
+CHECKPOINTS, never a total** (a client that starved and caught up at teardown prints the
+same total), with its own vacuity guard that the sampling FIRED; both clients progressed in
+**every** interval within 0.5 % of each other, and **the barrier skew is MEASURED** — A
+opened 0.484 s after B, each window 90.000 s, **overlap 89.516 s = 99.46 %**. **The
+contention is corroborated from the STC side against a negative control taken in the SAME
+instance minutes earlier:** `COLLISIONS=212463` over 428 860 requests against `TSTRQXC`
+SOLO's **`coll 0->0`** — one client moves the counter not at all, two move it 212 463
+times — with `EXHAUSTED=0`, so this is **service serialisation, not slot starvation**, two
+facts a single client cannot produce. **§1.3 was PREDICTED TO PASS IN WRITING and did**
+(`dirty=0`, **428 822** calls, the whole buffer verified after **every** one): `g_land` is
+one buffer shared by sequential clients and is safe only because `g_busy` is held from
+dispatch to completion — a property resting on an invariant one function away, now pinned
+positively. Three things make that green worth something: **different generators** (not one
+seed plus a constant offset, so a foreign byte is recognisable AS the other client's, and
+the mismatch report says which), **different lengths** (A 2048 = the whole landing area, B
+1536, so B's `[1536,2048)` is **never written by the transport** — a tail sentinel against an
+over-long copy-out that two equal-length clients could not see), and a pattern rather than
+zeros. **THE GATE COULD NOT RUN AS DESIGNED, AND THE FIX IS A BETTER GATE.** `tun0` did not
+exist (`HHC00138E ... Interrupted system call` → `HHC01463E 0:0501 device initialization
+failed`, the m5-79 failure), so `nsfip_route` returns NULL and **every `sendto` answers
+`EHOSTUNREACH` before `EMSGSIZE`** — the kickoff locked §1.3 to `sendto` and one paragraph
+later wrote "nothing here needs `tun0`", and **both cannot be true**. Ruling: the **bulk**
+verb is a **non-blocking `RECVFROM` on an empty rxq** (`EWOULDBLOCK` from `udp_recv`, no
+routing table, no device, no wire, while the transport still stages `ulen` in and copies
+`ulen` out); `SENDTO` stays as the once-per-checkpoint **wire arm**, and with no interface
+that arm is a **REPORTED skip asserted in POSITIVE form** (`n_wire == 0`, "the wire arm DID
+NOT RUN") — an omitted assertion prints nothing, which is the shape the round exists to
+avoid. This keeps the locked decision's **reason** (a FIXED expected buffer range, the whole
+argument against a TCP send), gains a **stronger** serviced-control (`EWOULDBLOCK` comes
+from a protocol op reached THROUGH the ownership check, so every bulk call re-exercises §1.2
+for that client's own socket), and makes the gate **device-independent** so it will not cost
+an IPL the next time `tun0` fails. Corroborated: `LNK1 oerr 2`, exactly one attempt per
+client. **A SOURCE CONTRADICTION WITH THE KICKOFF, reported (source wins):** it said
+*"`sock_lookup` has **exactly one** call site, inside `nsfreq_sock_owned`. There is no
+bypass."* — there are **TWO** (`nsfreq.c:642` CHECKED, `nsfsoc.c:281` INTERNAL inside
+`soc_complete`), and `tools/check-sock-lookup.sh` prints `2 call site(s)`. **"No bypass"
+survives but its stated reason does not:** the internal one can only null a `pend_` pointer
+equal to *this* request, so the property holds because that site is **classified and
+harmless**, not because it does not exist. **The mechanism is duller than the finding and
+worth more: the grep was scoped to ONE FILE and the sentence was scoped to THE TREE** — the
+enumeration was offered as the proof and was itself unenumerated, and that "no bypass"
+survived is luck. Rule recorded (not promoted; §8.5 is Mike's convention call): **an
+enumeration offered as proof must be scoped to what was actually enumerated.** **A LATENT COUPLING FOUND BY REVIEW, NOT BY A
+TEST:** the wire send sat inside the checkpoint-array cap, so a later change to `XA_CHK_S`
+would have **silently stopped the wire arm** while `n_wire_ok == n_wire` stayed green;
+the crossing now drives the send and only the recording is capped. **Gates:** cross-build 6
+modules + **57** test modules clean; built once with `-Wall -Wextra` temporarily in
+`[build].cflags` and **verified to discriminate** (injected unused variable → warning; flags
+reverted); card + sock-lookup checkers OK; alias scan 269 unique ≤ 8 and `cc370 -S` shows
+`TSTRQX2` exporting **exactly one** symbol (`MAIN`, 21 others `ENTRY=NO`); host **3491 PASS
+/ 0 FAIL** unchanged — a **no-regression check only**, since the file is `host = false` and
+the ownership check is inert in Phase 1. **The request count reconciles exactly:** `NSFREQ
+recv` = `SERVED` = **428 860** = 428 822 bulk + 22 lifecycle + **16** from TSTRQXC SOLO's
+two runs, which is also exactly `NSFREQ badfn 16`. **Deploy-took-effect is positive on BOTH
+datasets:** `NSF.LINKLIB` by the negative arm itself (a pre-M5-2d1 NSFS would have SERVED
+B's foreign LISTEN), TESTLIB by `TSTRQX2` running at all (JOB03038: `NO ROLE ('') -- nothing
+ran` → `GATE SKIPPED -- CC 20`, step CC 0020 — the fingerprint and a live demonstration that
+a missing PARM cannot report a pass). **Stand:** `NSF055I ... LARGEST FREE BLOCK NOW
+1073152` before **and** after — **no CSA debt** — clean stop both times with `NSF043I SVC
+239 RESTORED`, **no `NSF054W`**, **zero dumps** (`IEA995I` 0 against `IEF450I` 0, so the zero
+is "nothing failed" rather than a suppressed dump). **DOES NOT ESTABLISH:** throughput or
+latency of anything (no figure here is a baseline or comparable with Job B); concurrent
+service; **a protocol op READING `g_land`** (the wire arm did not run — what is proven is the
+transport's copy pair, not an op's use of it; tracked with d1's SELECT stimulus in the ONE
+place `docs/measurements/awaiting-ctci-pair.md`, because a precondition split across two
+footnotes in two files does not come back); the partial-write residue shape; a bypass of
+the ownership check (a source property); d1's SELECT arms (#107 assigns them to a d1 round);
+or hardware arbitration of a simultaneous `CS`. `docs/measurements/m5-2e-joba/`.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]

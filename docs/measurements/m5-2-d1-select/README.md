@@ -325,3 +325,13 @@ existing.** It was not derived and then applied; it was forced by a later round
 noticing the shape on its own stand, and it then found a gap in a round that had
 already been reviewed and countersigned. A rule that only ever fires on the
 round that invented it is a platitude. This one reached backwards.
+
+---
+
+### POINTER 2026-09-03 -- the re-run is tracked in one place
+
+The "no re-run" above is not a decision to drop it. Arms 1 and 2 are listed in
+**`docs/measurements/awaiting-ctci-pair.md`** as item 1, with the other property
+in the tree whose only missing precondition is a working CTCI pair. Nothing is
+restated there that is not already above; the point is that the two do not live
+as separate footnotes in separate files.

@@ -895,6 +895,35 @@ startup = "crt1"
 host = false
 sources = ["test/mvs/tstrqxc.c", "asm/nsftime.asm"]
 
+# -- M5-2e Job A: THE EXIT GATE -- two clients at once (TSTRQX2) ------------
+# MVS-only (host = false): two address spaces sharing one CSA slot pool has no
+# host analog, and the M5-2d1 ownership check this gate exercises takes the
+# zero-identity red line in Phase 1 -- it is INERT there, so the host suite
+# cannot reach it at all. Proves the three (e) properties with two REAL
+# clients: that they are multiplexed (progress at checkpoints, never a total
+# at the end), that neither can reach the other's sockets or app slot (ONE
+# verb, LISTEN, with the control being the SAME descriptor value SERVED for
+# its owner), and that the one shared g_land landing area carries no client's
+# bytes into another's buffer (different generators AND different lengths, so
+# B's tail is a sentinel against an over-long copy-out).
+# A SEPARATE FILE FROM TSTRQXM ON PURPOSE: folding the (e) exit gate into
+# M5-2a's merged live gate would hang two milestones on one return code.
+# SVC-DIRECT like TSTRQXC and for the same reason -- the EZASOKET facade
+# numbers sockets in the CLIENT'S OWN table, so it cannot NAME a foreign
+# socket and the isolation arm is unreachable from there; given that, a gate
+# whose subject is entirely STC-side is better off with no copy of the stack
+# linked into the client at all. Sources are this file plus asm/nsftime.asm
+# (nsf_now bounds the window and stamps the checkpoints; NO per-request
+# timing is taken and NONE is reported -- Job A is pass/fail, and its
+# per-interval counts are not comparable with Job B's measurement).
+# Submit jcl/RQX2A.jcl and jcl/RQX2B.jcl together against a FRESHLY started
+# NSFS; a solo submit times out and returns CC 20, never CC 0.
+[[test]]
+name = "TSTRQX2"
+startup = "crt1"
+host = false
+sources = ["test/mvs/tstrqx2.c", "asm/nsftime.asm"]
+
 # -- M5-2b step 0: the DESTINATION-KEY probe (TSTMVCD) ----------------------
 # MVS-only (host = false): SSE opcodes, PSW/storage keys, SSK/ISK/LRA and the
 # CSA control blocks have no host analog. Answers the three questions M5-2b1
