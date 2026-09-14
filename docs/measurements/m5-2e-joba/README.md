@@ -27,11 +27,17 @@ anything Job B produces**; Job B runs after this round and after an IPL.
 It talks to the **private SVC directly** -- `NSFV_REQ.func = NSFV_REQ_RQE`,
 `rqeimg` at a hand-built 64-byte `NSFRQE`, `ubuf`/`ulen` also in the
 `NSFV_REQ` -- and links only itself plus `asm/nsftime.asm`, the TSTRQXC shape.
-Two reasons, and the first is forced: §1.2 needs a client to **name a foreign
-descriptor**, which the EZASOKET facade cannot do at all (it numbers sockets
-in the client's own table). Given that, a gate whose subject is entirely
-STC-side is better off with no copy of the stack linked into the client, so
-"which copy ran" can never be a question. `nsfreqx_result_out` carries
+Two reasons, and the first is forced -- **it is the opposite of a shortcut, and
+a facade-based isolation test would have been GREEN AND VACUOUS.**
+`g_sockmap[NSFEZA_MAXSOC]` (`src/nsfeza.c:43`) is a module static **in the
+client's own load module**, and `eza_desc()` returns 0 for any number outside
+*that* client's map; `nsf_listen` then answers `EBADF` **in the client**
+(`src/nsfeza.c`, `if (desc == 0u)`), so the request never leaves the address
+space. A facade test would have shown a refusal that `nsfreq_sock_owned` never
+saw and never made -- absent-vs-succeeded, avoided here **by construction**
+rather than caught. Given that, a gate whose subject is entirely STC-side is
+also better off with no copy of the stack linked into the client, so "which
+copy ran" can never be a question. `nsfreqx_result_out` carries
 `retcode`/`errno_`/`apptok`/`p1`/`p2`/`p3` back, so a raw client reads exactly
 what the facade would have handed it -- checked in source before the shape was
 chosen.
@@ -133,8 +139,17 @@ their descriptors against **exact compile-time constants** -- A printed
 one, which gets the *index* right and says nothing about the *generation* --
 and a stale generation refuses through the same `NULL` as a foreign
 descriptor. Asserting both whole descriptors puts the generation inside the
-claim. If either constant had not matched, the run **skips (CC 20)** rather
-than reporting a refusal it cannot attribute.
+claim.
+
+**And the mismatch path is a THIRD RETURN CODE, which is the design choice
+rather than a detail.** If either constant had not matched, the run returns
+**CC 20 -- "the gate could not run"** rather than passing or failing. Most
+harnesses have two states where this needs three: a skip must be
+distinguishable from a pass *and* from a fail, because a run containing no
+evidence otherwise looks exactly like a run that proved something. It is what
+stops the round reporting a refusal it cannot attribute, and it is the
+TSTRQXF/TSTXFW idiom -- returned **from the test**, never by changing the mbt
+harness.
 
 **B's survival arm is not vacuous, because A's own before/after row is its
 control.** Without A's post-TERMAPI `EBADF`, "B survived A's TERMAPI" would be
@@ -166,10 +181,14 @@ Three things make the green worth something, and none of them is the count:
   not one seed plus a constant offset, so a foreign byte is recognisable *as*
   the other client's rather than merely wrong -- and the mismatch report says
   which of the two it is.
-- **Different lengths**: A stages 2048 (the whole landing area, maximum
-  surface), B stages 1536, so B's `[1536, 2048)` is **never written by the
-  transport at all** for the whole run -- a tail sentinel against an
-  over-long copy-out that two equal-length clients could not see.
+- **Different lengths -- a discriminating property, not a configuration
+  detail.** A stages 2048 (the whole landing area, maximum surface), B stages
+  1536, so B's `[1536, 2048)` is **never written by the transport at all** for
+  the whole run: a tail sentinel against an over-long copy-out. Two
+  equal-length clients could not detect that failure **at all** -- every byte
+  either of them checks is a byte the transport was supposed to write, so an
+  over-long copy lands inside the expected range and reads as correct. The
+  asymmetry is what creates a region where "written" is itself the error.
 - A **pattern**, not zeros, so a byte that failed to cross shows as a mismatch
   instead of an accidental match.
 
@@ -238,8 +257,24 @@ Recorded here with its siblings -- *a chain read out of source is a PREDICTION
 until a run* (#101 Stage 1), *a falsification clause is a claim and needs the
 same check as the prediction it guards* (#101 Stage 2), and *when a stimulus is
 unconfirmed, check EVERY assertion that could depend on it* (the d1 SELECT
-annotation). Promotion to CLAUDE.md §8.5 is Mike's convention call; nothing is
-promoted here.
+annotation).
+
+**And those are all special cases of one thing.** A grep scoped to one file
+with the claim scoped to the tree; a precedent obtained with the wire and
+applied without it (finding 2); a deduction written in the mood of an
+observation; a falsification clause left unchecked while the prediction it
+guarded was checked. Each is a piece of support carried further than the
+conditions under which it was obtained:
+
+> **Every piece of support carries the conditions under which it was obtained,
+> and is valid only inside them.** A grep is valid over what it searched. A
+> precedent is valid under the conditions the precedent ran in. A measurement
+> is valid on the stand that produced it.
+
+Whether that replaces the special cases, subsumes them, or sits alongside as a
+third is a convention call. Promotion to CLAUDE.md §8.5 is Mike's; **nothing is
+promoted here**, and the special cases are left standing as written because
+each names the shape it catches more sharply than the general form does.
 
 ### 2. The gate could not run as designed, and the fix is a better gate
 
