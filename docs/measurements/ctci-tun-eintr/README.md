@@ -114,3 +114,254 @@ this document:** this one is a finding about the driving system, that one is a
 list of stack properties awaiting a stimulus, and fixing the wire discharges
 nothing on it -- it only makes the runs possible. Keeping them apart is what
 stops "the wire is broken" from being read as an excuse for either.
+
+---
+
+# ADDENDUM 2026-09-14 — diagnosing the CHANGE, not the mechanism
+
+**Appended, nothing above rewritten.** Everything above was measured and stands.
+Read-only round: nothing stopped, started, rebuilt or reconfigured, no `sudo`.
+
+**The question was: the missing `EINTR` retry has been in that source for years
+and the pair carried real traffic on 2026-09-02, so what changed such that this
+path is entered at all?** The kickoff's premise was that `EPERM` must itself be
+a regression -- because if `TUNSETIFF` succeeded, `hercifc` would never be
+forked, no signal could interrupt anything, and nothing would reach the broken
+branch.
+
+## THE PREMISE DOES NOT HOLD ON THIS BOX, and that is the round's answer
+
+**`EPERM` is the DESIGNED path here, not an anomaly**, so it cannot be the
+change:
+
+- **No Hercules binary carries any capability** -- all three executing binaries
+  report `(none)`. *Controls:* `/usr/bin/tcpdump` reports
+  `cap_net_admin,cap_net_raw=eip`, so `getcap` works and an empty result is a
+  real "none"; a nonexistent path prints `(No such file or directory)`, so a
+  failure cannot read as "none". **And `getcap` was not on the non-interactive
+  PATH on the first attempt** -- without the control that would have read as
+  "no capabilities" when the tool had not run at all.
+- **`hercifc` IS setuid root** -- `-rwsr-xr-x 1 root root ... 6. Sep 11:03`.
+  *Control:* `/usr/bin/passwd` and `/usr/bin/sudo` show the same `s`, so the bit
+  is visible when present.
+
+Those two facts together are the point: **this box uses the setuid-`hercifc`
+arrangement, and that arrangement REQUIRES the direct ioctl to fail `EPERM`**
+(`tuntap.c:108` forks the child only `if (... errno == EPERM ...)`). A
+capability on `hercules` would make `hercifc`'s setuid bit pointless. The bit
+was moreover **re-set after the 6 September rebuild**, so it is actively
+maintained. `EPERM` was the path on 2 September when CTCI worked.
+
+**Consequence for the decision this round exists to inform:** the worry that a
+`tuntap.c` patch would paper over a configuration regression **does not apply**
+-- there is no configuration regression in the `EPERM`. That does not make the
+patch right; it removes one argument against it. The decision stays Mike's.
+
+## Refuted, each with its evidence
+
+| hypothesis | verdict |
+|---|---|
+| a lost `cap_net_admin` on `hercules` | **refuted as the change** -- none present, and the setuid-`hercifc` design means none was needed |
+| the rebuild dropped `hercifc`'s setuid bit (the failure this project has seen before, 2026-08-21) | **refuted** -- the bit is set |
+| the `nohif` line means a local source hack | **refuted** -- the tree is CLEAN and `nohif` is committed, in `4d171e51` "Add utun support for CTCI and QETH layer 3 on macOS" |
+| that utun commit changed the Linux path | **refuted by date** -- it landed **2026-08-15**, before the last known-good run, and is in the build that worked |
+| the Hercules rebuild caused it | **refuted by date** -- the rebuild is **6 Sep**, the first failure **3 Sep**, and the failure spans BOTH builds (`11739-g60dd927e` and `11774-g59d8981c`) |
+| a kernel or boot-environment change | **refuted** -- `uptime` is **36 days** (up since 9 Aug), continuously across both the working and failing periods, so the running kernel never changed |
+| the device node or group membership | **no route** -- `/dev/net/tun` is `crw-rw-rw-` so the open succeeds; `TUNSETIFF` needs `CAP_NET_ADMIN`, which `netdev`/`sudo` membership does not grant |
+| **`SIGCHLD` from the forked child** -- the candidate THIS DOCUMENT floated above | **REFUTED.** `SigCgt` for the live process is `0x1000044cb`: SIGHUP, SIGINT, SIGILL, SIGBUS, SIGFPE, SIGSEGV, SIGTERM and one real-time signal. **Bit 17 is clear -- SIGCHLD is not caught**, so a child exiting does not interrupt `select()`. The §mechanism text above labelled it "a plausible candidate ... neither is established"; it is now refuted, and the label is why that costs nothing. |
+
+## The stand is not the stand that worked, and that reframes everything
+
+- **`~/MVSCE` no longer exists.** It was replaced on **4 September** (there is a
+  `MVSCE.release.v3.0.0.tar` of that date) by `MVSCE-EXP`, `MVSCE-DEV` and later
+  `MVSCE-LAB`. **Five** Hercules instances now run on this box, on two different
+  binaries.
+- **Only `MVSCE-DEV` configures CTCI at all** -- `0500,0501 CTCI 192.168.200.1
+  192.168.200.2`, the line this document quotes. The other four stands have no
+  CTCI or LCS line, so they are not competing for the interface.
+- **`MVSCE-DEV` has started exactly ONCE and CTCI failed on that one start**
+  (one `HHC01413I`, one `HHC00138E`/`HHC01463E` pair). **The pair has never
+  worked on this stand.**
+- **No surviving host-side log records a successful CTCI attach.** *Control:*
+  the three logs exist, are non-empty, and `HHC01413I` is found in all of them,
+  so the empty result is a real absence and not an unreachable path. The
+  working period's logs went with `~/MVSCE`.
+
+## What this does NOT establish, stated plainly
+
+**The ladder does not explain what changed, and I am not going to fit a story
+to it.** Same kernel, same uptime, `hercifc` healthy and setuid, no capability
+arrangement in use, and the failure spans two Hercules builds and a complete
+stand replacement. What is left is that the `hercifc` handshake is interrupted
+by *some* signal, and:
+
+- **WHICH signal is not established.** SIGCHLD is now refuted. A real-time
+  signal is caught (`SigCgt` bit 32), which is consistent with a periodic timer,
+  but *consistent with* is not evidence and no further weight is put on it.
+- **WHEN and HOW the change happened is not established**, nor **who made it**,
+  nor **whether anything else was affected by the same event**. There is no
+  host-side artifact from the working period left to compare against.
+- **`/var/log/dpkg.log` could not be checked.** Its positive control FAILED --
+  zero entries in the date range -- so the empty result is uninterpretable and
+  is reported as "not checked", not as "nothing found".
+- Settling the signal needs `strace`, which is **not installed**; installing it
+  needs `sudo`, which needs a password we do not have. **That is the one check
+  that would close this, and it is the reason the round stops here.**
+
+## The `EINTR` fall-through is still a real defect
+
+Independently of all the above, and unchanged: `TUNTAP_SetMode` has no `rc < 0`
+branch, so an interrupted wait is reported as "device initialization failed",
+and the same codebase treats an interrupted wait as retryable twice over in
+`ctc_ctci.c` (see §Precedent). **But on the evidence here it is not merely a
+downstream consequence of an anomalous `EPERM` -- the `EPERM` is by design, so
+the fall-through is the PROXIMATE cause of the attach failing**, and the open
+question is what delivers the signal. That is a correction to the kickoff's
+framing, not to the mechanism analysis above, which stands as written.
+
+## Proposal only -- NOT run, and not a recommendation
+
+If the capability route were ever chosen over the setuid-`hercifc` route, the
+command would be `sudo setcap cap_net_admin+ep /usr/local/hercules/bin/hercules`.
+**It was not run.** It would also **diverge this stand from the stock Hercules
+that TK4-/TK5 users run**, which is the configuration NSF must work on, and it
+would mask rather than fix the fall-through. Recorded so the option is visible,
+not because it is advised.
+
+---
+
+## CORRECTION 2026-09-14 — the stand was RENAMED, not replaced
+
+**Appended; the addendum above is not rewritten and the refutations in it are
+untouched.** Read-only round, nothing changed on the box.
+
+### The false fact, and what replaces it
+
+From the addendum's context section, verbatim:
+
+> **`MVSCE-DEV` has started exactly ONCE and CTCI failed on that one start**
+> (one `HHC01413I`, one `HHC00138E`/`HHC01463E` pair). **The pair has never
+> worked on this stand.**
+
+**Superseded. `~/MVSCE` was RENAMED to `~/MVSCE-DEV`** (Mike): same 2.1.4
+installation, same configuration, same files. **The CTCI pair worked on exactly
+this instance on 2 September.** The `MVSCE.release.v3.0.0.tar` of 4 September is
+a separate thing on the same box and is not this instance.
+
+Corroborated here rather than taken on trust: `~/MVSCE-DEV/SCRIPTS/` holds
+**`pjes2 poweroff quiesce SHUTDOWN.RC zeod`** -- the same five files, by name,
+that `~/MVSCE/SCRIPTS/` held when this document's first round listed them on 3
+September; the oldest content carries **2026-07-08** mtimes, months before the
+4-September tar; and the directory's own mtime/ctime is **2026-09-04 18:49:05**,
+which is the rename.
+
+### The mechanism of the error -- the same shape as the premise error, one layer in
+
+**`hercules -o hercules.log` TRUNCATES the log at every start**, so a count of
+`HHC01413I` banners can only ever be **1**. Measured across all three MVSCE
+logs: each is 425 KB / 972 KB / 1.1 MB, each **begins** with a banner, and each
+contains **exactly one**. "Started exactly once" was never a property of the
+instance -- it is a property of the logging, and every stand on the box reports
+it.
+
+**The control I ran could not have caught this.** It showed *"the logs exist and
+`HHC01413I` is found in all of them"* -- that the search ran and the files were
+reachable. **It could not show what period the logs cover**, and coverage is
+what the figure depended on. The control that was needed is the one now run:
+each log's first line, last line, and the **process start time** that dates it
+(the log's own stamps are time-only, with no date).
+
+So: **a result carried beyond the conditions under which it was obtained** --
+the rule this milestone recorded two rounds ago, appearing here **in the
+instrument rather than in the prompt**. And the same error sits above it in the
+kickoff: it stated correctly that the pair carried traffic during the Stage 2
+round, then accepted a replaced-stand story that contradicted its own premise
+instead of checking it.
+
+**"No surviving host-side log records a successful attach" also loses its
+force**, for the same reason: with per-start truncation, no log could record it.
+The 2 September evidence is in the tree (`docs/measurements/m5-2-d1-select/`,
+arm 3's `Ncat: Connected to 192.168.200.1:3013`), not on the host.
+
+### What survives untouched
+
+Everything host-side, because none of it depends on which instance is which: no
+Hercules binary carries a capability (controls good); `hercifc` is setuid root
+and actively maintained; **`EPERM` is the DESIGNED path** and therefore cannot
+be the change; SIGCHLD refuted from `SigCgt`; the five refuted candidates; the
+two controls that paid for themselves; `dpkg.log` reported as **not checked**;
+and the `setcap` proposal, not run.
+
+### The window, re-derived on the corrected premise -- and it is much tighter
+
+Same box, same kernel, **same uptime (36 days, no reboot since 9 August)**, same
+setuid `hercifc`, **same instance, same configuration, same files.**
+
+| when | what | dated from |
+|---|---|---|
+| **2026-09-02** | CTCI **works** -- arm 3's confirmed connect | the record's own `**Date:**` line, not memory |
+| **2026-09-03** | CTCI **fails**, build `11739-g60dd927e` | this document's first round |
+| 2026-09-04 18:49 | `~/MVSCE` renamed `~/MVSCE-DEV` | directory mtime/ctime |
+| 2026-09-06 11:03 | Hercules + `hercifc` rebuilt -> `11774-g59d8981c` | binary mtimes |
+| 2026-09-06 12:15:36 | MVSCE-DEV starts on the new build -- CTCI **fails** | `ps -o lstart` for pid 805760 |
+
+**Log coverage, since that is the control this round showed was missing:**
+`~/MVSCE-DEV/hercules.log` covers **2026-09-06 12:15:36 onward, one start only**;
+MVSCE-EXP from 2026-09-06 12:08:38; MVSCE-LAB from 2026-09-09 15:06:55. Nothing
+on the host covers 2-3 September.
+
+**The consequences, which the addendum had the facts for and did not draw
+because the replaced-stand story filled the gap:**
+
+1. **The change lies strictly between 2 and 3 September.** The rename (4 Sep)
+   and the rebuild (6 Sep) are **both after the first failure** and therefore
+   cannot be it. The failure additionally spans two builds.
+2. **Configuration is no longer a candidate at all.** There is no newly drawn
+   stanza to compare -- it is the *same file*, in the *same directory*, renamed.
+   The configuration trail was the last surviving line of enquiry in the earlier
+   round, and the corrected premise removes it.
+3. What remains is **the host environment inside a one-day window**, and the
+   signal.
+
+### The signal hypothesis: decode verified, inference NOT supported
+
+`SigCgt = 0x1000044cb` decodes to caught signals **1, 2, 4, 7, 8, 11, 15 and
+33** (bits 0,1,3,6,7,10,14,32). Verified against this box's glibc rather than
+assumed: `SIGRTMIN = 34`, so 32 and 33 are glibc-reserved (`SIGCANCEL`,
+`SIGSETXID`). Bit 16 is clear, so **SIGCHLD stays refuted**.
+
+**But the observation that motivated the SIGSETXID hypothesis is boilerplate,
+so it is not evidence.** Control: bit 32 is **SET in every threaded program on
+this box** -- `systemd-timesyncd`, `qemu-ga`, `containerd`, `dockerd`,
+`gnome-keyring-daemon` -- because NPTL installs that handler in every
+multithreaded glibc program. It says nothing about Hercules.
+
+Two further checks, both negative:
+
+- **`/proc/805760/timers` is empty** (rc 0; the file is present and
+  world-readable, so this is a real "none"). **Its limit, stated:** it reflects
+  the process **now**, eight days into the run, not the startup window in which
+  the failure occurs -- a timer armed and disarmed during configuration would
+  not appear.
+- **Hercules does not call `setuid`/`setgid`/`setgroups`** anywhere in
+  `impl.c` (one comment mentions setuid; there is no call), and the setuid
+  `hercifc` is a **child after fork+exec**, which does not send `SIGSETXID` to
+  its parent. So the mechanism the hypothesis needs is missing as well.
+
+**The hypothesis is therefore recorded as unsupported, not as open.** That is
+the second candidate signal this document has refuted -- SIGCHLD from its own
+earlier text, SIGSETXID from the follow-up -- and in both cases the hedge is
+what made the refutation cheap.
+
+### Where it ends, again
+
+Identifying the signal needs `strace` on the startup window. It is **not
+installed**; installing it needs `sudo`, which needs a password we do not have.
+**That is the one check that would close this**, and the round stops there
+rather than fitting a story to the remainder.
+
+**What a later reader should take from this document:** the CTCI pair worked on
+**this exact instance**; the host-side arrangement is **ruled out by
+measurement**; the configuration is **ruled out by identity**; and what is open
+is a **signal inside a one-day window**, with two candidate signals refuted and
+no third proposed.
