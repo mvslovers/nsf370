@@ -921,3 +921,78 @@ built from. `/proc` for the five instances, all readable. Kernel driver source
 absent and not substituted. Not established, unchanged from before: which of
 the three calls failed; whether this kernel's TUN driver can return `EINTR`
 without a local signal; and which signal, if one is implicated at all.
+
+---
+
+## CLOSING — the CTCI investigation ends here
+
+**Appended; nothing above rewritten.** An end, not a trailing off.
+
+### The enumeration error belongs to the enumerator, and that is the useful form
+
+Both halves, because only the second one fires for a later reader:
+
+> The instruction scoped the enumeration to *"between the fork"* while the claim
+> it supported was about the **failure report**. **And executing a scoped
+> enumeration against an unscoped claim without noticing the mismatch is the
+> ENUMERATOR'S error** -- checking that the enumeration covers the claim is the
+> enumerator's job, whether they wrote the claim or inherited it.
+
+Recorded this way deliberately. Attributed wholly to whoever wrote the
+instruction, it reads as a rule about **writing prompts**, and the next person
+executing one would not apply it. It is a rule about **offering an enumeration
+as proof**, which is where it fires. It joins the family this record already
+carries -- *every piece of support carries the conditions under which it was
+obtained* -- as the case where the support is an enumeration and the condition
+is its scope.
+
+### One consequence of the empty harvest, stated explicitly
+
+Every running instance started **after** the 6 September rebuild (earliest
+12:08, the rebuild at 11:03), and **the failure predates the rebuild** -- it was
+first seen on 3 September on `4.10.0.11739-SDL-DEV-g60dd927e`. So:
+
+> **Nothing currently running has ever executed the binary that was in place
+> when the failure first appeared.**
+
+Which is why no amount of reading the live processes can reach the original
+conditions, and why the harvest was worth taking only to establish that it
+could not.
+
+### Where this ends
+
+**Five candidates refuted from evidence**, each with its control: SIGCHLD,
+signal 33 (SIGSETXID), SIGHUP, the lost capability, and the configuration form
+of the latent persistent device. **One narrowed set of three calls** --
+`{ioctl, select, read}` -- that cannot be discriminated from the logs, because
+the block emits nothing unconditionally before the wait. **One premise
+unverified**: under the `ioctl` branch, `EINTR` need not imply a signal was
+delivered at all, and the driver source that would settle it is not on the box.
+
+**Three things would move this, and nothing else needs inventing:**
+
+1. **The reboot**, whenever Mike takes it. The prediction and its falsification
+   conditions are already durable above, so the result is checkable either way.
+2. **`strace` on the startup window** -- needs root to install; Mike's call.
+3. **The TUN driver source for this kernel**, if it can be obtained without
+   changing the box. That alone closes §2's conditional.
+
+**No sixth hypothesis is proposed.** The set is three calls and the premise
+under one of them is unverified; proposing another signal against that
+background would be fitting a story to a gap, which is the one thing this
+document has consistently refused to do. Four refuted candidates were the
+result of asking "is this evidence?" of each; a fifth guess would not be.
+
+### What this does NOT block
+
+**The milestone does not depend on any of it.** Job B drives `TSTRQXC` with
+`XC_FN_UNKNOWN`: no sockets, no app slots, `ubuf = NULL`, **no wire**.
+Everything that genuinely waits on the CTCI pair is carved out in
+`docs/measurements/awaiting-ctci-pair.md`, with its membership criterion and the
+explicit statement that fixing the wire discharges nothing on it -- it only
+makes those runs possible.
+
+The `tuntap.c` decision remains Mike's, and it is now a decision about a defect
+**whose triggering call is one of three**. That is a sharper statement of it
+than this document began with, and it is the most this investigation can
+honestly offer.
