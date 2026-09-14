@@ -774,3 +774,150 @@ the tree the running binary was built from (version string match established in
 the addendum). Nothing here depends on machine state. Not established: whether
 the kernel can return `EINTR` from `TUNSETIFF`; which of the three candidate
 calls actually failed; and, still, which signal.
+
+---
+
+## SIXTH ROUND 2026-09-14 — discriminating candidate 3, and the pre-reboot harvest
+
+**Appended; nothing above rewritten.** Source reading plus read-only `/proc`.
+No machine state touched, no privilege, no interface created or removed,
+`~/hercules/hyperion` unmodified. **No reboot was performed** -- that is Mike's.
+
+### §0 -- where candidate 3 came from
+
+The §4.2 instruction read *"enumerate every call in that path **between the fork
+and the failure report**"*. The claim was about the **failure report**; the
+enumeration was scoped to **after the fork**. Line 100's plain `ioctl` sits
+before either guard, and a failure there skips the `hercifc` block entirely --
+so candidate 3 existed all along and was excluded by the wording of the
+question. **The rule this milestone already carries, applied to a prompt rather
+than to a record.**
+
+### §1 -- BRANCH 3: no unconditional emission exists, so the set stays at THREE
+
+Read `tuntap.c:108-158`, the whole block from the guard to the `select`. What
+it emits before the wait:
+
+**Nothing, on the parent path.** The only emission anywhere in the block is
+`WRMSG( HHC00136, ... )` at **line 139**, and it is disqualified twice over:
+
+1. It is in the **child**, after `execlp` has *failed* -- conditional, not
+   unconditional.
+2. **It cannot reach the log even if it fires.** Line 135 is
+   `dup2 (ifd[0], STDOUT_FILENO)` and line 134 points stderr at stdout, so the
+   child's output goes **into the socketpair**, to be read by the parent as if
+   it were a `CTLREQ`.
+
+So the log-based discriminator **is unavailable**, and this is stated rather
+than substituted for: reading the absence of `HHC00136` as proof the block was
+never entered would be exactly the shape this record has already paid for
+twice. (`HHC00135`'s absence does not discriminate either -- it belongs to the
+timeout path, excluded under candidates 2 and 3 alike.)
+
+**The honest set remains `{ioctl, select, read}`.**
+
+### §2 -- the assumption underneath everything, and it does NOT transfer to an ioctl
+
+Every branch has rested on: **`EINTR` implies a caught signal was delivered.**
+
+- **For `select` and `read` it holds.** These are kernel-provided waits; the
+  kernel yields `EINTR` when a handler ran, and `man 7 signal` on this box puts
+  `select` among the calls **never** restarted regardless of `SA_RESTART`. A
+  delivered, caught signal is implied.
+- **For an `ioctl` it does not follow.** The value is the **driver's return**.
+  A driver may return `-EINTR` or `-ERESTARTSYS` for its own reasons -- an
+  interruptible or killable lock acquisition, a deliberate early exit -- with no
+  handler having run in this process at all.
+
+**So under candidate 3 the chain *"errno 4 ⇒ a signal was delivered ⇒ which
+signal?"* may not hold**, and three refuted candidates plus a dead end is what a
+false premise looks like from the inside.
+
+**What could NOT be established, and why:** the TUN driver's source is **not on
+this box**. No `/usr/src/linux-source-*`, no `/usr/src/linux-headers-6.12.88+
+deb13-amd64`, no `/lib/modules/6.12.88+deb13-amd64/build` or `/source`, and no
+`drivers/net/tun.c` anywhere under either tree. *Control:* `/lib/modules/
+6.12.88+deb13-amd64/modules.dep` **is** present and reachable, so the search ran
+and the absence is real. **A driver read from a different kernel is a different
+driver**, so none was substituted.
+
+**Conditional conclusion, stated precisely:** *if* candidate 3 holds **and** this
+driver can return `-EINTR` without local signal delivery, then the signal
+question is not merely unanswered -- it is **the wrong question**, and the three
+refutations were correct answers to it. **The first conjunct is undecided (§1)
+and the second is unverifiable here.** Neither is asserted.
+
+### §3 -- THE HARVEST IS EMPTY, and that is the useful result
+
+Every running Hercules instance, start time computed from `/proc/<pid>/stat`
+against the boot time in `/proc/stat`:
+
+| pid | started | cwd | vs 3 September |
+|---|---|---|---|
+| 805694 | 2026-09-06 12:08:38 | MVSCE-EXP | after |
+| 805760 | 2026-09-06 12:15:36 | **MVSCE-DEV** | after |
+| 1005800 | 2026-09-09 15:06:55 | MVSCE-LAB | after |
+| 1061693 | 2026-09-11 08:09:17 | MVSTK5-REF | after |
+| 1072876 | 2026-09-13 12:12:51 | MVSTK5-BLD | after |
+
+**Not one predates 3 September; the earliest is three days after it.** So no
+running process is a window into the working period: there is no older
+instance whose `environ`, `exe` or open descriptors could carry the
+configuration of 2 September, and **the leaked-descriptor evidence the latent
+-device story would need cannot exist**. *Coverage:* all five `/proc` entries
+were readable; none was skipped.
+
+**Consequence: the reboot costs nothing on this axis.** The harvest was worth
+taking precisely to establish that.
+
+### §3b -- THE PREDICTION, written BEFORE any reboot and not to be edited after
+
+**The reboot is a destructive test, not a neutral one.** Uptime is 36 days and
+spans both the working and the failing periods, so **whatever changed, changed
+without a reboot** -- accumulated kernel state is already excluded as *the*
+change. A reboot cannot restore 2 September's conditions because those
+conditions are not known, and if it happens to clear the symptom the
+explanation goes with it.
+
+> **PREDICTION: CTCI will STILL FAIL after a reboot.** No Hercules binary
+> carries a capability and none is given one by any supported arrangement
+> (`cap_net_admin` goes to `hercifc`), so creating a device still requires the
+> `hercifc` path, and that path is unchanged.
+>
+> **Falsified if** the pair comes up after the reboot. That would be a **large
+> refutation**: the cause was in running state, and this investigation --
+> binaries, capabilities, configuration, launch context, source -- has been
+> looking in the wrong place throughout.
+>
+> **Both outcomes are informative.** A confirmed prediction leaves the open
+> question exactly where it is; a falsified one retires most of this document's
+> search space in a single reading.
+
+### §4 -- the IPC protocol: the two sides AGREE
+
+- **One definition, shared.** `CTLREQ` is declared once, in `hercifc.h:16-32`,
+  and that header is included by **both** `tuntap.c` and `hercifc.c`. Within a
+  build the layouts agree by construction.
+- **Both installed binaries come from one build.** Read with `strings`, **not
+  executed**: `/usr/local/hercules/bin/hercules` and `.../hercifc` both carry
+  **`4.10.0.11773-SDL-DEV-g4675e7e1`**, identical. (The runtime banner reports
+  `11774-g59d8981c`; the executables' embedded stamp differs from the banner's,
+  which is a build-numbering artifact and **not** a difference between the two
+  binaries -- they match each other exactly, which is what this section asks.)
+
+**So there is no version skew and no IPC mismatch. But the structure is
+fragile, and that is worth recording:** `CTLREQ` carries `iType`, `iProcID`,
+`iCtlOp`, `szIFName` and a union of `struct hifr` / `struct rtentry` -- **no
+version field and no magic**. Its size is `sizeof(CTLREQ)` on each side. Had
+the two sides ever come from different builds, the disagreement would be
+**silent**: the parent would wait for a reply framed differently than it
+expects. Exactly the failure mode this section hypothesised; simply not present
+here.
+
+### Coverage limits of this round
+
+`tuntap.c` and `hercifc.h` at HEAD `59d8981c`, the tree the running binary was
+built from. `/proc` for the five instances, all readable. Kernel driver source
+absent and not substituted. Not established, unchanged from before: which of
+the three calls failed; whether this kernel's TUN driver can return `EINTR`
+without a local signal; and which signal, if one is implicated at all.
