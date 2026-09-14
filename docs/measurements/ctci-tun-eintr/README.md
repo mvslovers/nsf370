@@ -636,3 +636,141 @@ absent. An honest set of two.
 2. **Was a tun device ever created by hand -- `ip tuntap add … persist` or
    equivalent -- and removed around then?** It would leave no file trace, and it
    would fit every measured fact.
+
+---
+
+## FIFTH ROUND 2026-09-14 — is the errno the failing call's? Source only
+
+**Appended; nothing above rewritten.** No machine state touched, no privilege,
+no interface created or removed, `~/hercules/hyperion` read only.
+
+### §3 first -- the load-bearing premise, re-read: CONFIRMED, and made precise
+
+Carried since the first round, and it holds. `tuntap.c:159-171`:
+
+```
+ 158          rc = select (ifd[1]+1, &selset, NULL, NULL, &tv);
+ 159          if (rc > 0)
+ 160          {
+ 161              rc = read (ifd[1], &ctlreq, CTLREQ_SIZE);
+ ...
+ 165          else if (rc == 0)
+ ...
+ 171          }
+```
+
+`if (rc > 0) … else if (rc == 0) …` and **no `else`**. A `select` returning -1
+falls through both arms, `rc` stays -1, and nothing specific to it is logged.
+
+**But the precise statement matters, because it is not the defect the round
+went looking for.** Falling through is what *preserves* `rc = -1` and the
+errno; the missing arm costs a **retry**, not the attribution. It is a
+**handling** defect, not a **reporting** defect.
+
+### §2 -- THE RESIDUE HYPOTHESIS IS REFUTED. Outcome 1.
+
+There **is** an errno save, and it is positioned exactly where it needs to be:
+
+```
+ 173          /* clean-up */
+ 174          sv_err = errno;
+ 175          close (ifd[1]);
+ 176          kill (pid, SIGKILL);
+ 177          waitpid (pid, &status, 0);
+ 178          errno = sv_err;
+```
+
+`sv_err` is captured **immediately after** the select/read sequence and
+restored **after** the cleanup calls. Walking every path that reaches line 184
+with `rc < 0`:
+
+| path | errno at line 174 |
+|---|---|
+| `select` returns -1 | the **select's** -- nothing between 158 and 174 can overwrite it |
+| `select` > 0, `read` (161) returns -1 | the **read's** -- `memcpy` does not set errno |
+| `select` returns 0 | `WRMSG` (168) may set errno, but **169 explicitly assigns `errno = EPERM`** afterwards -- and this path prints `HHC00135`, which is absent from every log |
+
+**There is no window between a failing call and the capture in which anything
+else can set errno.** So the printed value is the failing call's, and the
+number 4 is not residue. **This is the kickoff's outcome 1, and it retires the
+hypothesis that three refutations in a row were chasing a misread number.**
+
+### AND YET THE SET GROWS FROM TWO TO THREE -- §4.2's elimination was still incomplete
+
+§4.2 enumerated *"every call between the fork and the failure report"*. **The
+failure can be reported without any fork happening at all**, and that is the
+call nobody has examined:
+
+```
+  99      /* Try TUNTAP_ioctl first */
+ 100      rc = TUNTAP_IOCtl (fd, TUNSETIFF, (char *) hifr);
+ 104      if (0 > rc && errno == EINVAL)        <- guard 1
+ 108      if (0 > rc && errno == EPERM && ...)  <- guard 2, opens the hercifc block
+ 184      return rc;
+```
+
+At line 100 `TUNTAP_IOCtl` is a **plain `ioctl`** (`tuntap.h:218`; the redefine
+to `IFC_IOCtl` is at `tuntap.c:508`, *after* this function ends at 499) -- no
+wrapper, no retry, no errno handling. So:
+
+> **If the ioctl at line 100 fails with an errno that is neither `EINVAL` nor
+> `EPERM`, both guards are false, the `hercifc` block is skipped ENTIRELY, and
+> line 184 returns -1 carrying that errno to the message at line 458.**
+
+**Candidate 3 is therefore the `TUNSETIFF` ioctl itself returning `EINTR` -- in
+which case no child was ever forked, no handshake happened, and no wait was
+interrupted.** The whole `hercifc` story would be beside the point.
+
+**What bears on it, honestly:** `tunsetiff-probe.c` measured `TUNSETIFF` ->
+`EPERM`, 3 of 3, as the account Hercules runs under. That is evidence against
+candidate 3 **in a quiet context**; it does not exclude it under startup
+conditions, and whether this kernel can return `EINTR` from `TUNSETIFF` at all
+is **not established** -- settling it needs kernel source or `strace`, neither
+available here.
+
+**The honest set is `{ioctl, select, read}`.** `select` remains the likeliest;
+that is still not the same as established.
+
+### Which earlier conclusions this affects -- and which it does NOT
+
+**The three refuted signal candidates stand, and none was refuted for the wrong
+reason.** Each refutation is independent of *which* call was interrupted:
+
+- **SIGCHLD** -- `SigCgt` bit 17 clear; a child exiting cannot interrupt
+  anything, on any call.
+- **SIGSETXID** -- the motivating bit is NPTL boilerplate in every threaded
+  program on the box, and Hercules calls no `setuid`/`setgid`/`setgroups`.
+- **SIGHUP** -- a 4.10.0 build-line property, caught on 2 September when the
+  pair worked (and **unsupported rather than refuted**, per the §0 correction).
+
+**All three candidate calls fail with `EINTR`, and `EINTR` always implies a
+signal was delivered.** So the signal question is real under every branch, and
+Mike's two open questions keep exactly the weight they had. What candidate 3
+would change is not *whether* a signal arrived but *what it interrupted* -- and
+with it, whether `hercifc` was ever involved.
+
+### The instrument-fault tally, put in the record rather than left in a report
+
+Five faults in this investigation. **Four were caught by a control; one was
+caught by review, and saying which is the point.**
+
+| # | fault | caught by |
+|---|---|---|
+| 1 | `getcap` not on the non-interactive PATH -- an empty result would have read as "no capabilities" | **control** (a nonexistent-path probe, plus `tcpdump` as a known positive) |
+| 2 | `/var/log/dpkg.log` had zero entries in the date range, so "no package activity" was uninterpretable | **control** (a count over the same range), reported as **not checked** |
+| 3 | the quote-verification checker failed **closed** -- reported a present verbatim quote as missing, because it stripped whitespace but not `> ` markers | **control** (a phrase that should appear once, and did) |
+| 4 | an `awk` quoting error printed an empty interface list during a read-only confirmation | **control** (the reading was re-run rather than accepted) |
+| 5 | **"MVSCE-DEV started exactly once"** -- an artifact of `hercules -o` truncating the log at every start | **REVIEW, not a control.** The control that was run proved the search reached the files; it could not prove what period they covered. |
+
+Fault 3 is the one worth carrying forward: **a verification that fails closed
+would have had a correct document "fixed".** Fault 5 is the one worth being
+honest about: **it is the only one a control did not catch**, and the reason is
+that the control tested the wrong property.
+
+### Coverage limits of this round
+
+Source reading only, against `~/hercules/hyperion` at HEAD `59d8981c`, which is
+the tree the running binary was built from (version string match established in
+the addendum). Nothing here depends on machine state. Not established: whether
+the kernel can return `EINTR` from `TUNSETIFF`; which of the three candidate
+calls actually failed; and, still, which signal.
