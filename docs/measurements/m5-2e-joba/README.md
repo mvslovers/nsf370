@@ -362,3 +362,22 @@ only the *recording* is capped.
   separate "the slot was already busy" from "lost a simultaneous race"
   (ADR-0042); the stand runs `NUMCPU 2` so it is physically possible rather
   than merely defended against, but possible is not observed.
+
+---
+
+## ANNOTATION 2026-09-15 — the wire arm has since RUN, and §1.3's gap is closed
+
+**Appended, nothing above rewritten.** Every statement above remains true of
+*this* round, which is the point of leaving it alone: the wire arm did not run
+here and this directory's evidence says nothing about a protocol op reading the
+landing area.
+
+It has now run, on the same gate unchanged, on a stand whose interface was up:
+`wire=7 ok=7 dirty=0` on both clients, **A 19/19 and B 24/24, CC 0000**, with 14
+datagrams of 1024 bytes seen in the host's own `tcpdump` and `NSFUDP out 14` /
+`LNK1 out 16` reconciling exactly. **`docs/measurements/m5-2e-joba-wire/`.**
+
+So the "does NOT establish" row above — *a protocol op READING the landing
+area* — is **discharged there, not here**, and `awaiting-ctci-pair.md`'s item 2
+is closed with it. The other rows are untouched; in particular **d1's SELECT
+arms remain open** and are still #107's.
