@@ -255,3 +255,59 @@ every earlier record names, so `mvslog.txt` and `hercules.log` are there.
 | `run1-B-JOB00379.txt` | role B, CC 0000, 24/24 |
 | `run1-tcpdump-tun0.txt` | the host's capture, incl. the control pings |
 | `run1-stats-after.txt` | `F NSFS,STATS` after the run, 52 counters |
+
+---
+
+## ANNOTATION at review — §5's justification is corrected, and its form is too
+
+**Appended, nothing above rewritten.** The outcome in §5 stands: proceeding was
+correct, and every figure in it holds. What is corrected is **why**, and the
+shape the record gave it.
+
+### 1. "The value was stable" is WITHDRAWN as a reason
+
+§5's third bullet does not carry. Stability separates a settled level from a
+leak in progress; it says nothing about whether a settled level already
+*includes* inherited debt — **a retained anchor is perfectly stable.** Reasons
+one and two (the clean prior stop; the same anchor and same router EP across a
+clean `P`/`S` cycle) are direct evidence of no retention and are untouched.
+
+### 2. The size argument INVERTS at this magnitude — do not reuse Job B's
+
+Job B ruled on its own 4096-byte offset partly on size: *"a retained anchor is
+139264 bytes, **34 steps**"*, so one step cannot be one. **167936 is 41 steps,
+and 139264 fits inside it.** On size alone, an anchor is exactly what this
+discrepancy could be. It is excluded by the direct evidence above and by
+nothing else. **The size argument is valid only below one anchor and silently
+reverses above it** — which is why this paragraph exists rather than a
+cross-reference to Job B's.
+
+### 3. What actually carries: this is a GATE, not a measurement
+
+`LARGEST FREE BLOCK` does two different jobs, and which applies decides whether
+a fired stop clause can be proceeded past at all:
+
+| | the marker carries | a fired clause means |
+|---|---|---|
+| **GATE** (this round) | **anchor detection only** — `dirty=0`, `wire=7` and the assertion totals are not functions of free storage | proceed **iff** retention is refuted by direct evidence |
+| **MEASUREMENT** ((e); Job B) | **comparability** — every figure is read against other rounds', and the storage state is part of the configuration | **stop** |
+
+**Had this been Job B, the clause would have held and the round would have
+stopped** — same clause, same stand, same morning; only the purpose differs.
+That is what Job B did this week, correctly.
+
+### 4. The clause stands; it fired; the decision was to proceed
+
+`predictions.md`'s amendment ends by **re-basing P3 on 901120**, and that was
+the wrong form even though it preceded the run: **a stop clause amended in the
+same breath as it fires is no longer a stop clause.** The clause is not
+withdrawn, re-based or reworded. It fired. Proceeding past it was a **judgement
+of mine**, and `predictions.md` now records it as one, with both the original
+clause and the amendment left visible.
+
+### 5. The drift itself is now tracked, not left here
+
+Three movements of the entry reading on this stand — 1073152, 1069056, 901120 —
+only one of them explained. That is a recurring disturbance rather than
+something this round can close, and it is filed as an issue so it is not read
+once in a round record and forgotten.

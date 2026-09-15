@@ -178,3 +178,73 @@ one order of magnitude up: **observed, stable, unexplained.**
 needs is short. **P3's before/after comparison is re-based on 901120**: the
 round leaves the stand as it found it if the exit start reads 901120 again. The
 kickoff's locked discard condition is `NSF054W`, and it has not fired.
+
+---
+
+## THE CLAUSE STANDS. IT FIRED. THE DECISION WAS TO PROCEED ANYWAY.
+
+**Appended at review, nothing above rewritten** -- the original clause and the
+amendment both stay visible. This section replaces neither; it records what the
+two of them actually were.
+
+**The amendment above took the wrong form, and the form matters more than the
+outcome.** It is headed *"its REASON is refuted"* and ends by **re-basing P3 on
+901120** -- that is the clause being adjusted to fit the reading it fired on.
+Formally it was inside the rule (written before any job was submitted, original
+kept verbatim), but **a stop clause amended in the same breath as it fires is no
+longer a stop clause.** What it costs is the signal: a later reader sees a
+condition that was met rather than a judgement that was made.
+
+So, in the form it should have had from the start:
+
+**P3's stop clause STANDS, exactly as written.** *"A reading below ~933888 at
+entry means a retained anchor was inherited and the round stops before it
+starts."* Nothing about it is withdrawn, re-based or reworded.
+
+**IT FIRED.** The entry reading was **901120**.
+
+**THE DECISION WAS TO PROCEED ANYWAY**, and it is a judgement of mine, not a
+condition that turned out to be satisfied. Its reasons:
+
+1. **Retention -- the thing the clause exists to catch -- is positively
+   refuted.** The prior `P NSFS` was clean (`NSF830I`/`NSF043I`/`NSF044I`/
+   `NSF853I`/`NSF011I`/`IEF404I`, **no `NSF054W`**, the absence paired with five
+   present messages the same grep found), and a clean `P NSFS` / `S NSFS` cycle
+   returned the **same anchor `00AAF7C8` and the same router EP `00A84008`** --
+   the documented signature that nothing is retained.
+2. **This round is a GATE, not a measurement**, and that is what decides it --
+   see the note below. The free block is not an input to `dirty = 0` or to
+   `wire = 7`.
+
+**Reason 3 of the amendment -- "the value is stable, not decaying" -- is
+WITHDRAWN.** Stability distinguishes a settled level from a leak in progress;
+it says nothing about whether a level already includes inherited debt. A
+retained anchor is perfectly stable.
+
+### The size argument INVERTS here, and must not be reused
+
+Job B ruled on its own 4096-byte offset partly by size: *"a retained anchor is
+139264 bytes, **34 steps**"*, so a one-step discrepancy cannot be one. **That
+argument runs the other way at this magnitude.** 167936 is **41 steps**, and
+139264 fits inside it with room to spare -- so on size alone an anchor is
+exactly what 167936 could be.
+
+It is ruled out by the direct evidence in reason 1, and by nothing else.
+Anyone tempted to reach for Job B's arithmetic at a larger discrepancy should
+read this paragraph first: **the size argument is valid only below one anchor
+and silently reverses above it.**
+
+### Gate versus measurement -- what the marker is FOR
+
+`LARGEST FREE BLOCK` does two different jobs, and which one applies decides
+whether a fired clause can be proceeded past:
+
+| | what the marker carries | so a fired clause means |
+|---|---|---|
+| **a GATE** (this round; Job A) | **anchor detection only.** `dirty`, `wire`, the assertion totals -- none is a function of free storage | proceed **iff** retention is refuted by direct evidence, which is reason 1 |
+| **a MEASUREMENT** ((e); Job B) | **comparability.** Every figure is read against other rounds' figures, and the storage state is part of the configuration they are compared in | **stop** -- which is exactly what Job B did this week, correctly |
+
+**Had this round been Job B, the clause would have held and the round would
+have stopped.** That is not a hypothetical concession: it is the same clause,
+the same stand and the same morning, and the difference is only what the round
+was for.
