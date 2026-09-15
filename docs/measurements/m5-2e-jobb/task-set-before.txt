@@ -1,0 +1,11 @@
+=== BEFORE: the started-task set, read now, nothing started yet ===
+IEE102I 03.14.57 26.258 ACTIVITY 316
+00004 JOBS    00003 INITIATORS
+JES2     JES2     IEFPROC   V=V
+NET      NET      IEFPROC   V=V
+TSO      TSO      STEP1     V=V  S
+HTTPD    HTTPD    HTTPD     V=V
+00000 TIME SHARING USERS
+00000 ACTIVE  00008 MAX VTAM TSO USERS
+
+

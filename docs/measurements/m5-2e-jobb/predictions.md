@@ -134,3 +134,54 @@ available on demand, so a discarded run is a repeat, not a blocked round.
   is fresh; that is recorded in the CTCI document and is not this round's
   subject.
 - **A milestone flip.** Nothing here flips to proven; the M5-2 flip is Mike's.
+
+---
+
+# ADDED 2026-09-15, AFTER the P0 stop and BEFORE starting anything
+
+**Appended; nothing above edited.** The original predictions stand as written —
+P0 among them, and **P0 was falsified** (`NSF055I` read 1187840). This block is
+written before `UFSD` and `FTPD` are started and before the re-read.
+
+## The "before" set, read rather than reconstructed
+
+Taken at 03.14.57 MVS time, nothing started yet
+(`task-set-before.txt`):
+
+| task | state | recorded normal set |
+|---|---|---|
+| JES2 | UP | up |
+| NET | UP | up |
+| TSO | UP | up |
+| **UFSD** | **not up** | up |
+| HTTPD | UP | up |
+| **FTPD** | **not up** | up |
+| NSFS | not up | stopped |
+
+**All six checked, not only the two.** The difference is **exactly** `UFSD` and
+`FTPD` — there is no third missing task, so there is nothing further to report
+and nothing beyond those two will be started.
+
+## PB0 — the baseline prediction
+
+> **With `UFSD` and `FTPD` started and the rest of the recorded set up, a fresh
+> `S NSFS` will report `NSF055I ... LARGEST FREE BLOCK NOW 1073152` —
+> EXACTLY, not approximately.**
+>
+> **Falsified by any other value, including higher and including close.**
+
+**If it reads 1073152:** the 112 KB candidate is **confirmed by prediction
+rather than asserted**, which is worth more than the arithmetic that suggested
+it — the arithmetic only established that two absent STCs were of the right
+order, not that they were the cause. Job B proceeds.
+
+**If it reads anything else:** that is a **second finding**. Nothing further
+will be started, stopped or restarted to make the number move. The value and
+what was running when it was taken get recorded, and the round stops again.
+**Adjusting until the figure matches would undo exactly what the P0 stop got
+right this morning.**
+
+*Clause checked:* the tempting error here is treating "close" as confirmation.
+A value near 1073152 would mean the two STCs account for most but not all of
+the difference, which is a *different* claim from the one being tested and
+would leave an unexplained remainder. The prediction is an equality on purpose.
