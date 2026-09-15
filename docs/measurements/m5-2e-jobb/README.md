@@ -375,6 +375,14 @@ interval loses only mid-flight capture. `docs/measurements/m5-2e-jobb/swapwatch.
 derived from `64-3-1/nsfswatch.py`, which is left untouched as that round's
 artifact.
 
+**The reasoning is recorded rather than only the parameter, because the trade
+is round-specific.** A sampler that perturbs the quantity it samples is worse
+than a coarse one — but that is true *here* because this round measures
+throughput. **A round measuring something other than throughput should
+re-examine it and may well want the 3 s interval back**, and it can only
+re-examine a trade whose reason was written down. What 30 s costs is stated
+above and is the whole cost: mid-flight capture, not detection.
+
 ## The STC's own side
 
 After run 3 (`F NSFS,STATS`, post-`58dfaab` set): `SERVED=2108931`,
@@ -402,3 +410,81 @@ One emulator, `tun0` up, NSFS running, the recorded task set up.
 - **The concurrency ceiling** — two clients, not three, not 64.
 - **What the ≤ 8 KB pool residue is.**
 - **A milestone flip.** Nothing here flips to proven.
+
+---
+
+## ADDENDUM — the wake-amortisation mechanism is REFUTED, from data already captured
+
+**No re-run. No fourth arm.** Answered from the two `F NSFS,STATS` readings the
+round already took (their stdout was discarded at the time, but the Hercules
+console log captures console output regardless).
+
+### The question the record's own explanation did not answer
+
+The round explained how ≥ 2× is *possible*: serialised service does not imply
+serialised throughput, because a single client's rate is bounded by its own
+round trip. **That explains an unchanged per-client latency. It does not
+explain an improved one** — and per-client mean fell from 478 µs solo to 401 µs
+paired. Additional load shortening a client's own round trip needs a
+**mechanism**, and "the client is the limit" is not one.
+
+**The candidate:** the wake path. With the executive parked in a WAIT, each
+request costs a POST and a wake before it is served; with two clients there is
+more often work already queued, the executive is already running, and the wake
+is skipped. That would account for both observations at once — and `wakeposts`
+(`src/nsfsx.c:596`) counts **wake events**, so it is directly testable.
+
+### The attribution is exact, which is what makes blended readings usable
+
+NSFS was restarted between runs but **not** between a run's two arms, so each
+reading blends them. The blend is nonetheless attributable, because the served
+totals reconcile **exactly**:
+
+| instance | arms it covers | Σ served | `SERVED` |
+|---|---|---|---|
+| 1 | MSP + run 1 MS + run 1 MA/MB | 28040 + 634356 + 750154 + 750085 = **2162635** | **2162635** |
+| 3 | run 3 MS + run 3 MA/MB | 618014 + 745389 + 745528 = **2108931** | **2108931** |
+
+Exact to the request, both times. **The MSP job had to be included in instance
+1 to make it reconcile** — it ran on that same instance — and it does.
+
+### The verdict
+
+```
+instance 1   wakeposts/served = 2138782/2162635 = 0.9890
+instance 3   wakeposts/served = 2086369/2108931 = 0.9893
+```
+
+The per-arm split is not directly measured, but it is **bounded**. Within an
+arm `wakeposts <= served` (coalescing can only reduce the count; 64-1 measured
+`WAKEPOSTS == SERVED` exactly at small scale and below it at scale). So the
+paired arms' wake rate is at least `(W_total − S_solo) / S_paired`:
+
+| instance | paired wake rate ≥ | for the paired arms to have HALVED their wake rate, the solo arm would need |
+|---|---|---|
+| 1 | **0.9841** | **2.10 wake events per request served** |
+| 3 | **0.9849** | **2.17 wake events per request served** |
+
+**More than double the maximum ever observed for that counter.**
+
+> **REFUTED. Essentially every request still costs a wake in the paired arms —
+> at least 98.4 % of them. The second client is not amortising the wake, and
+> the superlinearity is something else.**
+
+**No replacement mechanism is proposed.** Two candidates have now been offered
+for this observation and one is refuted; proposing a third against no evidence
+is the fitted story this project has refused repeatedly. **The improved
+per-client latency under added load is recorded as an OPEN QUESTION with one
+mechanism eliminated**, which is worth more than a plausible answer.
+
+**And it changes nothing about the ceiling:** *the ceiling is unmeasured;
+nothing here licenses extrapolating past two.* Whatever `wakeposts` says, two
+clients is two clients.
+
+### Why this was answerable at all
+
+Because the counter existed before the question did. `wakeposts` was registered
+for a different round (64-1) and its source comment at `src/nsfsx.c:821`
+already names the shape being tested here — the executive serving without
+having been woken. **A counter kept past its round answered a question its
+round did not ask**, which is the argument for keeping them.
