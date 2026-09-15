@@ -3300,6 +3300,66 @@ place `docs/measurements/awaiting-ctci-pair.md`, because a precondition split ac
 footnotes in two files does not come back); the partial-write residue shape; a bypass of
 the ownership check (a source property); d1's SELECT arms (#107 assigns them to a d1 round);
 or hardware arbitration of a simultaneous `CS`. `docs/measurements/m5-2e-joba/`.
+**Job A §1.3's wire arm has since RUN, and the gap above is discharged (PR #119, docs-only,
+no source changed).** Same gate, unchanged, on a stand whose interface was up: `wire=7 ok=7`
+and `dirty=0` on both clients, **A 19/19 and B 24/24, CC 0000** — the totals moving 18→19 and
+23→24 being the discriminator, predicted in advance, since the wire branch carries two CHECKs
+where the skip branch carries one and a skipped arm therefore cannot present as a taken one.
+Corroborated independently rather than on the stack's word: the host's `tcpdump` shows 7
+datagrams per client's source port, each 1024 bytes, 15.000 s apart, each answered by an ICMP
+port-unreachable, and the counters reconcile exactly — `NSFUDP out 14`, `LNK1 out 16`
+(14 UDP + 2 replies to the control pings), `LNK1 in 16`, `NSFIP noroute 0`, `NSFSOC opens 5
+closes 5`. The capture instrument was validated with those pings BEFORE it was relied on, so a
+silent capture would have been a real null. **`awaiting-ctci-pair.md` item 2 is DISCHARGED and
+kept (not deleted — a live reference names it); item 1, d1 §2.3, is untouched and still #107's.**
+The round's entry CSA reading fired its own stop clause (901120 against Job B's 1069056) and
+was passed on a **judgement**, recorded as one: retention refuted directly (clean prior stop;
+same anchor and same router EP across a clean `P`/`S` cycle), and **Job A §1.3 is a GATE, not a
+measurement** — free storage is not an input to `dirty` or `wire`, so the marker's only job here
+is anchor detection. Two things the round corrected about its own reasoning: **"the value is
+stable" is withdrawn** (a retained anchor is perfectly stable), and **Job B's size argument
+INVERTS above one anchor** — 139264 is 34 quantisation steps, 167936 is 41, so 139264 fits
+inside the larger discrepancy and on size alone an anchor is exactly what it could be. Had this
+been Job B the clause would have held and the round would have stopped. The drift itself
+(1073152 → 1069056 → 901120, one movement explained) is **#120**, not a line in a round record.
+`docs/measurements/m5-2e-joba-wire/`.
+**M5-2 — Phase 2 request crossing. COMPLETE** (decisions locked by Mike 2026-09-04; **M5 itself
+stays in progress** — TCP hardening and docs remain). The application-to-stack request path
+crosses an address-space boundary: a client in its own address space issues socket verbs
+against sockets owned by the stack's address space, and the stack serves two clients at once —
+**multiplexed onto a serialised service, not concurrent service**, which stays a named open
+item — without either seeing, driving or destroying the other's sockets or app slot.
+**Gated by two jobs, reported and judged separately.** Job A (`TSTRQX2`), the exit gate —
+multiplexing with neither client starving, isolation of identity, and no cross-client
+contamination of the landing area, **each negative assertion paired with a control in the same
+run**. Job B (`TSTRQXC`), the first baseline — three valid runs, **none discarded**, the
+instrument's own gate passing before any measurement number was read.
+**Named unproven, each with an owner.** **d2 — UNKNOWN at shutdown:** decoupled from this flip
+and carried as a dated open item. (The d0 survey records the kickoff's escape hatch — *"that d2
+has grown into an investigation"* — as **not met**: d2 is a small change, pure C through `__cas`,
+no asm and no layout move. What decouples it is the decision it is blocked on, not its size.)
+**The design question is live:** force-reap flips `drained`, taking `nsfsx_stop`'s `else` branch
+and **unloading the router** — freeing storage a client can be parked in, which that branch's own
+comment (`src/nsfsx.c:688`) calls **"STRICTLY WORSE than leaking both"**. The 2026-08-22 decision
+was about the **slot**, never the module. **d1 §2.3, arms 1 and 2:** the stimulus behind them is
+unconfirmed, so the arms do not separate *"refused"* from *"resolved and idle"* (**#107**). Owned
+by a d1 round, **not by (e)**. The crossing-level ownership claim rests on 2.2/2.2b, which
+carries its own positive control.
+**Scaffolding, not an evidence deficit:** c3 retires the probe verbs — `QUERY` **promoted**
+(`src/nsfreqc.c` uses it); `ECHO`, `XFER`, `UNSTAGE` and `SLOT` retired **only once their gates
+have replacements**. **Eight live gates depend on them** — `TSTSVC`, `TSTUBUF`, `TSTDEATH`,
+`TSTXFW`, `TSTRQXF`, `TSTD1R`, `TSTRQXC`, `TSTRQX2` — **including both of this milestone's own
+instruments**. Obligation #4 stays **half-discharged**, as (c) recorded it.
+**Conditions on the (e) figures, which the numbers do not carry:** taken on a **freshly rebooted
+host**, with **one emulator** running, the **restored task set**, and a **known start order**.
+**No absolute free-storage figure is quoted**, because the entry reading has moved three times
+on this stand and only one of those movements is explained (**#120**).
+**Superlinear scaling is recorded and UNEXPLAINED.** Two clients reach **2.38–2.42×**, not the
+predicted under-2×. It does **not** contradict ADR-0042 §10 — serialised service does not imply
+serialised throughput, since one client's rate is bounded by its own round trip. The
+wake-path amortisation candidate was tested against `wakeposts` and **refuted**: at least
+**98.4 %** of paired-arm requests still cost a wake. **No replacement mechanism is proposed.**
+The ceiling is **unmeasured**, and nothing licenses extrapolating past two clients.
 [[nsf370-m5-2c2-orphan-map]]
 [[nsf370-80-fix-landing-area]]
 [[nsf370-m5-79-recovery-teardown]]
