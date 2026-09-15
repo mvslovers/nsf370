@@ -1,6 +1,6 @@
 # Properties awaiting a working CTCI pair
 
-**One item, deliberately, and it is not in a round folder.** Two rounds
+**One file, deliberately, and it is not in a round folder.** Two rounds
 independently reached a property they could not exercise because `tun0` was
 down, and each recorded it as a footnote in its own README. A precondition
 split across two footnotes in two files does not come back -- so it is
@@ -19,9 +19,16 @@ pair is down is a finding about the driving system and lives separately, in
 wire is broken" being read as an excuse for either. Fixing the wire does not
 discharge anything below; it only makes the runs possible.
 
+**Discharged entries are kept, marked, and not deleted.** A record elsewhere
+that points at "item 2" must still find something when it gets here, and an
+entry that vanishes on being closed reads afterwards as one that was never
+written.
+
 ---
 
-## 1. d1 §2.3 -- the SELECT arms' stimulus
+## OPEN
+
+### 1. d1 §2.3 -- the SELECT arms' stimulus
 
 `docs/measurements/m5-2-d1-select/README.md`, annotation 2026-09-03.
 
@@ -42,35 +49,41 @@ control and need no connect. Arm 3 is unaffected -- its stimulus is confirmed.
 
 **Owner:** a d1 round. #107 assigns it there, and **(e) does not cover it**.
 
-## 2. Job A §1.3 -- a protocol op reading `g_land`
-
-`docs/measurements/m5-2e-joba/README.md`.
-
-The bulk verb is a non-blocking `RECVFROM` on an empty rxq, answered
-`EWOULDBLOCK` before `udp_recv` touches `ubuf`, so what the round proves is the
-**transport's copy pair** -- in full, both directions, 428 822 calls with two
-clients alternating and `dirty=0`. The once-per-checkpoint `sendto` is the only
-case in which a protocol op would actually **read** the landing area, and it
-**did not run** (`wire=0 ... *** NO INTERFACE -- WIRE ARM DID NOT RUN ***`,
-asserted in positive form, corroborated by `LNK1 oerr 2`).
-
-What is needed: the same gate, unchanged, on a stand whose interface is up. The
-arm is already written and already asserts fully when the interface is present.
-
-**There is no wire-free substitute, and this was checked rather than assumed:**
-`src/nsfhost.c` -- the loopback/TUN driver that would otherwise serve -- is a
-**host-build replacement only**. `project.toml` maps `src/nsfhost_plat.c` ->
-`src/nsfhost.c` for the host build, and on MVS `nsfhost_plat.c` is a NULL-ops
-placeholder. On the stand, CTCI 0500/0501 is the only path to a device.
-
-**Owner:** whoever next runs Job A with the pair up. It costs one re-run of an
-unchanged gate, not a change to it.
+**Still open after 2026-09-15**, when the pair was up and item 2 below was run:
+that round drove Job A's gate only and deliberately did not touch these arms.
+A working wire is now a demonstrated condition on this stand rather than a
+hope, so what remains is scheduling the d1 round, not waiting for anything.
 
 ---
 
-## Neither of these is a reason to delay anything
+## DISCHARGED
+
+### 2. Job A §1.3 -- a protocol op reading `g_land` -- **CLOSED 2026-09-15**
+
+**Run and green:** `docs/measurements/m5-2e-joba-wire/`.
+
+The gap was that Job A's bulk verb is a non-blocking `RECVFROM` on an empty
+rxq, answered `EWOULDBLOCK` before `udp_recv` touches `ubuf`, so that round
+proved the **transport's copy pair** in full -- both directions, 428 822 calls,
+two clients alternating, `dirty=0` -- and nothing about a protocol op actually
+**reading** the landing area. The once-per-checkpoint `sendto` is that case,
+and it had not run (`wire=0 ... *** NO INTERFACE -- WIRE ARM DID NOT RUN ***`).
+
+It cost exactly what this entry predicted: **one re-run of an unchanged gate**,
+no source change. `wire=7 ok=7` and `dirty=0` on both clients, **A 19/19 and B
+24/24, CC 0000**, corroborated independently by 14 × 1024-byte datagrams in the
+host's own `tcpdump` and by `NSFUDP out 14` / `LNK1 out 16` on the STC.
+
+*Kept rather than deleted* because `m5-2e-joba/README.md` names "item 2" in its
+body text, and because the entry is the worked example of the membership
+criterion above: written assertions, one missing precondition, one re-run.
+
+---
+
+## Neither of these was a reason to delay anything
 
 Both properties are **additional confirmation of conclusions that already
 stand on other evidence** -- d1's ownership claim on 2.2/2.2b, Job A's §1.3 on
 the transport copy pair. They are recorded so that "we meant to run that" does
-not quietly become "we ran that".
+not quietly become "we ran that" -- which is also why item 2's closure names
+the round that ran it rather than simply disappearing.
