@@ -3311,7 +3311,8 @@ port-unreachable, and the counters reconcile exactly — `NSFUDP out 14`, `LNK1 
 (14 UDP + 2 replies to the control pings), `LNK1 in 16`, `NSFIP noroute 0`, `NSFSOC opens 5
 closes 5`. The capture instrument was validated with those pings BEFORE it was relied on, so a
 silent capture would have been a real null. **`awaiting-ctci-pair.md` item 2 is DISCHARGED and
-kept (not deleted — a live reference names it); item 1, d1 §2.3, is untouched and still #107's.**
+kept (not deleted — a live reference names it). Item 1, d1 §2.3, was untouched by that round and
+has since been discharged by its own — see below.**
 The round's entry CSA reading fired its own stop clause (901120 against Job B's 1069056) and
 was passed on a **judgement**, recorded as one: retention refuted directly (clean prior stop;
 same anchor and same router EP across a clean `P`/`S` cycle), and **Job A §1.3 is a GATE, not a
@@ -3334,16 +3335,36 @@ multiplexing with neither client starving, isolation of identity, and no cross-c
 contamination of the landing area, **each negative assertion paired with a control in the same
 run**. Job B (`TSTRQXC`), the first baseline — three valid runs, **none discarded**, the
 instrument's own gate passing before any measurement number was read.
-**Named unproven, each with an owner.** **d2 — UNKNOWN at shutdown:** decoupled from this flip
+**Named unproven at the flip, with owners — and ONE OF THE TWO HAS SINCE BEEN DISCHARGED, which
+is recorded rather than quietly dropped, because the flip was written when both were open.**
+**d2 — UNKNOWN at shutdown:** decoupled from this flip
 and carried as a dated open item. (The d0 survey records the kickoff's escape hatch — *"that d2
 has grown into an investigation"* — as **not met**: d2 is a small change, pure C through `__cas`,
 no asm and no layout move. What decouples it is the decision it is blocked on, not its size.)
 **The design question is live:** force-reap flips `drained`, taking `nsfsx_stop`'s `else` branch
 and **unloading the router** — freeing storage a client can be parked in, which that branch's own
 comment (`src/nsfsx.c:688`) calls **"STRICTLY WORSE than leaking both"**. The 2026-08-22 decision
-was about the **slot**, never the module. **d1 §2.3, arms 1 and 2:** the stimulus behind them is
-unconfirmed, so the arms do not separate *"refused"* from *"resolved and idle"* (**#107**). Owned
-by a d1 round, **not by (e)**. The crossing-level ownership claim rests on 2.2/2.2b, which
+was about the **slot**, never the module. **So d2 is now the ONLY named-unproven property of
+M5-2.**
+**d1 §2.3, arms 1 and 2 — DISCHARGED 2026-09-15 (PR #122), the same day as this flip.** As named
+here it was open: the stimulus behind the arms was unconfirmed, so they did not separate
+*"refused"* from *"resolved and idle"* (**#107**). Its own d1 round then ran it — **not (e)**,
+which never covered it — and both arms are green and non-vacuous: **A CC 0000 (9/9), B CC 0000
+(13/13)**, with A polling its OWN descriptor through the same SELECT path B is denied and
+reporting `READY=0` for eight polls, then `READY=1` from the second the host connected, then
+`READY=1` at its final poll — so A was ready **across both arms**. `foreign.ready=0` with
+`own.ready=2` served; the parked arm stayed `rc=0 ready=0` while **two graduations completed
+inside the 20 s park**, which is the `nsfsel_on_notify` re-scan path the annotation said had
+never been driven. Corroborated on the wire (three 3WHS, **zero RSTs**) and by the STC
+(`passiveopen 3`, `established 3`). **No `role_b` assertion changed — only the window.** Two
+things that round established are worth carrying: a **passive child takes a socket-table slot**
+(`tcp_child_create` → `soc_create`), so a connect before B allocates its own socket makes B's
+`own - 1` derive **the child** — and it would have gone GREEN, the child being foreign to B too,
+while testing a non-listener for which `tcp_poll` reports not-ready to its owner as well; and
+**"A ready INSIDE the arm's window" is unsatisfiable** — arm 2's window is exactly when B's
+parked SELECT holds `g_busy` — so the evidential form is a **bracket** plus monotonicity, whose
+validity condition (no RST dequeuing a child) is checked, not assumed. `awaiting-ctci-pair.md`
+now has **no open entry**. The crossing-level ownership claim still rests on 2.2/2.2b, which
 carries its own positive control.
 **Scaffolding, not an evidence deficit:** c3 retires the probe verbs — `QUERY` **promoted**
 (`src/nsfreqc.c` uses it); `ECHO`, `XFER`, `UNSTAGE` and `SLOT` retired **only once their gates
