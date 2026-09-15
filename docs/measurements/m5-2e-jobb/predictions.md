@@ -185,3 +185,95 @@ right this morning.**
 A value near 1073152 would mean the two STCs account for most but not all of
 the difference, which is a *different* claim from the one being tested and
 would leave an unexplained remainder. The prediction is an equality on purpose.
+
+---
+
+# ADDED 2026-09-15, AFTER the ruling and BEFORE any run
+
+**Appended; nothing above edited.** PB0 stands as written and stands
+**falsified** — that is not revised.
+
+## The ruling, with its substance, because it is a decision and not a drift
+
+**Proceed.** The equality was **overspecified**, for two reasons that are
+measurements rather than interpretations:
+
+1. **The marker's purpose is "no retained anchors going in" ((e) §5.4), and a
+   retained anchor is a MEASURED quantity: 139264 bytes** — pool plus router,
+   from the Stage 2 round. Today's difference is **4096 bytes, one quantisation
+   step. An anchor would be 34 steps.** The condition's purpose is satisfied by
+   a factor of 34. That is an order-of-magnitude comparison, not a judgement.
+2. **`LARGEST FREE BLOCK` measures the largest CONTIGUOUS block — a
+   fragmentation quantity, not an occupancy total** — so it depends on the
+   order in which storage was obtained and released. **That order is
+   demonstrably different today:** host reboot, `HTTPD` started by hand
+   immediately after the IPL so the system could be reached, `UFSD` and `FTPD`
+   started roughly nine minutes later. The equality was a proxy that held only
+   while the start order was constant.
+
+**THE RESIDUE IS RECORDED AS RESIDUE: we do not know what the ≤ 8 KB is.** The
+round proceeds because the condition the marker protects is satisfied with room
+to spare — **not because the discrepancy is explained.** "Resolved" would be
+false.
+
+The instrument characterisation stands as written: `nsfsx_csa_largest` doubles
+until `getmain` fails, refines `while (hi - lo > 4096U)` and returns `lo`, so
+1069056 and 1073152 are adjacent steps and one step apart means anywhere from
+1 to 8191 bytes. **It does not confirm PB0.**
+
+## The entry condition, restated by purpose (replaces the equality for this round)
+
+- **Entry:** the reading is within a few quantisation steps of the clean
+  expectation — no retained anchor, which would sit orders of magnitude above.
+  **1069056 satisfies this.**
+- **Per run:** the before/after delta remains the real retention test, and an
+  `NSF054W` **discards** that run rather than footnoting it. Unchanged.
+- **To record:** the value, the start order, and **explicitly that this
+  baseline was taken under a different start order than the 1073152 series**
+  (`40-chk/`, `40-ident/`, `stage-a.md`).
+
+## PB1 — the 4 KB gets a TEST, not a shrug
+
+> **If the per-run `LARGEST FREE BLOCK` delta is ZERO across all three runs,
+> the 4096-byte offset is ESTABLISHED as a start-order artifact rather than
+> assumed.**
+>
+> **Falsified if** any run shows a non-zero delta — which would mean the pool
+> reading moves within a round, and the offset is then not merely a
+> fragmentation artifact of the start order but something that also varies
+> under load. That would be a finding in its own right.
+
+*Clause checked:* a zero delta does **not** tell us what the 8 KB-or-less
+is; it tells us the reading is **stable within a round**, which is what makes
+"start-order artifact" the remaining explanation rather than one of several.
+The residue stays residue either way.
+
+## PB2 — the instrument gate (MSP) passes before any number is believed
+
+Unchanged from P1 above, restated because it now runs at the 300 s window
+rather than a trial shape: min ≥ 9 ms, mean ≥ 9 ms, **every bucket below 5 ms
+empty**, and the pace reported ARMED.
+
+**If MSP fails, no measurement number from this round is believed.**
+
+## PB3 — swap: no transition in any run
+
+`OUCBQFL` constant, **`ASCBSTOR` constant**, `OUCBSWC` constant, `NSW` set
+throughout (NSFS is `DONTSWAP`-pinned, ADR-0044).
+
+**A run with a transition is DISCARDED, not corrected**, and the transition is
+**separately a finding about ADR-0044**.
+
+*Clause checked:* `ASCBSTOR` is sampled because `QFL` alone cannot carry it — a
+fast out-and-back leaves `QFL` looking clean, and a completed cycle shows
+retrospectively in `ASCBSTOR`/`OUCBSWC`. **Sampling is at 30 s, not the
+original 3 s, because the sampler reads through HTTPD on the guest being
+measured** and this round measures throughput; the coarse interval still
+detects a completed cycle and only loses mid-flight capture.
+
+## PB4 — the shape of the numbers (unchanged from P2/P3 above)
+
+Both clients progress in every interval; combined two-client throughput
+**exceeds solo and is less than 2×** solo. Stage a's trial saw ~2.4× and
+recorded it explicitly as *a thing to test, not a result*; it is quoted, not
+adopted. **Falsified** by ≥ 2× (a finding about ADR-0042 §10) or by ≤ solo.
