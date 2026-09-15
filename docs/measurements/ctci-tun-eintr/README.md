@@ -996,3 +996,111 @@ The `tuntap.c` decision remains Mike's, and it is now a decision about a defect
 **whose triggering call is one of three**. That is a sharper statement of it
 than this document began with, and it is the most this investigation can
 honestly offer.
+
+---
+
+# THE PREDICTION IS FALSIFIED — 2026-09-15
+
+**Appended; nothing above rewritten.** Docs only. Mike rebooted the host this
+morning and started **only `MVSCE-DEV`**; the observations below are his,
+verbatim, and **some of them cannot be taken again**.
+
+## The prediction, quoted verbatim, and marked
+
+> **PREDICTION: CTCI will STILL FAIL after a reboot.** No Hercules binary
+> carries a capability and none is given one by any supported arrangement
+> (`cap_net_admin` goes to `hercifc`), so creating a device still requires the
+> `hercifc` path, and that path is unchanged.
+
+**FALSIFIED.** After the reboot:
+
+```
+4: tun0: <POINTOPOINT,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UNKNOWN mode DEFAULT group default qlen 500
+    link/none  promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535
+    tun type tun pi off vnet_hdr off persist off addrgenmode random ...
+
+09:51:31 HHC00901I 0:0500 CTCI: Interface tun0, type TUN opened
+```
+
+**Both premises remain true and the pair comes up anyway.** No binary acquired
+a capability; `cap_net_admin` still goes to `hercifc`; the device-creating path
+is unchanged. **Therefore neither premise was the cause** -- the prediction was
+not wrong about the premises, it was wrong to think they were what mattered.
+
+## THE FIRST POSITIVE STATEMENT THIS INVESTIGATION HAS PRODUCED
+
+Everything in this document until now said where the cause is **not**. This
+says where it **is**.
+
+| across the reboot | |
+|---|---|
+| **unchanged** | the binary, its capabilities, the setuid bit, `hercifc`, the configuration, the instance, the start script -- every axis this record examined |
+| **changed** | the host's **running state** |
+
+> **The cause was in running state, and nowhere else.**
+
+**And it fits the window that constrained this from the start.** Uptime was 36
+days and spanned both the working and the failing periods, so whatever appeared
+between 2 and 3 September **arose in the running system, persisted until the
+reboot, and is now gone.** That is why five candidates -- all of them files,
+builds or configuration -- were refuted one after another: they were the wrong
+kind of thing.
+
+**One reading here had never been taken before, and it closes a gap:** on a
+host up 2 minutes, **before** Hercules started, `ip -d link` and
+`ls /sys/class/net/` agree on `lo`, `ens18`, `docker0` and nothing else. Every
+previous reading was taken with Hercules already running. So **nothing in the
+boot path creates a TUN device** -- no systemd unit, no network fragment, no
+script -- and any device must come from Hercules via `hercifc`.
+
+## The latent-device hypothesis: CLOSED BY OBSERVATION
+
+`ip -d link` reports **`persist off`**. The device is created fresh by Hercules
+at each start and does not survive it.
+
+So the persistent-device story is not merely unsupported by file evidence --
+**it is refuted by a reading**, which supersedes and strengthens the
+configuration-form refutation recorded earlier. **Fifth refuted candidate, and
+the only one closed by an observation rather than by an argument.**
+
+## What is NOT to be done, and why
+
+**The cause is not to be investigated further.** It was in running state, the
+reboot destroyed it, and it is no longer observable. Any hypothesis offered now
+**could not be tested** -- which is exactly the fitted story this record has
+refused five times. Refusing a sixth is the same discipline, not a new one.
+
+**`~/hercules/hyperion` stays untouched.** The `EINTR`/no-retry finding stands
+on its own as an upstream defect, and its triggering call is still one of
+`{ioctl, select, read}`. The `tuntap.c` decision remains Mike's and is now
+**further from urgent, not closer**.
+
+## What would reopen it, and what to capture at that moment
+
+**Reopening condition: the failure returns.** Nothing else reopens it.
+
+If it does, the thing to capture **before any reboot** is what the earlier
+round's §4 could not get -- **the live process state while it is failing**:
+
+- `/proc/<pid>/` of the failing instance: `environ`, `cwd`, `exe`, `limits`,
+  `status` (`SigCgt`, `SigBlk`, `SigIgn`), and the **full parent chain**.
+- Its **open descriptors**, `/proc/<pid>/fd`, at the moment of failure.
+- `ip -d link`, `ip tuntap list` and `/sys/class/net/` **before** the start and
+  again **after** it, which is the pairing this morning supplied for the first
+  time.
+- Anything else on the box holding `/dev/net/tun`, and the system-wide process
+  list -- **the running state is the subject now**, so breadth beats depth.
+- **`strace` on the startup window if it is available by then**, which remains
+  the one instrument that would discriminate `{ioctl, select, read}`.
+
+Written down now so the next occurrence is not spent the way this window nearly
+was.
+
+## A NEW PERISHABLE, and it reorders what follows
+
+**The wire is now perishable.** It works because the running state is fresh. If
+the cause returns, `tun0` goes with it and **everything in
+`docs/measurements/awaiting-ctci-pair.md` is blocked again.**
+
+That is the argument for the wire round following immediately after the (e)
+measurement round, with nothing in between.
