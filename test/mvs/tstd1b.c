@@ -41,7 +41,10 @@
 
 #define D1B_SRC      0xC0A8C801u
 #define D1B_A_PORT   3011u
-#define D1B_HOLD_HS  6000u              /* A holds ~60 s                      */
+#define D1B_POLL_HS   200u              /* A polls its own readiness every 2 s*/
+#define D1B_POLLS     90                /* 90 x 2 s = ~180 s of hold          */
+#define D1B_ARMWAIT_HS 800u             /* B waits 8 s for the connect to land*/
+#define D1B_PARK_S      20u             /* arm 2's park: the EDGE must land   */
 #define D1B_CC_SKIP  20
 #define D1B_SWEEP_N  64                 /* the whole socket table             */
 #define D1B_W_PORT   3013u              /* arm 3: the parker's listener       */
@@ -89,9 +92,87 @@ static int role_a(void)
     /* The facade number is A's; what B has to guess is the INTERNAL descriptor,
      * which A does not see. Announce readiness, not the secret. */
     wtof("TSTD1B: A HOLDING SOCKET (facade %d) -- B MAY RUN NOW", (int)s);
-    printf("  A holding facade socket %d for ~60 s\n", (int)s);
+    printf("  A holding facade socket %d, polling its OWN readiness\n", (int)s);
 
-    d1b_pause(D1B_HOLD_HS);
+    /* ---- A IS B'S POSITIVE CONTROL, AND THIS LOOP IS HOW IT SAYS SO -------
+     *
+     * The #107 annotation discarded arms 1 and 2 for want of a stimulus: the
+     * record showed B's SELECT reporting not-ready and NOTHING showing A was
+     * ever ready, so "refused" and "resolved and idle" read identically.  The
+     * strongest available control is not the wire and not the operator's
+     * timing -- it is A itself, reporting the SAME socket READY, through the
+     * SAME code path B is denied.
+     *
+     * A 0/0 poll NEVER parks (nsfsel_dispatch completes it immediately when
+     * nothing is ready), so this cannot wedge the serialised service the way a
+     * blocking SELECT would.  Each poll is also the ownership check passing in
+     * the POSITIVE direction, for free.
+     *
+     * A DOES NOT ACCEPT.  A listener is read-ready on a non-empty acceptq
+     * (tcp_poll, src/nsftcp.c:2142-2147); accepting would drain it and destroy
+     * the very stimulus B is being tested against.
+     *
+     * THE NOT-READY LINES BEFORE THE CONNECT ARE THIS INSTRUMENT'S OWN
+     * NEGATIVE CONTROL.  They show the poll can say NO, so a later YES is a
+     * reading rather than the only thing it can print.  A poll loop that only
+     * ever printed READY would be indistinguishable from one wired to a
+     * constant (CLAUDE.md 8.5).
+     *
+     * WHY THIS CANNOT SAMPLE *INSIDE* ARM 2's WINDOW, and why that is sound:
+     * B's parked SELECT holds g_busy for the whole park -- service is
+     * serialised (ADR-0042 10) -- so a poll A issues during the park is
+     * dispatched only after it.  Measured, not assumed: #101 Stage 2 recorded
+     * V unserved while W was parked, SERVED frozen 4 -> 4.  The evidence is
+     * therefore a BRACKET -- ready before the arm, ready after it, and nothing
+     * in between able to clear it, because the acceptq is never drained (A
+     * never accepts; B cannot accept A's socket, which is the very property
+     * under test; A closes only below).  Monotone, so the bracket implies the
+     * interior. */
+    {
+        UINT rmask;
+        int  i, r, seen_ready = 0, last_ready = 0;
+
+        for (i = 0; i < D1B_POLLS; i++) {
+            rmask = mask_of(s);
+            r = (int)nsf_select(s + 1, &rmask, NULL, NULL, 0, 0);
+            last_ready = (r > 0 && (rmask & mask_of(s)) != 0u);
+            if (last_ready && !seen_ready) {
+                seen_ready = 1;
+                printf("  A POLL %d: READY (rc=%d) -- the stimulus has"
+                       " ARRIVED\n", i, r);
+            }
+            /* Every poll goes to the console, because the BRACKET is what the
+             * record needs and the console log is the one clock both roles
+             * share.  SYSPRINT alone is lost if the job is cancelled. */
+            wtof("TSTD1B: A POLL %d RC=%d READY=%d", i, r, last_ready);
+            d1b_pause(D1B_POLL_HS);
+        }
+
+        printf("  A polled %d times: ever-ready=%d, ready-at-last-poll=%d\n",
+               D1B_POLLS, seen_ready, last_ready);
+
+        /* NOT A PRODUCT ASSERTION -- A PRECONDITION ON THE STAND.  If nobody
+         * ever connected, B's arms had no stimulus and their results are
+         * unreadable.  That is the stand's failure, not the stack's, so it is
+         * a SKIP (CC 20) and not a FAIL (CC 1) -- the TSTRQX2 no-interface
+         * idiom.  Reporting it as a failure would point at the product for a
+         * missing host connect. */
+        if (!seen_ready) {
+            printf("  A WAS NEVER READY -- nobody connected to port %u, so B's"
+                   " arms had no stimulus and CANNOT be interpreted.\n",
+                   (unsigned)D1B_A_PORT);
+            wtof("TSTD1B: A NEVER READY -- NO STIMULUS, GATE SKIPPED");
+            (void)nsf_close(s);
+            (void)nsf_termapi();
+            return -2;                  /* main() maps this to CC 20          */
+        }
+
+        CHECK(seen_ready,
+              "A: saw its OWN descriptor READY -- the stimulus is in evidence");
+        CHECK(last_ready,
+              "A: still ready at the FINAL poll -- with the acceptq never"
+              " drained, that brackets both of B's arms");
+    }
 
     /* A's own socket must still be A's, and still LISTENING, at the end -- the
      * check must not have broken the owner while refusing everyone else.
@@ -267,6 +348,30 @@ static int role_b(void)
     CHECK_EQ((long)f_err, (long)u_err,
              "2.2b: foreign and never-existing return the SAME errno");
 
+    /* ---- THE STIMULUS IS FIRED HERE, AND THE ORDER IS LOAD-BEARING -------
+     *
+     * NOT EARLIER, and this is the round's first finding rather than a
+     * scheduling choice.  tcp_child_create (src/nsftcp.c:1397) calls
+     * soc_create for EVERY incoming connection, so a held-open connect
+     * consumes a table index.  A connect made before B allocated its own
+     * socket would insert a child BETWEEN A and B -- A 0, child 1, B 2 -- and
+     * the `own - 1` derivation above would then name THE CHILD, not A's
+     * listener.
+     *
+     * It would have gone green.  The child carries A's apptok, so it is
+     * foreign to B and every refusal assertion below would still pass, while
+     * the round silently tested the wrong socket -- and against a NON-LISTENER,
+     * for which tcp_poll reports not-ready to its OWNER too, making arm 1
+     * vacuous in a brand-new way.
+     *
+     * So B announces, and the host connects only now.  The derivation and
+     * every assertion below are untouched; only the window moves. */
+    wtof("TSTD1B: B SWEEP DONE A-DESC %08X -- CONNECT TO A NOW",
+         (unsigned)a_desc);
+    printf("  waiting %u s for the connect to land and A to observe it\n",
+           (unsigned)(D1B_ARMWAIT_HS / 100u));
+    d1b_pause(D1B_ARMWAIT_HS);
+
     /* ---- 2.3 SELECT, POLL PATH: A's real descriptor plus B's own --------- */
     {
         NSFRQE     r;
@@ -308,7 +413,12 @@ static int role_b(void)
         memcpy(r.eye, NSFRQE_EYE, 4);
         r.fn = (USHORT)RQ_SELECT; r.ubuf = it;
         r.ulen = 1u * (UINT)sizeof(NSFSELITEM);   /* BYTES (ADR-0047) */
-        r.p1 = 8u;                              /* 8 s: it must PARK          */
+        /* THE PARK IS WIDENED 8 -> 20 s, AND IT IS THE WINDOW, NOT AN
+         * ASSERTION.  Arm 2's discriminating stimulus is an EDGE -- a poke
+         * arriving WHILE B is parked -- and this round is one-shot: a missed
+         * edge is a discarded arm, not a re-run.  Buy the margin by
+         * construction, not by luck.  rc and ready below are unchanged. */
+        r.p1 = D1B_PARK_S;                      /* it must PARK               */
         r.p3 = SEL_F_TIMED;
         nsfreq_call(&r);
         printf("  SELECT parked: rc=%d errno=%d ready=%u\n",
@@ -437,6 +547,16 @@ int main(int argc, char **argv)
         wtof("TSTD1B: NO ROLE -- SKIPPED");
         return D1B_CC_SKIP;
     }
-    (void)rc;
+    /* A ROLE THAT COULD NOT RUN MUST NOT REPORT A PASS.  role_a returns -2
+     * when nobody ever connected: its earlier CHECKs all passed, so
+     * mbt_test_summary would answer 0 and a stimulus-less run would read as a
+     * green gate.  Map it to the file's existing skip code instead -- the
+     * third state, not a second flavour of success (CLAUDE.md 8.5). */
+    if (rc == -2) {
+        printf("=== TSTD1B: GATE SKIPPED -- CC %d, NOT a pass ===\n",
+               D1B_CC_SKIP);
+        wtof("TSTD1B: GATE SKIPPED -- CC %d, NOT a pass", D1B_CC_SKIP);
+        return D1B_CC_SKIP;
+    }
     return mbt_test_summary("TSTD1B");
 }

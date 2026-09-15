@@ -5,7 +5,16 @@
 //*
 //* TWO REAL ADDRESS SPACES.  Submit TSTD1BA first, wait for its console line
 //*   TSTD1B: A HOLDING SOCKET ... -- B MAY RUN NOW
-//* then submit TSTD1BB.  A holds its socket ~60 s, which is B's window.
+//* then submit TSTD1BB.  A holds ~180 s, polling its OWN readiness.
+//*
+//* B ANNOUNCES ITS OWN STIMULUS.  After the sweep and its own socket, B emits
+//*   TSTD1B: B SWEEP DONE A-DESC ... -- CONNECT TO A NOW
+//* and waits 8 s.  The host driver (d1stim.py) connects to A on that marker,
+//* which makes A's listener read-ready; it connects twice more inside B's
+//* 20 s park, so the arm-2 re-scan path is driven by a real readiness EDGE.
+//* Without that driver both SELECT arms are unreadable -- they cannot tell
+//* "refused" from "resolved and idle", which is exactly what the 2026-09-03
+//* annotation on docs/measurements/m5-2-d1-select/ says.
 //*
 //* B sweeps the WHOLE internal descriptor space (gen<<16)|idx straight into
 //* the request, bypassing its own facade table -- the facade cannot NAME a

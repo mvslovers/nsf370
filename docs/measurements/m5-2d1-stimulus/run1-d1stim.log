@@ -1,0 +1,13 @@
+2026-09-15 16:08:02.973  START  log=/home/mike/MVSCE-DEV/mvslog.txt peer=192.168.200.1:3011 deadline=420s
+2026-09-15 16:08:02.974  watching from byte 80069 (end of file) -- earlier runs cannot trigger us
+2026-09-15 16:08:17.582  SAW A HOLDING  (watcher POSITIVE CONTROL: it can match) | FFFF  9.08.17 JOB  384  +TSTD1B: A HOLDING SOCKET (facade 0) -- B MAY RUN NOW
+2026-09-15 16:08:33.192  TRIGGER 1 (B swept, A-desc announced) | FFFF  9.08.33 JOB  385  +TSTD1B: B SWEEP DONE A-DESC 00010000 -- CONNECT TO A NOW
+2026-09-15 16:08:33.197  CONNECT #1/pre-arm -> 192.168.200.1:3011 OK  (local port 36440, HELD OPEN)
+2026-09-15 16:08:41.202  TRIGGER 2 (B is parking) -- PARK WINDOW OPENS NOW | FFFF  9.08.41 JOB  385  +TSTD1B: PARKING SELECT ON 00010000 -- CONNECT TO A NOW
+2026-09-15 16:08:41.203  CONNECT #2/EDGE t+0 -> 192.168.200.1:3011 OK  (local port 35500, HELD OPEN)
+2026-09-15 16:08:44.204  CONNECT #3/EDGE t+3 -> 192.168.200.1:3011 OK  (local port 35506, HELD OPEN)
+2026-09-15 16:08:44.204  park-window connects done; holding everything open
+2026-09-15 16:09:03.214  PARK WINDOW CLOSES | FFFF  9.09.03 JOB  385  +TSTD1B: PARKED SELECT RC=0 READY=0
+2026-09-15 16:09:03.214  B DONE -- holding open a further 30 s for A's final polls
+2026-09-15 16:09:33.235  deadline reached; fired_park_connects=True held=3
+2026-09-15 16:09:33.235  END (sockets closed cleanly -- FIN, never RST)

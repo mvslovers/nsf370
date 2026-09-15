@@ -28,7 +28,25 @@ written.
 
 ## OPEN
 
-### 1. d1 §2.3 -- the SELECT arms' stimulus
+**Nothing.** Both entries below are discharged; the file is kept because two
+live records name their item numbers in body text, and because the membership
+criterion above is worth having when the next one arrives.
+
+---
+
+## DISCHARGED
+
+### 1. d1 §2.3 -- the SELECT arms' stimulus -- **CLOSED 2026-09-15**
+
+**Run and green:** `docs/measurements/m5-2d1-stimulus/`. A **CC 0000 (9/9)**,
+B **CC 0000 (13/13)**. A's own SELECT reports the **same socket READY** across
+both of B's arms -- `READY=0` for eight polls, `READY=1` from the second the
+host connected, `READY=1` at the final poll -- so `foreign.ready=0` is a refusal
+and not an idle listener. Corroborated on the wire (three 3WHS, **zero RSTs**)
+and by the STC (`NSFTCP passiveopen 3`). Arm 2's re-scan path was driven by two
+graduations **inside** the 20 s park. No `role_b` assertion changed.
+
+*The original entry follows, unedited, because it states what was wrong.*
 
 `docs/measurements/m5-2-d1-select/README.md`, annotation 2026-09-03.
 
@@ -54,9 +72,9 @@ that round drove Job A's gate only and deliberately did not touch these arms.
 A working wire is now a demonstrated condition on this stand rather than a
 hope, so what remains is scheduling the d1 round, not waiting for anything.
 
----
+*(That d1 round ran the same day -- see the closure above.)*
 
-## DISCHARGED
+---
 
 ### 2. Job A §1.3 -- a protocol op reading `g_land` -- **CLOSED 2026-09-15**
 
