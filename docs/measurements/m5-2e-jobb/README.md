@@ -250,3 +250,241 @@ NSFS running (started for the reading and deliberately not recycled), the
 recorded normal set up, one emulator, `tun0` up. **No run of any arm was
 attempted in this round either** — no `MSP`, no `MS`, no `MA`/`MB`, and no swap
 instrumentation, because there was nothing to instrument.
+
+---
+
+# THE ROUND RAN — 2026-09-15
+
+**Appended; nothing above rewritten.** Both earlier stops stand as recorded.
+Entry condition restated by purpose (the ruling, with its substance, is in
+`predictions.md` and was written before any run).
+
+**Proof kind: LIVE.** The host figure quoted elsewhere is a no-regression check
+and is not part of this round.
+
+## Conditions, recorded because the numbers do not carry them
+
+| | |
+|---|---|
+| host | rebooted 2026-09-15 ~09:49 |
+| emulators | **ONE** — `MVSCE-DEV`; the other four not started |
+| started tasks | JES2, NET, TSO, HTTPD, UFSD, FTPD (the recorded normal set, restored) |
+| **start order** | **HTTPD by hand immediately after the IPL; UFSD and FTPD ~9 minutes later.** This baseline was taken under a **DIFFERENT START ORDER** than the 1073152 series (`40-chk/`, `40-ident/`, `stage-a.md`). |
+| entry pool | **1069056** — within one quantisation step of the clean expectation; a retained anchor is 139264 bytes, 34 steps |
+| counters | post-`58dfaab` set; **no reading from before it is comparable** |
+| instrument | `zowe` via a Node 22 wrapper (see above); `make` unaffected |
+
+## PB2 — the instrument gate PASSED, so the numbers are believed
+
+`MSP`, 300 s: pace **ARMED** at 1 cs, min **10442 µs**, mean **10691 µs**, max
+13834 µs, and **0 samples below 5 ms**. 93 served/s under the pace.
+
+**The gate ran first and no measurement number was read before it passed.**
+
+## The three runs
+
+Each run = one solo arm (`MS`) then one two-client pair (`MA`/`MB`), 300 s
+window, 60 s discarded, **240 s reported**. NSFS was stopped and restarted
+between runs, which is how the pool is read.
+
+| run | solo served/s | solo mean | MA served/s | MB served/s | **combined** | **ratio** | per-client mean |
+|---|---|---|---|---|---|---|---|
+| 1 | 2092 | 471 µs | 2491 | 2491 | **4982** | **2.38×** | 395 µs |
+| 2 | 2063 | 478 µs | 2457 | 2457 | **4914** | **2.38×** | 401 µs |
+| 3 | 2050 | 481 µs | 2477 | 2478 | **4955** | **2.42×** | 397 µs |
+
+**Run-to-run spread:** solo 2050–2092 (2.0 %), combined 4914–4982 (1.4 %).
+`refused = 0` and `bad = 0` in every arm of every run — the per-request
+identity check held across **3.3 million** served requests.
+
+**No starvation.** Run 3's pair, per 15 s interval: MA 38238 / 37684 / 37334 /
+37645 / 37273 / 36328 / 36456 …, MB 38206 / 37533 / 37244 / 37602 / 37405 /
+36439 / 36367 … — the two track each other within 0.4 % in every interval, and
+neither has a zero interval.
+
+## PB4 IS FALSIFIED — combined is 2.38–2.42x solo, not under 2x
+
+The prediction said combined would exceed solo and be **less than 2×**, with
+the falsification clause naming ≥ 2× as *"a finding about ADR-0042 §10, not
+about this test"*. It is ≥ 2× in all three runs.
+
+**Stage a's trial saw ~2.4× and recorded it explicitly as a thing to test, not
+a result. It reproduces at the 300 s window, three times, with a 1.4 % spread.**
+
+**This does NOT contradict ADR-0042 §10, and the distinction is the finding.**
+Serialised *service* — one request in flight — does not imply serialised
+*throughput*. A single client's rate is bounded by its own round trip: it
+issues, waits, and is idle again before the next request. If one client kept
+the executive busy, two could not be 2.4× faster. So what the measurement shows
+is:
+
+> **One client does not saturate the transport. At one client the limit is the
+> CLIENT's round trip, not the executive's service rate** — the executive is
+> idle roughly 58 % of the time, and a second client fills those gaps rather
+> than queueing behind service.
+
+Per-client latency *falling* with two clients (471 → 395 µs) is the same fact
+from the other side, and is what a queueing model would not predict.
+
+**What it does not establish:** the ceiling. Two clients were measured; where
+the curve turns over is unmeasured, and nothing here licenses extrapolating to
+three or to sixty-four.
+
+## PB1 HELD — the 4 KB offset is now established as a start-order artifact
+
+Every pool reading in the round, at each NSFS start:
+
+```
+10:16:00  1069056   <- entry, before run 1
+11:02:52  1069056   <- after run 1 / before run 2
+11:15:09  1069056   <- after run 2 / before run 3
+11:27:29  1069056   <- after run 3
+```
+
+**Delta ZERO across all three runs.** Per the ruling's own test, that
+**establishes** the 4096-byte offset as a start-order artifact rather than
+assuming it: the reading is stable within a round and under load, so
+fragmentation from the changed start order is the remaining explanation rather
+than one of several.
+
+**The residue stays residue.** A zero delta does not tell us *what* the ≤ 8 KB
+is, and this round does not claim to. It tells us the figure does not move
+while the round runs.
+
+## PB3 HELD — no swap transition in any run
+
+Six samplers, 74 samples, 30 s interval:
+
+| run | arm | samples | ASCBSTOR | QFL | SWC | NSW |
+|---|---|---|---|---|---|---|
+| 1 | MS / MA+MB | 13 / 13 | `0FA20C00` constant | `00` | 0 | set |
+| 2 | MS / MA+MB | 12 / 12 | `0FA16C00` constant | `00` | 0 | set |
+| 3 | MS / MA+MB | 12 / 12 | `0F8B8C00` constant | `00` | 0 | set |
+
+**`ASCBSTOR` differs BETWEEN runs only because NSFS was restarted between them
+— a different address space each time.** Within every run it is constant, which
+is what PB3 asserts. `OUCBSWC` is 0 throughout, so no completed cycle was
+missed between samples either. **No run was discarded and there is no
+ADR-0044 finding.**
+
+**Sampling was at 30 s, not the original 3 s**, because the sampler reads
+through HTTPD **on the guest being measured** and this round measures
+throughput — the instrument trap this project has recorded twice. A completed
+cycle still shows retrospectively in `ASCBSTOR`/`OUCBSWC`, so the coarse
+interval loses only mid-flight capture. `docs/measurements/m5-2e-jobb/swapwatch.py`,
+derived from `64-3-1/nsfswatch.py`, which is left untouched as that round's
+artifact.
+
+**The reasoning is recorded rather than only the parameter, because the trade
+is round-specific.** A sampler that perturbs the quantity it samples is worse
+than a coarse one — but that is true *here* because this round measures
+throughput. **A round measuring something other than throughput should
+re-examine it and may well want the 3 s interval back**, and it can only
+re-examine a trade whose reason was written down. What 30 s costs is stated
+above and is the whole cost: mid-flight capture, not detection.
+
+## The STC's own side
+
+After run 3 (`F NSFS,STATS`, post-`58dfaab` set): `SERVED=2108931`,
+`EVTPASSES=2729226`, `WAKEPOSTS=2086369`, **`COLLISIONS=742361`**,
+**`EXHAUSTED=0`**, `BUSY=0 BUSYSLOT=-1 INFLIGHT=0 REAPED=0`, `APPSWEEP
+SWEEPS=69 RECLAIMED=0`.
+
+**`EXHAUSTED=0` with `COLLISIONS` in the hundreds of thousands** is the same
+reading stage a got and means the same thing: with 64 slots and two clients
+nobody is ever turned away, so the contention is **service serialisation, not
+slot starvation**.
+
+## Stand
+
+**`NSF054W`: 0. `IEA995I`: 0. `IEF450I`: 0** for the whole IPL — so the zero
+dumps are "nothing failed", not a suppressed dump. **No run was discarded.**
+One emulator, `tun0` up, NSFS running, the recorded task set up.
+
+## What this round does NOT establish
+
+- **Anything about Job A** (#108), which is judged separately and reported no
+  timings. **None are mixed in.**
+- **Comparability with stage a's figures**, which are trial-shaped (90 s) and
+  were taken under a different host configuration.
+- **The concurrency ceiling** — two clients, not three, not 64.
+- **What the ≤ 8 KB pool residue is.**
+- **A milestone flip.** Nothing here flips to proven.
+
+---
+
+## ADDENDUM — the wake-amortisation mechanism is REFUTED, from data already captured
+
+**No re-run. No fourth arm.** Answered from the two `F NSFS,STATS` readings the
+round already took (their stdout was discarded at the time, but the Hercules
+console log captures console output regardless).
+
+### The question the record's own explanation did not answer
+
+The round explained how ≥ 2× is *possible*: serialised service does not imply
+serialised throughput, because a single client's rate is bounded by its own
+round trip. **That explains an unchanged per-client latency. It does not
+explain an improved one** — and per-client mean fell from 478 µs solo to 401 µs
+paired. Additional load shortening a client's own round trip needs a
+**mechanism**, and "the client is the limit" is not one.
+
+**The candidate:** the wake path. With the executive parked in a WAIT, each
+request costs a POST and a wake before it is served; with two clients there is
+more often work already queued, the executive is already running, and the wake
+is skipped. That would account for both observations at once — and `wakeposts`
+(`src/nsfsx.c:596`) counts **wake events**, so it is directly testable.
+
+### The attribution is exact, which is what makes blended readings usable
+
+NSFS was restarted between runs but **not** between a run's two arms, so each
+reading blends them. The blend is nonetheless attributable, because the served
+totals reconcile **exactly**:
+
+| instance | arms it covers | Σ served | `SERVED` |
+|---|---|---|---|
+| 1 | MSP + run 1 MS + run 1 MA/MB | 28040 + 634356 + 750154 + 750085 = **2162635** | **2162635** |
+| 3 | run 3 MS + run 3 MA/MB | 618014 + 745389 + 745528 = **2108931** | **2108931** |
+
+Exact to the request, both times. **The MSP job had to be included in instance
+1 to make it reconcile** — it ran on that same instance — and it does.
+
+### The verdict
+
+```
+instance 1   wakeposts/served = 2138782/2162635 = 0.9890
+instance 3   wakeposts/served = 2086369/2108931 = 0.9893
+```
+
+The per-arm split is not directly measured, but it is **bounded**. Within an
+arm `wakeposts <= served` (coalescing can only reduce the count; 64-1 measured
+`WAKEPOSTS == SERVED` exactly at small scale and below it at scale). So the
+paired arms' wake rate is at least `(W_total − S_solo) / S_paired`:
+
+| instance | paired wake rate ≥ | for the paired arms to have HALVED their wake rate, the solo arm would need |
+|---|---|---|
+| 1 | **0.9841** | **2.10 wake events per request served** |
+| 3 | **0.9849** | **2.17 wake events per request served** |
+
+**More than double the maximum ever observed for that counter.**
+
+> **REFUTED. Essentially every request still costs a wake in the paired arms —
+> at least 98.4 % of them. The second client is not amortising the wake, and
+> the superlinearity is something else.**
+
+**No replacement mechanism is proposed.** Two candidates have now been offered
+for this observation and one is refuted; proposing a third against no evidence
+is the fitted story this project has refused repeatedly. **The improved
+per-client latency under added load is recorded as an OPEN QUESTION with one
+mechanism eliminated**, which is worth more than a plausible answer.
+
+**And it changes nothing about the ceiling:** *the ceiling is unmeasured;
+nothing here licenses extrapolating past two.* Whatever `wakeposts` says, two
+clients is two clients.
+
+### Why this was answerable at all
+
+Because the counter existed before the question did. `wakeposts` was registered
+for a different round (64-1) and its source comment at `src/nsfsx.c:821`
+already names the shape being tested here — the executive serving without
+having been woken. **A counter kept past its round answered a question its
+round did not ask**, which is the argument for keeping them.
