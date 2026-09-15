@@ -335,3 +335,43 @@ The "no re-run" above is not a decision to drop it. Arms 1 and 2 are listed in
 in the tree whose only missing precondition is a working CTCI pair. Nothing is
 restated there that is not already above; the point is that the two do not live
 as separate footnotes in separate files.
+
+---
+
+## ANNOTATION 2026-09-15 — the 2026-09-03 annotation is DISCHARGED
+
+**Appended, nothing above rewritten — including the 2026-09-03 annotation
+itself, which stays exactly as written.** It was right, and it is the reason
+this round happened.
+
+Arms 1 and 2 have been re-run with a stimulus **in evidence**:
+**`docs/measurements/m5-2d1-stimulus/`**, A **CC 0000 (9/9)** and B **CC 0000
+(13/13)**.
+
+**What was missing is now present, and from two independent directions.** A
+polls **its own** descriptor through the same SELECT path B is denied, and its
+spool carries the transition — `READY=0` for eight polls, then `READY=1` at
+`9.08.33`, the second the host connected, and `READY=1` through the final poll
+at `9.11.37`. So A was ready across **both** of B's arms (`9.08.41`–`9.09.03`).
+On the wire, `tcpdump` shows three complete 3WHS to A's port and **zero RSTs**,
+and the STC reports `NSFTCP passiveopen 3` / `established 3`.
+
+With that in place the two results stop being ambiguous:
+
+- **arm 1** — `foreign.ready=0` **while A is ready**, `own.ready=2` served;
+- **arm 2** — `rc=0 ready=0`, with **two graduations completing inside the 20 s
+  park** (host clock `16:08:41.203` and `16:08:44.204` against a window of
+  `16:08:41.202`–`16:09:03.214`), each firing an unconditional
+  `soc_notify_ready` that re-scans every parked SELECT. That is the
+  `nsfsel_on_notify` re-scan path the annotation said had never been driven.
+
+**No assertion in `role_b` changed** — only the window they run in. Two things
+the round added are recorded there rather than here: the reason the stimulus
+must be fired **after** B's sweep (a passive child takes a socket-table slot, so
+an earlier connect would have made B's `own - 1` derive the **child** — silently
+green), and the reason the evidence is a **bracket** rather than a sample inside
+each window (B's parked SELECT holds `g_busy`, so A cannot answer during arm 2
+at all).
+
+**Unchanged by this:** the round above still rests on 2.2/2.2b for its
+crossing-level ownership claim, and arm 3 was never in doubt.
