@@ -171,3 +171,48 @@ The options are Mike's to weigh in the memo. Nothing is proposed here.
   claimed as measured.
 - **Nothing flips to proven; no milestone moves.** d2 remains M5-2's one open
   named-unproven property.
+
+---
+
+## ADDENDUM at countersign — the closing question is answered, and one prescription of mine did not discriminate
+
+**Appended, nothing above rewritten.**
+
+### The closing question was decided the same day
+
+The section above ends by asking *"whether d2 changes anything at all, or whether
+leaving the retention is the right answer"*. That was the right question when it
+was written and it is **no longer open**: Mike has ruled **A a no-go** and
+**locked option D** — adopt a retained anchor at the next start.
+
+The reason is `40-chk`'s own measurement, not a preference: one parked batch
+client that dies costs **139264 bytes, pool plus router**, and again **on every
+recycle**, with **no operator recovery short of an IPL**.
+
+This line exists so a later reader does not find an open question that was
+closed the same day it was filed.
+
+**Release is not a safe form of D — adoption is.** That follows directly from
+the verdict above: the reply ECB is inside the anchor, so a later start that
+*frees* a retained anchor frees the same ECB and reproduces exactly the hazard
+this round establishes. Whatever D turns out to be, it adopts.
+
+### A correction that is mine, recorded where the reasoning is
+
+**The register distinction was prescribed as decisive, and it does not
+discriminate.** The question this round answered framed it as:
+
+> *a resume path that re-reads is unsafe against a freed anchor; one that works
+> from saved state may not be.*
+
+Neither branch settles anything. R2 is **carried** across the WAIT — saved state,
+by that framing — and the routine **dereferences it anyway** at `:844`. So
+"re-reads" and "works from saved state" lead to the same place, and the test
+separates nothing. It is why the deciding reason turned out to be the third
+bullet (where the slot lives) rather than the headline.
+
+**The general shape, which is the part worth keeping:** *a discriminator was
+prescribed without checking that it discriminates.* This is the same class as
+`#101` Stage 2's finding that a falsification clause is itself a claim needing
+the same check as the prediction it guards — one step earlier, at the point
+where the question is framed rather than where its answer is judged.
