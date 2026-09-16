@@ -250,3 +250,87 @@ the first thing d2's design has to settle after adoption itself.
 - **No code.** `src/`, `asm/`, `include/` untouched; nothing run.
 - **Nothing flips to proven; no milestone moves.** d2 remains M5-2's one open
   named-unproven property.
+
+---
+
+## ADDENDUM at review — §3 answered ONE objection and implied it answered TWO
+
+**Appended, nothing above rewritten.** §3's argument is **right about the half
+it covers** and is not withdrawn. What is corrected is its scope: it was
+presented as answering ADR-0036, and ADR-0036 makes **two** objections with two
+different shapes.
+
+This was the claim the filing itself flagged for scrutiny. It was tested against
+ADR-0036 rather than accepted, and it **over-claimed on one half**.
+
+### The two objections
+
+ADR-0036 §155-159, quoted whole:
+
+> **ESTAE is mandatory, or the subsystem leaks until IPL.** While the SSCT is
+> registered, `S NSFP` fails `IEF612I`; an abend that skips cleanup leaves the
+> SSCT registered **until IPL**.
+
+| objection | shape | does the role change answer it? |
+|---|---|---|
+| **Authorization** — `IEFSSREQ` requires an authorized caller, and NSF's *clients* are unauthorized | about **who calls what** | **YES, completely.** §3(b) stands as written: the finder is the starting STC, which is authorized, and a chain walk routes **nothing** through the SSI. |
+| **Lifecycle** — a registered SSCT survives an abend that skips cleanup, until IPL | about **what persists**, and true whether or not `IEFSSREQ` is involved | **NO.** It is not a transport property, and §3 should stop implying the role change disposes of it. |
+
+### The lifecycle objection falls to a MECHANISM, not to an argument
+
+`libc370/include/clibssct.h:47`:
+
+```c
+/* ssct_remove_by_name() remove SSCT as subsystem, requires supervisor state and key 0 */
+int ssct_remove_by_name(const char *name)                           asm("@@SSREMN");
+```
+
+and its implementation (`libc370/src/clib/@@ssremn.c`) is `ssct_find(name)` →
+`ssct_remove(ssct)`, returning 4 when there is nothing to remove.
+
+**It touches only the SSCT — never `ssctsuse`, never the anchor.** So a later
+start can remove a stranded registration **by its name alone**, and that closes
+the ugly case as well as the ordinary one: **if the anchor is corrupt, or points
+at freed storage, the SSCT is still removable**, because removal never
+dereferences it.
+
+**ADR-0036's "until IPL" was written for a design in which only the owning STC's
+ESTAE could clean up.** A design in which the **next start** cleans up by name
+has a recovery path that the 2026 design did not have. That is the answer — a
+different design, not a different reading.
+
+### The trade, stated as a trade
+
+| | recovery of the rendezvous | cost left stranded |
+|---|---|---|
+| **today** | the SVC slot is restorable under RTM — **unconditionally** | **139264 bytes per recycle**, unrecoverable short of an IPL |
+| **under D** | one small SSCT block outlives the STC until the **next start removes or reuses it by name** | the **139264 becomes recoverable** |
+
+**The residual, because it is small and nameable: if NSF is never started again,
+the SSCT stays.** That costs **one small CSA block** — not 139 KB per cycle.
+
+### This STRENGTHENS the recommendation
+
+The record's strongest claim is now a **weaker** one, and that is the
+improvement: §3 rested on an **argument about roles**, which is one reviewer's
+disagreement away from collapsing. It now rests on a **function signature and
+its implementation**. An argument can be out-argued; `@@SSREMN` either exists or
+it does not.
+
+### `ssct_remove_by_name` is part of the mechanism, not an implementation detail
+
+It joins `ssct_find` and `ssct_new` in §2's account of what libc370 already
+provides, for the same reason §4's reclaim does: **the rendezvous, the reclaim
+and the removal are one design.** A start must be able to *find* a retained
+anchor, *adopt* it, and — when there is nothing worth adopting — *remove* the
+registration so the next start is not met by `IEF612I`.
+
+**So D's three parts, restated:** the retained anchor, the **surviving named
+pointer** to it, and the reclaim that **adopts rather than frees**. None of the
+three works alone, and the removal path is what makes the second one safe to
+leave behind.
+
+**Unchanged by this addendum**, and not re-argued: the ENQ refutation and its
+controls, the three independent implementations of the chain walk, the rejection
+table, the scope, and the counterfactual. **§8's naming question stays open** —
+it is d2's first design question and nothing here answers it.
