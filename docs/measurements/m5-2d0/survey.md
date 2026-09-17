@@ -475,3 +475,42 @@ console command, nothing submitted.
 The one command executed against the build was `make test-host`
 (**3414 PASS / 0 FAIL**, matching the baseline), and the diff is docs-only —
 this file and nothing else.
+
+---
+
+## ANNOTATION 2026-09-17 — §4.4's sizing no longer describes d2
+
+**Appended, nothing above rewritten.** §4.4 says, verbatim:
+
+> **d2 is a small change carrying one decision**, not its own investigation. On
+> the kickoff's escape hatch: the condition for decoupling the flip from d2 —
+> that d2 has grown into an investigation — **is not met**. Mike decides; this is
+> the size.
+
+That was an accurate answer to the question asked, and it is not withdrawn: the
+**escape hatch** genuinely was not met, and §4.3's warning — that the smallness
+was *conditional* on first ruling whether shutdown may free the router under a
+possibly-parked client — is exactly what turned out to govern.
+
+**What d2 became, once that ruling was made** (Mike, 2026-09-04: option A a
+no-go, option D locked), is recorded in **ADR-0048** and in
+`docs/measurements/d2-anchor-question/` and `d2-rendezvous/`:
+
+- **three parts, none of which works alone** — the retained anchor, a surviving
+  named pointer to it, and a reclaim that **adopts rather than frees** (freeing
+  is impossible: the reply ECB is inside the anchor);
+- a **system-wide named registration point** — an SSCT chained into JESCT, which
+  NSF does not have today;
+- a **concept of instance identity**, which NSF does not have at all — not in
+  `NSFPRM0`, not in the configuration grammar — and which the SVC number needs
+  as much as the SSCT name;
+- a path through **`nsfsx_start`** that d2 did not originally touch, since
+  `nsfsx_anchor_alloc` today `getmain`s unconditionally and never looks for what
+  a previous instance left behind.
+
+It now ships as **two rounds with two gates**, not one change.
+
+**This does not change the flip, and must not be read as doing so.** d2 was
+decoupled from M5-2 **on the blocking decision, not on size** — PR #121 already
+records that correction, and this annotation is about the *size*, which is a
+different question from the one the decoupling turned on.
