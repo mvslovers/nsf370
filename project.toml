@@ -1066,5 +1066,13 @@ sources = ["asm/nsfvsvc.asm"]
 [deploy]
 target = "NSF.LINKLIB"
 
+[toolchain]
+# Pins the refs release.yml builds the published artifacts against; build.yml
+# deliberately keeps floating on main so a cc370/libc370 regression surfaces
+# in a PR build (mbt#68). cc370 is omitted -- it defaults to main and has no
+# releases to pin to yet. Without this the release CI builds against libc370
+# main, which becomes the incompatible 2.0 after the cut (libc370#245).
+libc370 = "1.0.8"
+
 [release]
 version_files = ["VERSION"]
