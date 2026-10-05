@@ -214,7 +214,8 @@ resolution and how tests are driven, so it is stated here up front.
   (compiles S/370 objects on Linux/macOS). This replaces the older
   `c2asm370` C-to-assembler path; NSF does **not** use `c2asm370`.
 - **C runtime: `libc370`** — the `cc370` **sysroot** (target C library:
-  headers, `libc.a`, `crt0/crt1/crtm` startfiles, SYS1/crent macros),
+  headers, `libc.a` with the C startup `@@CRT0`, the nested startup `crtm.o`,
+  SYS1/crent macros),
   provided by the toolchain. It replaces `CRENT370`. Because it is the
   sysroot, `libc370` is **not** a `[dependencies]` entry in `project.toml`
   (ADR-0014, correcting v1.1, which had listed it as a resolved dependency).
