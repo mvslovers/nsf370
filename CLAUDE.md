@@ -199,11 +199,10 @@ changing any `asm/*.asm`).
   MVS-runtime only.
 
 **Standard library truncation (libc370, ADR-0026)**
-- `vsnprintf`/`snprintf` on libc370 do **NOT** NUL-terminate on truncation — a
-  real glibc/C99 violation, pinned live by `TSTVSNP` (issue #25): `size` IS a
-  hard write bound (not a memory-safety bug), but the target is filled solid
-  through byte `size-1` with data, leaving no byte for a terminator; the
-  return value is still the C99 "would-be length" regardless. **Never call
+- `vsnprintf`/`snprintf` on libc370 **1.0.2 and earlier** did not NUL-terminate
+  on truncation (issue #25): `size` was a hard write bound, but the target was
+  filled solid through byte `size-1`. libc370 1.0.3 fixed it (libc370#128);
+  `TSTVSNP` now pins the C99 behaviour (issue #132). The rule stands: **never call
   `vsnprintf`/`snprintf` directly** — use `nsf_vsnprintf`/`nsf_snprintf`
   (`include/nsffmt.h`), which always NUL-terminate when `size > 0` and return
   the count of characters actually in the buffer (clamped), not the raw C99
