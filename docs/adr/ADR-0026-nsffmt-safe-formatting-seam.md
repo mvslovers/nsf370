@@ -104,3 +104,26 @@ character literal rather than re-deriving it from the source string.
 - Full `test-mvs` regression after the fix: **25 modules, batch+TSO, 950
   PASS, 0 FAIL** — `TSTTRC` (previously 2 failures/leg) now clean, `TSTVSNP`/
   `TSTFMT` both CC 0.
+
+## Annotation (2026-10-14, issue #132) — libc370 closed the gap in 1.0.3
+
+The libc370 behaviour this ADR works around was fixed upstream in libc370
+**1.0.3** (2026-08-23, libc370#128): `vsnprintf` reserves the final byte for
+the terminator, so a truncated result is NUL-terminated within `size`.
+
+Measured on libc370 2.11.0 during the 2.x port's live round (PR #131,
+`docs/measurements/libc370-2x/`):
+- `TSTVSNP` failed exactly the assertion that pinned the defect: `target[size-1]`
+  read 0 where 1.x wrote data. The write bound, the C99 return value, the
+  `size == 0` case and the exact-fit case were unchanged.
+- `TSTFMT` passed 28 / 0.
+
+**The decision stands; its reason narrows.** `nsf_vsnprintf` / `nsf_snprintf`
+stay and remain the only sanctioned call. They no longer cover a libc defect.
+They do two things:
+- return the count actually in the buffer (clamped), which callers rely on and
+  C99's would-be length is not;
+- keep the guarantee independent of the libc370 version the module was built
+  against.
+
+`TSTVSNP` now asserts the C99 terminator. Its header keeps the 1.x record.

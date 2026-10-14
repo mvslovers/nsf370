@@ -20,7 +20,14 @@
  * contract is built against, the same way TSTTHRW keeps pinning the pre-fix
  * timed-wait shape.
  *
- * PINNED RESULT (live on MVSCE, CC 0 both legs -- see issue #25 for the spool):
+ * LIBC370 FIXED THE GAP IN 1.0.3 (2026-08-23, libc370#128): vsnprintf now
+ * reserves the final byte for the terminator.  Measured on libc370 2.11.0
+ * (issue #132): target[size-1] is NUL, the bound and the return value are
+ * unchanged.  The test now pins the C99 behaviour; the record of the 1.x
+ * behaviour it first pinned follows.
+ *
+ * PINNED RESULT ON LIBC370 1.0.2 AND EARLIER (live on MVSCE, CC 0 both legs --
+ * see issue #25 for the spool):
  *   - `size` IS a hard write bound: truncation never writes past target+size
  *     (not a memory-safety bug -- just a missing terminator).
  *   - On truncation, the target is filled SOLID through byte size-1 with
@@ -63,6 +70,10 @@ static const char SRC40[] = "0123456789ABCDEF0123456789ABCDEF01234567";
  * STRING with a constant index does. Keep this pinned as its own char, not a
  * re-derived index into SRC40. */
 #define SRC40_LAST_TARGET_CHAR  'F'
+/* SRC40[TARGET_LEN - 2], 'E' -- the last character a C99 vsnprintf keeps when
+ * it reserves target[TARGET_LEN - 1] for the NUL.  A literal, for the same
+ * reason as SRC40_LAST_TARGET_CHAR. */
+#define SRC40_LAST_KEPT_CHAR    'E'
 
 static void poison(unsigned char *p, unsigned n)
 {
@@ -146,10 +157,16 @@ static void probe_truncation(const char *label, int use_snprintf)
     CHECK_EQ((long)post_touched, 0L,
              "size is a hard write bound (no bytes touched past target+size)");
 
-    /* Pinned from TSTTRC's live evidence: within the size-bounded target, the
-     * data is written up to the last byte with NO room left for a NUL. */
-    CHECK_EQ((long)target[TARGET_LEN - 1u], (long)(unsigned char)SRC40_LAST_TARGET_CHAR,
-             "last byte of the target region is DATA, not NUL (libc370 quirk)");
+    /* C99, as libc370 behaves since 1.0.3 (#128): the last byte of the
+     * size-bounded target is the NUL, and the byte before it is the last data
+     * character kept.  libc370 1.0.2 and earlier wrote data into that byte
+     * (SRC40_LAST_TARGET_CHAR) and no NUL at all -- the gap nsffmt.c covers. */
+    CHECK_EQ((long)target[TARGET_LEN - 1u], 0L,
+             "last byte of the target region is the NUL (C99; libc370 >= 1.0.3)");
+    CHECK_EQ((long)target[TARGET_LEN - 2u], (long)(unsigned char)SRC40_LAST_KEPT_CHAR,
+             "the byte before it is the last data character kept");
+    CHECK_EQ((long)zero_at, (long)(PRE_LEN + TARGET_LEN - 1u),
+             "the first NUL in the arena is that terminator");
 
     /* Return value on truncation: the C99 "would-be length" contract. */
     CHECK_EQ((long)rc, (long)(sizeof(SRC40) - 1u),
