@@ -180,8 +180,10 @@ changing any `asm/*.asm`).
 - **`as370` knows only RR/RX/RS/SI/SS plus `IPK`/`SPKA`/`STCK` — no SSE, no
   RRE.** Anything else is raw `DC X'…'` with the encoding from **primary source**
   (Hercules `opcode.c` for this target). A known mnemonic can still assemble
-  **wrong** (`MVCK` drops its `R1`/`R3` registers → raw `D9`, ≤255-byte pieces,
-  ADR-0039); unknown ones (`SSK`/`ISK`,
+  **wrong**: `MVCK` dropped its `R1`/`R3` registers before as370 1.6.3, so it
+  was raw `D9` (≤255-byte pieces, ADR-0039). Since #129 `nsfvsvc.asm` uses the
+  mnemonic, proven byte-identical; `test/mvs/tstmvck.c` still emits raw bytes.
+  Unknown ones (`SSK`/`ISK`,
   `TPROT`, `MVCDK`/`MVCSK` — the last two absent on this target, `S0C1`) cannot
   assemble at all. **The `as370 -a=` listing is the gate on the emitted bytes —
   never a green link.**

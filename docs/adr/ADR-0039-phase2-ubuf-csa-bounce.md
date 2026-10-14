@@ -855,3 +855,21 @@ change is **semantically transparent** — it moves where the protocol layer wri
 changes no observable result. See **ADR-0041**, annotation *"the receive lands in private
 storage"*, which owns the detail; nothing in this ADR's own subject changed —
 `asm/nsfvsvc.asm` is untouched and the staging buffer stays key 0.
+
+## Annotation (2026-10-14, #129): the MVCK mnemonic, now that as370 assembles it
+
+The raw `DC X'D9134000',X'5000'` this ADR prescribed was a workaround for
+as370 assembling `MVCK` as a plain SS instruction and dropping its `R1`
+length and `R3` key registers. as370 1.6.3 encodes it correctly, and nsf370
+pins cc370 1.6.3 since #131. So `asm/nsfvsvc.asm` now writes
+`MVCK 0(R1,R4),0(R5),R3` at its three sites.
+
+**Proof that nothing changed:** the old and new sources, assembled with the
+same as370 1.6.3 on the same day, give **byte-identical objects** (`cmp`). The
+`as370 -a=` listing shows `D913 4000 5000` at each of the three sites. The
+NSFVSVC that ran green in #131's live round (NSFV Stage-0 438/0, NSFS 130/0)
+was linked from that same object.
+
+The ≤255-byte piece cap stays: it guards the length/key ambiguity of the
+instruction itself, not the assembler. `test/mvs/tstmvck.c` keeps its raw
+bytes; it is the probe that established the encoding.
