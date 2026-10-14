@@ -23,10 +23,10 @@
  * the SVC register-return convention -- ADR-0038 6).
  */
 #include "nsfvsvc.h"
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                       */
-#include <clibwto.h>        /* wtof (console markers survive a hang)           */
+#include <mvs/wto.h>        /* wtof (console markers survive a hang)           */
 #include <mbtcheck.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
 
 #define TSTSVC_N   50u      /* main round trips (>= 40 per the gate)           */
 

@@ -40,7 +40,7 @@
 #include "nsfstim.h"            /* nsftmr_plat_arm / _disarm / _ecb            */
 #include "nsftime.h"            /* nsf_now (STCK) for elapsed measurement      */
 
-#include <clibecb.h>           /* ECB, ecb_waitlist, ecb_timed_waitlist        */
+#include <mvs/ecb.h>           /* ECB, ecb_waitlist, ecb_timed_waitlist        */
 #include <mbtcheck.h>
 #include <stdio.h>
 

@@ -138,13 +138,13 @@
  * __isauth() == 0) and never self-authorises.
  */
 #include "nsfvsvc.h"
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                      */
-#include <clibtry.h>        /* ___try -- capture the abend, no dump            */
-#include <clibwto.h>        /* wtof -- console markers survive a hang          */
-#include <cvt.h>            /* CVTPTR -- the chase starts at absolute 16       */
-#include <ihascvt.h>        /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
+#include <mvs/recovery.h>   /* ___try -- capture the abend, no dump            */
+#include <mvs/wto.h>        /* wtof -- console markers survive a hang          */
+#include <ibm/mvs/cvt.h>    /* CVTPTR -- the chase starts at absolute 16       */
+#include <ibm/mvs/ihascvt.h> /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
 #include <mbtcheck.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
 
 /* The gate's target: an offset into the anchor's staging buffer, and the
  * number of bytes moved.  Non-zero and well clear of both ends of the 2048-byte

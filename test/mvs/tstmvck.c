@@ -30,11 +30,11 @@
  * routine's supervisor/key-0 context.  It is NOT the ubuf client -- that (Step 2)
  * stays UNAUTHORIZED (ADR-0038 red line).  No anchor, no SVC steal, no ubuf.
  */
-#include <clibos.h>         /* __super/__prob/clib_apf_setup                    */
-#include <clibtry.h>        /* try() -- run under ESTAE, return the abend code  */
-#include <clibwto.h>        /* wtof                                            */
+#include <mvs/recovery.h>   /* try() -- run under ESTAE, return the abend code  */
+#include <mvs/wto.h>        /* wtof                                            */
 #include <mbtcheck.h>
 #include <string.h>
+#include <mvs/apf.h>        /* PSWKEY0/__prob/__super/clib_apf_setup */
 
 /* MVCK dst <- src, len bytes (1..256), source accessed under key `srckey`.
  * MVCK D1(R1,B1),D2(B2),R3: R1 = length (bits 24-31), R3 = source key (bits

@@ -32,7 +32,7 @@
 #define NSFVSVC_H
 
 #include "nsf.h"        /* UINT + NSF_SIZE_ASSERT                              */
-#include <clibecb.h>    /* ECB (unsigned int)                                 */
+#include <mvs/ecb.h>    /* ECB (unsigned int)                                 */
 #include <stddef.h>     /* offsetof (NSFV_OFF_ASSERT)                         */
 
 /* Per-FIELD offset assert, target-only (like NSF_SIZE_ASSERT: host pointers are

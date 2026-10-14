@@ -32,14 +32,18 @@
 #include "nsfvsvc.h"
 #include "nsfreqx.h"   /* the shared, host-pinned classifier + slot rules */
 #include <string.h>
-#include <clibos.h>          /* __super/__prob/__ascb/__xmpost/getmain/loadhi   */
-#include <clibwto.h>         /* wtof                                            */
-#include <clibcib.h>         /* COM / CIB / __gtcom / __cibget / __cibdel       */
-#include <clibstae.h>        /* __estae, ESTAE_CREATE/DELETE                    */
-#include <clibsdwa.h>        /* SDWA, SDWACWT                                   */
-#include <cvt.h>             /* CVT, CVTPTR                                     */
-#include <ihascvt.h>         /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
-#include <ihaasvt.h>         /* ASVT (asvtmaxu, asvtenty) -- the liveness guard */
+#include <mvs/wto.h>         /* wtof                                            */
+#include <mvs/console.h>     /* COM / CIB / __gtcom / __cibget / __cibdel       */
+#include <mvs/recovery.h>    /* __estae, ESTAE_CREATE/DELETE                    */
+#include <ibm/mvs/ihasdwa.h> /* SDWA, SDWACWT                                   */
+#include <ibm/mvs/cvt.h>     /* CVT, CVTPTR                                     */
+#include <ibm/mvs/ihascvt.h> /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
+#include <ibm/mvs/ihaasvt.h> /* ASVT (asvtmaxu, asvtenty) -- the liveness guard */
+#include <mvs/apf.h>         /* PSWKEY0/__prob/__super/clib_apf_setup */
+#include <mvs/link.h>        /* __loadhi */
+#include <mvs/storage.h>     /* freemain/getmain */
+#include <mvs/xmem.h>        /* __ascb/__xmpost */
+#include <s370/atomic.h>     /* __cas/__udec */
 
 /* ============================================================
  * STC control block (main's stack).

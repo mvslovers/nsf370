@@ -85,7 +85,7 @@
 #include <mbtcheck.h>
 #include <string.h>
 #include <stdio.h>
-#include <clibecb.h>
+#include <mvs/ecb.h>
 
 #ifndef NSFCTCI_CUU
 #define NSFCTCI_CUU 0x0500u   /* the read subchannel of the live 500/501 pair */
@@ -107,6 +107,7 @@ extern void stimer_wait(UINT centisecs) asm("STIMWAIT");
 /* A 3-byte 24-bit address field at base+off (the byte at off-1 in the
  * enclosing fullword is always a flags/modifier byte, never part of the
  * address -- true of both DCBDEBAD/DCBIFLGS and DEBSUCBA/DEBSDVM). */
+#ifndef TSTHIO_PURGE
 static UINT addr24(const UCHAR *base, UINT off)
 {
     return ((UINT)base[off] << 16) | ((UINT)base[off + 1] << 8) |
@@ -126,10 +127,12 @@ static int ucb_name_matches(UINT ucb, USHORT cuu)
     return u[13] == (UCHAR)want[0] && u[14] == (UCHAR)want[1] &&
            u[15] == (UCHAR)want[2];
 }
+#endif
 
 /* ---- PURGE (SVC 16) parameter list: TCB-scope, HALT, post-ECBs, 16-byte
  * form for a real return code (GC26-3830-4; see header). Built byte-wise,
  * not as a struct -- same reasoning as addr24 above. ---- */
+#ifdef TSTHIO_PURGE
 static void build_purge_tcb_halt(UCHAR pl[16], UINT *pirl_out)
 {
     UINT pirl_addr = (UINT)pirl_out;
@@ -146,6 +149,7 @@ static void build_purge_tcb_halt(UCHAR pl[16], UINT *pirl_out)
      * (the only form documented as available from problem state), no
      * address-space purge (that needs supervisor state), no ASID. */
 }
+#endif
 
 /* ---- bounded wait: poll the ECB's POSTED bit (never non-zeroness, per
  * the project's ECB-wait rule) between short task-synchronous naps. ---- */
@@ -234,6 +238,7 @@ static void run_probe(void *scb, UCHAR *rbuf, UINT bufsize, USHORT cuu,
           "post-halt READ received real data (subchannel re-armed cleanly)");
 }
 
+#ifndef TSTHIO_PURGE
 static void stop_via_iohalt(void *scb, USHORT cuu)
 {
     UINT deb, ucb;
@@ -252,7 +257,9 @@ static void stop_via_iohalt(void *scb, USHORT cuu)
         printf("iohalt: SKIPPED issuing SVC 33 (UCB sanity check failed)\n");
     }
 }
+#endif
 
+#ifdef TSTHIO_PURGE
 static void stop_via_purge(void *scb, USHORT cuu)
 {
     UCHAR pl[16];
@@ -267,6 +274,7 @@ static void stop_via_purge(void *scb, USHORT cuu)
            rc, (unsigned)pl[4], (unsigned)pirl);
     CHECK_EQ((long)rc, 0L, "PURGE (TCB-scope, HALT) returns rc 0 from problem state");
 }
+#endif
 
 int main(void)
 {

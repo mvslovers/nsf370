@@ -42,12 +42,13 @@
  * libc370 try() runs each faulting sequence under ESTAE and returns the abend
  * code (0x00sssuuu) with NO dump -- so a fault IS the evidence, cleanly caught.
  */
-#include <clibos.h>         /* __super/__prob/clib_apf_setup/getmain/freemain  */
-#include <clibtry.h>        /* ___try() -- run under ESTAE, return abend code  */
-#include <clibwto.h>        /* wtof                                            */
-#include <cvt.h>            /* CVT, CVTPTR -- the CSA budget walk              */
+#include <mvs/recovery.h>   /* ___try() -- run under ESTAE, return abend code  */
+#include <mvs/wto.h>        /* wtof                                            */
+#include <ibm/mvs/cvt.h>    /* CVT, CVTPTR -- the CSA budget walk              */
 #include <mbtcheck.h>
 #include <string.h>
+#include <mvs/apf.h>        /* PSWKEY0/PSWKEY8/__prob/__super/clib_apf_setup */
+#include <mvs/storage.h>    /* freemain/getmain */
 
 /* ------------------------------------------------------------------ *
  * Encoding derivation -- PRIMARY SOURCE, not the briefed hypothesis.

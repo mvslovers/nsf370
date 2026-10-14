@@ -1,7 +1,7 @@
 /*
  * nsfthr.c -- MVS implementation of the I/O-subtask threading seam (nsfthr.h),
  * over libc370 `cthread`. MVS-ONLY: swapped for src/nsfthr_host.c on the host by
- * the project.toml [host].replace map. `cthread` was de-risked in isolation at
+ * the mbt.toml [build.host].replace map. `cthread` was de-risked in isolation at
  * M1-4b Stage 0 (TSTCTHR, CC 0) before this wrapper existed.
  *
  * The opaque NSFTHR handle IS the libc370 CTHDTASK. Same address space, so every
@@ -10,16 +10,22 @@
  */
 #include "nsfthr.h"
 
-#include <clibos.h>            /* clib_identify_cthread (IDENTIFY CTHREAD)   */
-#include <clibthrd.h>          /* cthread_create / _post / _wait / _detach   */
-#include <clibecb.h>          /* ECB, ecb_timed_wait, ECB_POSTED_BIT        */
+#include <mvs/thread.h>        /* cthread_create / _post / _wait / _detach   */
+#include <mvs/ecb.h>          /* ECB, ecb_timed_wait, ECB_POSTED_BIT        */
 
 int nsfthr_setup(void)
 {
     /* IDENTIFY CTHREAD so ATTACH EP=CTHREAD resolves, WITHOUT APF -- NSF stays
      * unauthorized (ADR-0022). libc370 otherwise only does this inside the
-     * authorized clib_apf_setup(). Also force-links CTHREAD via its =V(CTHREAD). */
-    return clib_identify_cthread();
+     * authorized clib_apf_setup(). Also force-links CTHREAD via its =V(CTHREAD).
+     *
+     * RC 4 is success here. Since libc370 2.3.0 (#159) the C startup itself
+     * IDENTIFYs CTHREAD whenever the thread driver is linked, so this second
+     * IDENTIFY finds the name already there; and since #427 the call returns
+     * IDENTIFY's real code, where 1.x always returned 0. */
+    int rc = clib_identify_cthread();
+
+    return (rc == 4) ? 0 : rc;
 }
 
 NSFTHR *nsfthr_create(int (*fn)(void *arg), void *arg)

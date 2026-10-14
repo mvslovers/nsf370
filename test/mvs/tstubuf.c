@@ -28,10 +28,10 @@
  * write-out (stale staging from the large transfer is not dumped past ulen).
  */
 #include "nsfvsvc.h"
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                       */
-#include <clibwto.h>        /* wtof (console markers survive a hang)           */
+#include <mvs/wto.h>        /* wtof (console markers survive a hang)           */
 #include <mbtcheck.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
 
 #define TSTUBUF_GUARD  0x7Eu    /* distinctive guard byte; +1 -> 0x7F if hit   */
 

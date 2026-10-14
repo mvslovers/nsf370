@@ -69,10 +69,11 @@
  * Either line beside a missing completion marker names the mechanism exactly.
  */
 #include "nsfvsvc.h"
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1), __ascb              */
-#include <clibwto.h>        /* wtof -- the console survives a hang             */
+#include <mvs/wto.h>        /* wtof -- the console survives a hang             */
 #include <mbtcheck.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
+#include <mvs/xmem.h>       /* __ascb */
 
 #define TSTD_ASCBASID    0x24U         /* ASCBASID halfword in the ASCB        */
 

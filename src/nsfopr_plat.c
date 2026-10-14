@@ -16,7 +16,7 @@
 #include "nsfopr.h"
 #include "nsfmsg.h"
 #include "nsfevt.h"             /* nsfevt_stop */
-#include <clibcib.h>           /* COM, CIB, __gtcom, __cibset/get/del, CIB* */
+#include <mvs/console.h>       /* COM, CIB, __gtcom, __cibset/get/del, CIB* */
 #include <string.h>
 
 /* CIBSTART + up to 4 queued MODIFYs (matches the ecosystem STCs). */

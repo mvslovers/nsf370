@@ -210,6 +210,7 @@ static void rx_packet(EVT *ev)
     }
 }
 
+#ifdef NSFCTCI_CUU
 static void make_cfg(DEVCFG *cfg, const char *name, USHORT cuu, USHORT mtu)
 {
     memset(cfg, 0, sizeof(*cfg));
@@ -219,12 +220,15 @@ static void make_cfg(DEVCFG *cfg, const char *name, USHORT cuu, USHORT mtu)
     cfg->ipaddr = (UINT)NSFCTCI_SRC;
     cfg->mtu    = mtu;
 }
+#endif
 
 int main(void)
 {
     NSFTHR *t;
     DEVCFG  cfg;
+#ifdef NSFCTCI_CUU
     NETDEV *dev = NULL;
+#endif
 
     printf("=== nsf370 NSFTCP MVS live gate (M4-4 zero-window persist) ===\n");
 

@@ -32,8 +32,10 @@
 
 #include <string.h>
 
-#include <svc99.h>             /* RB99, TXT99, __tx* builders, S99* verbs    */
-#include <clibary.h>          /* arraycount / FreeTXT99Array array helper   */
+#include <mvs/dynalloc.h>      /* RB99, TXT99, __tx* builders, S99* verbs    */
+#include <ext/array.h>        /* arraycount / FreeTXT99Array array helper   */
+#include <ibm/mvs/iefzb4d0.h>  /* RB99/S99NOCNV/S99VRBAL/S99VRBUN/rb99 */
+#include <ibm/mvs/iefzb4d2.h>  /* TXT99/txt99 */
 
 /* __svc99 issues the SVC 99. The sysroot mvssupa.h declares it only under
  * #ifdef MUSIC and svc99.h omits it, so declare it here with the prototype

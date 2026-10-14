@@ -159,12 +159,12 @@
 #include "nsfreq.h"         /* NSFRQE -- the image the request carries        */
 #include "nsfsoc.h"         /* NSF_AF_INET / NSF_SOCK_STREAM / _DGRAM         */
 #include "nsftime.h"        /* nsf_now -- STCK, the window clock only         */
-#include <clibecb.h>        /* ecb_timed_wait -- the poll pause               */
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                     */
-#include <clibwto.h>        /* wtof -- survives a hang, unlike SYSPRINT       */
+#include <mvs/ecb.h>        /* ecb_timed_wait -- the poll pause               */
+#include <mvs/wto.h>        /* wtof -- survives a hang, unlike SYSPRINT       */
 #include <mbtcheck.h>
 #include <stdio.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
 
 #define XA_CC_GATE_SKIPPED 20
 

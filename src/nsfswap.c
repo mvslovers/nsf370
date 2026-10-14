@@ -16,8 +16,9 @@
 #include "nsfswap.h"
 #include "nsfmsg.h"
 
-#include <clibos.h>            /* __ascb, __super, __prob, PSWKEY0 */
 #include <string.h>            /* memset, memcmp */
+#include <mvs/apf.h>           /* PSWKEY0/__prob/__super */
+#include <mvs/xmem.h>          /* __ascb */
 
 /* -- the reading ----------------------------------------------------------- */
 

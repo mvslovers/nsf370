@@ -155,13 +155,13 @@
 #include "nsfvsvc.h"
 #include "nsfreqx.h"   /* NSFREQX_GUARD -- the per-slot guard word */
 #include "nsfreq.h"         /* NSFRQE -- the 64-byte image the request carries */
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                      */
-#include <clibtry.h>        /* ___try -- capture the abend, no dump            */
-#include <clibwto.h>        /* wtof -- survives a hang, unlike SYSPRINT        */
-#include <cvt.h>            /* CVTPTR / cvtabend -- the chase starts at 16     */
-#include <ihascvt.h>        /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
+#include <mvs/recovery.h>   /* ___try -- capture the abend, no dump            */
+#include <mvs/wto.h>        /* wtof -- survives a hang, unlike SYSPRINT        */
+#include <ibm/mvs/cvt.h>    /* CVTPTR / cvtabend -- the chase starts at 16     */
+#include <ibm/mvs/ihascvt.h> /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
 #include <mbtcheck.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
 
 /* Search for an unreadable address: step upward from our own storage, stop at
  * the first candidate we cannot read.  READ-probe only -- never a store -- so

@@ -34,8 +34,8 @@
 #include "nsftcp.h"           /* nsftcp_reserve / _init / _protops (M4-5)    */
 #include "nsfudp.h"           /* nsfudp_reserve / _init / _protops (M4-5)    */
 #include <string.h>           /* memcpy / memset (device wiring)             */
-#include <clibstae.h>          /* __estae, ESTAE_CREATE/DELETE */
-#include <clibsdwa.h>          /* SDWA, SDWARCDE, SDWACWT */
+#include <mvs/recovery.h>      /* __estae, ESTAE_CREATE/DELETE */
+#include <ibm/mvs/ihasdwa.h>   /* SDWA, SDWARCDE, SDWACWT */
 
 /* The PROFILE.TCPIP member is read from the PROFILE DD in the PROC (spec 14.4;
  * libc370 fopen understands "DD:ddname"). */

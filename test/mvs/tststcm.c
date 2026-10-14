@@ -29,8 +29,8 @@
 #include "nsftrc.h"
 #include "nsfsts.h"
 #include "nsfbuf.h"
-#include <clibstae.h>          /* __estae, ESTAE_CREATE/DELETE, SDWA */
-#include <clibsdwa.h>
+#include <mvs/recovery.h>      /* __estae, ESTAE_CREATE/DELETE, SDWA */
+#include <ibm/mvs/ihasdwa.h>
 #include <mbtcheck.h>
 #include <stdio.h>
 #include <string.h>
