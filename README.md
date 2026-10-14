@@ -12,7 +12,7 @@ compatibility.
 > live on Hercules. **M5 (Phase 2: the cross-AS `NSFS` subsystem)** is in
 > progress: the app↔stack transport is proven both ways on the live target — an
 > SSI probe (Stage-0a) and, for **unauthorized relink-only apps**, a private-SVC
-> probe (Stage-0a′, ADR-0038). See `CLAUDE.md` §7 for the full milestone status.
+> probe (Stage-0a′, ADR-0038). See `CLAUDE.md` §7 for the milestone status and `docs/milestone-history.md` for the full record.
 
 ## Documentation
 
