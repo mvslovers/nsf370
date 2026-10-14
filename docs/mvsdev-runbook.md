@@ -6,6 +6,10 @@ incidents that produced each rule. It used to be `CLAUDE.md` §5 "Live MVS targe
 keeps the short form; this file has the signatures, the examples and the
 reasoning.
 
+**Written for mbt 2** (`make deploy`, `make test-mvs`, the `.env`). nsf370 moved
+to mbt 3 on 2026-10-14; the tool-specific rules below are mbt 2 measurements
+until re-measured.
+
 ---
 
 ### Live MVS target & autonomous operation (`mvsdev`)

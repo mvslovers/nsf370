@@ -263,39 +263,36 @@ changing any `asm/*.asm`).
   provided by the toolchain; **not** a `[dependencies]` entry (ADR-0014).
   **Not** `CRENT370`.
 - **Assembler / linker:** IFOX00 / IEWL on the target (HLASM modules).
-- **Build orchestration:** **MBT V2** (MVS Build Tools). Repo shape is an MBT
-  project: `project.toml` at root; local MVS connection in an un-committed
-  `.env` (from `.env.example`).
+- **Build orchestration:** **mbt 3** (MVS Build Tools), the `mbt` program on
+  `PATH`, configured by `mbt.toml` at the root (`[toolchain]` pins mbt and the
+  release toolchain). The MVS system is a target in `~/.mbt/targets.toml`
+  (`mbt target list`; password in the keychain). `.env.example` stays as the
+  template `mbt target import .env --name NAME` reads.
 
-**Two build worlds, both driven by MBT (ADR-0014):**
+**Two build worlds, both driven by mbt (ADR-0014):**
 
 | World | Builds | Compiler | Needs MVS? | Runs in CI? |
 |---|---|---|---|---|
-| Host (`make test-host`) | portable C + `nsf*_host.c` shims | native cc | No | **Yes** |
-| MVS (`make test-mvs`, `deploy`, …) | full stack incl. `asm/*.asm` | cc370 + IFOX00 | Yes (live 3.8j over IP) | No |
+| Host (`mbt test`) | portable C + `nsf*_host.c` shims | native cc | No | **Yes** |
+| MVS (`mbt test --mvs`, `mbt deploy`, …) | full stack incl. `asm/*.asm` | cc370 + IFOX00 | Yes (live 3.8j over IP) | No |
 
-Both are MBT V2 targets — there is **no** separate `host.mk`. The host build
-is configured by the `[host]` table in `project.toml`; a `[host].replace`
+The host build is configured by `[build.host]` in `mbt.toml`; its `replace`
 map swaps each MVS-only CSECT (`asm/*.asm`) for its `src/*_host.c` shim.
 Rules: `asm/*.asm` never compiles on host; everything else compiles both
 ways; warnings-as-errors everywhere. The distinction between the worlds is
-MVS reachability, not MBT vs. not-MBT.
+MVS reachability. mbt 3 cross-compiles with `-Wall -Wextra -Werror`.
 
-**Commands (MBT V2 — real target names; `make help` for the full list):**
+**Commands (mbt 3; `mbt --help` for the full list):**
 ```
-cp .env.example .env      # once: fill in MVS connection details
-make test-host            # native build + run of the portable tests (no MVS)
-make deps                 # resolve deps + allocate target datasets on MVS
-make test-mvs             # deploy + run the tests on MVS
-make modules              # cross-compile + assemble the load modules on MVS
-make package              # TRANSMIT/XMIT the load library for download
-make deploy               # upload modules + RECV370 on MVS
+mbt test                  # native build + run of the portable tests (no MVS)
+mbt build --all --tests   # cross-compile every load module and test module
+mbt test --mvs [--only X] # build + deploy the test modules, run them on MVS
+mbt deploy                # put the load modules into NSF.LINKLIB (members replaced)
+mbt package               # release artifacts in dist/
+mbt doctor [--offline]    # toolchain, sysroot, MVS connection
 ```
-There is no `bootstrap`/`build`/`link` target (`deps` is the former
-`bootstrap`). At M0-1 the project is module-less (test-only), so `modules`/
-`package`/`deploy` become meaningful from M0-2/M1 onward.
 
-**C dialect:** `-std=gnu99` (as set in `project.toml`), used conservatively —
+**C dialect:** `-std=gnu99` (as set in `mbt.toml`), used conservatively —
 no VLAs, no runtime allocation, fixed-width via the project typedefs
 (`UCHAR/USHORT/UINT/INT`), big-endian S/370, AMODE 24 / RMODE 24, EBCDIC on
 target. `cc370` accepted these flags on both host and MVS at M0-1; record any
@@ -306,30 +303,35 @@ later `cc370` limit surprises in an ADR. Comments and documentation in
 
 Short form; the signatures, examples and incidents are in
 **`docs/mvsdev-runbook.md`**. Target: **MVSCE on Hercules on `mvsdev`**
-(`mvsdev.lan`). Credentials live in the un-committed `.env` and the zowe
-`mvsdev` profile — never hardcode them.
+(`mvsdev.lan`), mbt target `dev1`. Credentials live in the keychain and the
+zowe `mvsdev` profile — never hardcode them.
 
-- **Build / deploy / test over mvsMF REST (no SSH):** `make deps`, `make deploy`
-  (→ `NSF.LINKLIB`), `make modules`, `make test-mvs ARGS="--only TSTX"`. Read
-  the **full spool in `build/test-runner.spool`**, not just the matrix. MBT
-  honours **only `[build].cflags`** — a `-D`-gated device test goes there
+**The runbook below was measured on mbt 2** (`make …`). The rules marked
+*(mbt 2)* describe that tool's behaviour and are to be re-measured on mbt 3
+before they are relied on; until then keep following them.
+
+- **Build / deploy / test over mvsMF REST (no SSH):** `mbt deploy`
+  (→ `NSF.LINKLIB`), `mbt test --mvs --only TSTX`. *(mbt 2)* Read the **full
+  spool in `build/test-runner.spool`**, not just the matrix. mbt honoured
+  **only `[build].cflags`** — a `-D`-gated device test goes there
   **temporarily** (revert before commit), and the source must be touched or a
   stale `.o` is reused.
 - **Console = ZOWE + the console log.** `zowe zos-console issue command "<cmd>"`;
   direct output is unreliable, so read `ssh mvsdev "grep -A6 '<marker>'
   ~/MVSCE/mvslog.txt"` or `zowe zos-logs list logs --range 15m` (the syslog
   lags). STATS answers `NSF810/811I`, only DISPLAY answers `NSF800-802I`.
-- **Don't trust a "NO RC"/FAIL matrix on a long device job** — poll the jobid and
+- *(mbt 2)* **Don't trust a "NO RC"/FAIL matrix on a long device job** — poll the jobid and
   read its spool. **`zowe zos-console` 500s on `P`/`S` but the command lands** —
   confirm from `mvslog.txt`, don't re-issue. **Back-to-back heavy CTCI runs
   degrade the pair** (MIH, `IGF991I/995I`) — a fresh pair, not a code fix.
-- **`--only` REPLACES the whole TESTLIB.** A rig not named that round draws
+- *(mbt 2)* **`--only` REPLACES the whole TESTLIB.** A rig not named that round draws
   `IEA703I 806-4` (absence looks like a broken rig), and two activities needing
   different test sets (e.g. the NSFV Stage-0 round and the row-2 procedure)
   need a redeploy between them.
-- **`make deploy` fails while an STC holds `NSF.LINKLIB`, and the next run
-  silently tests the OLD binary.** Order: **`P NSFS`/`P NSFV` → `make deploy` →
-  `S NSFS`**. Signature: a mid-chain `HTTP 500 … DELETE /restfiles/ds/NSF.LINKLIB`.
+- *(mbt 2)* **`make deploy` failed while an STC held `NSF.LINKLIB`, and the
+  next run silently tested the OLD binary.** mbt 3 replaces members instead of
+  deleting the library (its own help); that is a prediction until measured.
+  Keep the order **`P NSFS`/`P NSFV` → `mbt deploy` → `S NSFS`**. Signature: a mid-chain `HTTP 500 … DELETE /restfiles/ds/NSF.LINKLIB`.
   Tell: *identical values across supposedly different builds* — re-run rather
   than reason about it.
 - **A MIXED (half-)deploy tells the inverse: a value NEITHER pure build can
@@ -357,11 +359,9 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
 
 ```
 <repo>/
-├── project.toml      MBT V2: modules, sources, tests, deps, [host] table
-├── Makefile          two lines: MBT_ROOT := mbt + include mbt/mk/mbt.mk
-├── .env.example      MVS connection template (.env is git-ignored)
+├── mbt.toml          mbt 3: modules, tests, [build.host], [toolchain], deploy
+├── .env.example      MVS connection template for `mbt target import`
 ├── CLAUDE.md         this file (repo root — NOT under docs/)
-├── mbt/              MBT V2 — a git submodule
 ├── src/              portable C: nsfmm.c nsfbuf.c nsfque.c nsftmr.c
 │                     nsfevt.c nsftrc.c nsfsts.c nsfip.c nsficmp.c
 │                     nsfudp.c nsftcp.c nsfsoc.c nsfreq.c nsfeza.c
@@ -375,7 +375,7 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
 │                      asm — nsfmain.c, nsf*_plat.c — sits in src/.)
 ├── include/          one header per component (nsf.h + nsf*.h)
 ├── cfg/              sample PROFILE.TCPIP members
-├── jcl/              install/SAMPLIB jobs (driven by MBT)
+├── jcl/              install/SAMPLIB jobs
 ├── test/             dual host+MVS tests (tstsmoke.c, …)
 │   ├── mvs/          Level 2/3: on-MVS component & integration jobs
 │   └── asm/          HLASM test callers
@@ -402,7 +402,7 @@ that says what they were pointed at and what the reading meant.
 
 **A procedure is not a measurement and not a test.** `docs/procedure-*.md` is for something
 an operator executes at a gate — steps, expected output at each, what a broken result looks
-like, and the honest limit that keeps it out of `make test-mvs`. Name the coverage kind
+like, and the honest limit that keeps it out of `mbt test --mvs`. Name the coverage kind
 wherever it is referenced: **a coverage kind that is not named is read as a test a year
 later.**
 
@@ -412,7 +412,7 @@ later.**
 
 Mirrors Notion (*Issues & Tasks*, project *mvs38j-ip (NSF)*). Every milestone's
 **Definition of Done** = host Level 0/1 green in CI + the demonstrable
-deliverable shown on Hercules via MBT + **leak gate** (all pools back to
+deliverable shown on Hercules via mbt + **leak gate** (all pools back to
 baseline in-use after quiesce) + spec/ADRs updated.
 
 **The full per-round record — what each round built, measured live, and did
@@ -484,7 +484,7 @@ isolated so M0–M4 already deliver a usable in-process stack.
    single-owner buffers, one destroy function per object, `NSF_SIZE_ASSERT` on
    every CB, ESTAE coverage, and an 8-char `asm()` alias on every cross-module
    function (asm CSECT names match).
-4. **On-MVS validation** via `make test-mvs` at milestone boundaries and
+4. **On-MVS validation** via `mbt test --mvs` at milestone boundaries and
    before merging anything touching `asm/*.asm`.
 5. **Any operation whose ABSENCE is indistinguishable from its SUCCESS needs a
    third state or an assert.** This is the sibling of the project's most
@@ -495,7 +495,7 @@ isolated so M0–M4 already deliver a usable in-process stack.
    - a gate that **skipped its load-bearing case and returned CC 0** → fixed
      with a distinct skip code (`XF_CC_GATE_SKIPPED`, `test/mvs/tstrqxf.c`);
      return it **from the test**, never by changing the mbt harness;
-   - **`make deploy` failing mid-chain**, after which the run silently tests the
+   - **`make deploy` (mbt 2) failing mid-chain**, after which the run silently tests the
      previous module (§5 has the signature and the tell);
    - a **`str.replace` that no-op'd** because a linter had quoted the target
      line — an unasserted edit that reported success having changed nothing;
