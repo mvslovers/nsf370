@@ -520,13 +520,36 @@ typedef struct nsfv_anchor {
                                   **     below for what that does and does not
                                   **     distinguish, and why the increment is
                                   **     deliberately not interlocked.        */
-    UINT      rsvd0;              /* +34 RESERVED -- header slack, on purpose.
-                                  **     b3 left the header with none, which
-                                  **     is the entire reason adding one
-                                  **     diagnostic word in b4 costs a full
-                                  **     Stage-0 round (every slot moves, the
-                                  **     version bumps, every gate re-runs).
-                                  **     M5-2c gets to spend this one instead. */
+    char      jobname_tail[4];    /* +34 characters 4..7 of the registering
+                                  **     instance's jobname.  WAS `rsvd0`, the
+                                  **     header's one slack word, and this is
+                                  **     what spends it (ADR-0048 6, round 1).
+                                  **
+                                  **     WHY THE TAIL AND NOT THE WHOLE NAME:
+                                  **     SSCTSNAM is CL4 and a jobname is 8, so
+                                  **     NSFSTACK and NSFSTEST both register as
+                                  **     `NSFS`.  The SSCT name carries
+                                  **     characters 0..3 and this word carries
+                                  **     4..7, so the two together reconstruct
+                                  **     the name EXACTLY -- not a hash, whose
+                                  **     collision would be the silent adoption
+                                  **     the rule exists to prevent.
+                                  **
+                                  **     THE LAYOUT DOES NOT MOVE.  Same offset,
+                                  **     same width, so NSFV_ANCHOR stays 137272
+                                  **     bytes and NSFV_ANCHOR_VER stays 3 -- a
+                                  **     renamed word is not a moved one, and
+                                  **     the alternative (a new 8-byte field)
+                                  **     would move every slot and cost a full
+                                  **     Stage-0 round.
+                                  **
+                                  **     THE ASM MIRROR STILL CALLS IT ANCRSV0
+                                  **     (asm/nsfvsvc.asm), DELIBERATELY: the
+                                  **     SVC routine never reads this word, and
+                                  **     an EQU rename would be an asm edit with
+                                  **     nothing to gain and the column-72 class
+                                  **     to re-verify.  Offset and width agree,
+                                  **     which is all the mirror has to do.     */
     NSFV_SLOT slots[NSFV_NSLOTS]; /* +38 the pool                             */
 } NSFV_ANCHOR;                    /* 56 + 64*2144 = 137272 bytes              */
 NSF_SIZE_ASSERT(NSFV_ANCHOR, 137272);
@@ -541,7 +564,7 @@ NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb_ptr, 36);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, nslots,        40);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, exhausted,     44);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, collisions,    48);
-NSFV_OFF_ASSERT(NSFV_ANCHOR, rsvd0,         52);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, jobname_tail,  52);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, slots,         56);
 
 /* ============================================================

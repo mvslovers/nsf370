@@ -1,7 +1,7 @@
 # ADR-0048 — Recovering the CSA a parked client's failure strands
 
-**Status:** Proposed (M5-2, d2) — flips to Accepted on merge, per
-`docs/adr/README.md` convention 1
+**Status:** Accepted (M5-2, d2) — merged 2026-09-17; the merge is the
+countersign (`docs/adr/README.md` convention 1)
 **Date:** 2026-09-17
 **Decisions locked by:** Mike, 2026-09-04
 **Builds on:** ADR-0039 (the CSA anchor), ADR-0040 (the client-death guard),
