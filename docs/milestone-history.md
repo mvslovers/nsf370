@@ -2894,3 +2894,49 @@ the rest of M0 parallelizes. M5 carries the only real schedule risk and is
 isolated so M0–M4 already deliver a usable in-process stack.
 
 ---
+
+## M5-2 d2 round 1: the rendezvous, and its naming rule (2026-09-17 / 2026-10-14)
+
+ADR-0048 round 1: register, find and remove an SSCT that carries the anchor
+address, so a later start can find a retained anchor by name.
+
+**First attempt, 2026-09-17** (`docs/measurements/d2-round1/`). The SSCT name
+was jobname[0:4]. All three predictions held:
+- `NSF060I` on start;
+- `TSTSCTM` 24/24 batch and TSO on the real SSI chain;
+- the retain/free asymmetry in both directions (free path `ABSENT`, retain
+  path `CHAINED`).
+
+**Then the finding that stopped it:** with an SSCT named `NSFS` chained,
+`S NSFS` fails `IEF612I PROCEDURE NOT FOUND`, because MVS resolves the operand
+as a subsystem first. So after any retain-path stop the STC could not be
+started again. ADR-0048 §2 had quoted exactly this from ADR-0036 and §6 did
+not carry it through. The stand was recovered with `jcl/TSTSCTR.jcl` and the
+module reverted. The induction's 139264 bytes of CSA stay until IPL.
+
+**Decided 2026-10-14 (Mike):** the SSCT name is jobname[0:4] **folded to
+lower case**.
+- A procedure name and START's operand are upper case, so the two never
+  meet.
+- All four characters survive, so the identity check stays exact and the
+  anchor layout does not move.
+- A key with no letter is refused (`NSFSCT_RC_NOTSAFE`, `NSF059W`).
+- Rejected: a leading digit, which would cost a character of identity or
+  move the layout.
+
+**Re-run live 2026-10-14 on dev1** (`docs/measurements/d2-round1b/`), all
+three predictions held:
+- the lower-case two-name gate, 50/0 batch and TSO;
+- **with `nsfs` chained, `S NSFS` starts** (STC00703, `NSF059W` instead of a
+  second SSCT), and a clean stop removes it;
+- an ordinary start registers under `nsfs` (STC00704, `NSF060I`) and a clean
+  stop removes it.
+
+`NSF.LINKLIB` was restored to the merged build afterwards and verified
+byte-identical to the backup.
+
+**Does not establish:**
+- the retain path under the new name (code unchanged; re-inducing it costs
+  139 KB of CSA until IPL);
+- a letterless jobname, which is host-pinned only;
+- adoption, which is round 2.

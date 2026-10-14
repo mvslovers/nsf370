@@ -446,8 +446,10 @@ write-out key categories are closed.
 **Open — M5:**
 - **d2 — UNKNOWN at shutdown / the stranded retained anchor:** the only named
   unproven property of M5-2. ADR-0048 (PR #125) decides to adopt a retained
-  anchor at the next start via a per-instance SSCT; round 1 is on branch
-  `d2-round1`.
+  anchor at the next start via a per-instance SSCT. **Round 1** (register /
+  find / remove; the SSCT name is jobname[0:4] in lower case, so `S NSFS`
+  never meets it) is live-green on dev1 (`docs/measurements/d2-round1b/`).
+  **Round 2** (adoption) is next.
 - **c3 — retire the probe verbs** (`ECHO`/`XFER`/`UNSTAGE`/`SLOT`; promote
   `QUERY`) only once their eight dependent live gates have replacements.
   Obligation #4 stays half-discharged until then.
