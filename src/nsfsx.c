@@ -547,6 +547,8 @@ nsfsx_reap(NSFV_SLOT *slot, UINT observed, int verdict, int storage_ok)
 int
 nsfsx_start(void)
 {
+    int rc;
+
     g_anchor = nsfsx_anchor_alloc();
     if (!g_anchor) {
         /* NAME THE SIZE.  The pool is one contiguous SP=241 GETMAIN, and the
@@ -615,7 +617,16 @@ nsfsx_start(void)
     ** already chained under our name, which nsfsct_register REFUSES rather than
     ** duplicating (the IEF612I case).  Round 1 does not adopt it, does not
     ** classify it and does not remove it -- that is round 2. */
-    if (nsfsct_register(g_anchor) != 0) {
+    rc = nsfsct_register(g_anchor);
+    if (rc == NSFSCT_RC_NOTSAFE) {
+        /* The jobname's first four characters hold no letter, so the derived
+        ** SSCT name could equal a procedure name -- and a chained SSCT under a
+        ** procedure name makes the next `S <name>` fail IEF612I (ADR-0048 6).
+        ** Not registering is the safe side: it costs the rendezvous, never
+        ** the restart. */
+        wtof("NSF059W RENDEZVOUS NOT REGISTERED -- JOBNAME HAS NO LETTER IN"
+             " ITS FIRST 4 CHARACTERS -- CONTINUING");
+    } else if (rc != 0) {
         wtof("NSF059W RENDEZVOUS NOT REGISTERED -- A LATER START CANNOT FIND"
              " A RETAINED ANCHOR (ALREADY CHAINED?) -- CONTINUING");
     } else {

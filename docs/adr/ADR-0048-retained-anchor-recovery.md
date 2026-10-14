@@ -261,3 +261,39 @@ named registration point** and a **concept of instance identity** it did not
 have, and `nsfsx_start` gains a path it does not have today. That is why
 `docs/measurements/m5-2d0/survey.md` §4.4's sizing no longer describes d2 — see
 its appended annotation.
+
+## Annotation (2026-10-14): the naming rule, decided after round 1
+
+Round 1 measured the rule §6 left open, and it failed the obvious form.
+`SSCTSNAM` = jobname[0:4] makes the SSCT name **equal** to the jobname whenever
+the jobname is four characters or fewer, and that is the production case (`NSFS`).
+A chained SSCT under a procedure name makes `S <name>` fail `IEF612I PROCEDURE
+NOT FOUND`, because MVS resolves the operand as a subsystem first
+(`docs/measurements/d2-round1/findings.md`). So after any retain-path stop the
+STC could not be started again. This was ADR-0036's "`S NSFP` fails `IEF612I`",
+which §2 quoted and the first form of §6 did not carry through.
+
+**Decided by Mike:** the SSCT name is jobname[0:4] **folded to lower case**.
+
+- A procedure name is upper case, and so is START's operand. So a name with
+  at least one lower-case letter can never be one, by construction.
+- **All four characters survive.** Upper case is the inverse, so the SSCT
+  name plus `jobname_tail` still reconstruct the jobname exactly. The anchor
+  layout does not move and `ANCVERNO` stays 3.
+- **A jobname whose first four characters contain no letter is refused.**
+  Such a name (digits, blanks, `@#$`) does not change under folding and could
+  be a procedure name. `nsfsct_register` returns `NSFSCT_RC_NOTSAFE` and NSFS
+  says `NSF059W ... NO LETTER ...` and continues. `nsfsct_find` answers
+  `NONE` for such a key without reading whatever someone else chained under
+  it.
+
+**Rejected:** a leading digit. It also cannot be a member name, but it costs
+one character of the jobname. The SSCT has no spare user word (`SSCTSUSE`
+holds the anchor) and the anchor header has no slack left, so the identity
+check would either lose a character (two jobnames differing only in character
+3 would adopt each other's anchor) or move the layout (version 4, a new
+`ANCVERNO`, every Stage-0 gate re-run).
+
+**Not established by this annotation:** that MVS 3.8j accepts a lower-case
+`SSCTSNAM` on the SSI chain and that `S NSFS` then really starts. Both are
+round 1's live re-run (`docs/measurements/d2-round1b/`).

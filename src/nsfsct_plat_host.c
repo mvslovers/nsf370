@@ -118,7 +118,10 @@ nsfsct_find(void **out)
 
     if (out != NULL) *out = NULL;
     if (nsfsct_plat_jobname(job) != 0) return NSFSCT_NONE;
-    nsfsct_split(job, key, tail);
+    /* A key that could be a procedure name is never registered (nsfsct_split,
+     * nsfsct_register), so nothing of ours can be under it -- and whatever IS
+     * under it belongs to someone else, whose SSCTSUSE this must not read. */
+    if (!nsfsct_split(job, key, tail)) return NSFSCT_NONE;
 
     a = (NSFSCT_HOST_ANCHOR *)nsfsct_plat_find(key);
     if (a == NULL) return NSFSCT_NONE;

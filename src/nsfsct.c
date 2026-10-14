@@ -9,6 +9,7 @@
  *--------------------------------------------------------------------------*/
 #include "nsfsct.h"
 
+#include <ctype.h>      /* isupper, tolower (EBCDIC on MVS, ASCII on host)    */
 #include <string.h>     /* memcpy, memcmp                                     */
 
 /* nsfsct_find LIVES IN THE PLATFORM HALF, DELIBERATELY.  It is the one entry
@@ -22,9 +23,11 @@
 /*--------------------------------------------------------------------------
  * PURE -- split the jobname.
  *------------------------------------------------------------------------*/
-void
+int
 nsfsct_split(const char *jobname, char *key, char *tail)
 {
+    int i, folded = 0;
+
     if (jobname == NULL) {
         /* A caller with no jobname has no identity, and inventing one here
          * would register SOMETHING under a name nobody can reproduce.  Blanks
@@ -33,10 +36,24 @@ nsfsct_split(const char *jobname, char *key, char *tail)
          * is where the condition is actually reported. */
         if (key  != NULL) memset(key,  ' ', NSFSCT_KEYLEN);
         if (tail != NULL) memset(tail, ' ', NSFSCT_TAILLEN);
-        return;
+        return 0;
     }
-    if (key  != NULL) memcpy(key,  jobname,                  NSFSCT_KEYLEN);
-    if (tail != NULL) memcpy(tail, jobname + NSFSCT_KEYLEN,  NSFSCT_TAILLEN);
+    /* The key is folded through the C library's own classification, never by
+     * byte arithmetic: on MVS that is EBCDIC, where the letters are not one
+     * contiguous range, and on the host it is ASCII.  Only upper-case letters
+     * change; digits, blanks and national characters (@ # $) stay as they are,
+     * which is why the count of folded characters is the answer to "can this
+     * key be a procedure name". */
+    for (i = 0; i < NSFSCT_KEYLEN; i++) {
+        unsigned char c = (unsigned char)jobname[i];
+        if (isupper(c)) {
+            folded++;
+            c = (unsigned char)tolower(c);
+        }
+        if (key != NULL) key[i] = (char)c;
+    }
+    if (tail != NULL) memcpy(tail, jobname + NSFSCT_KEYLEN, NSFSCT_TAILLEN);
+    return folded > 0;
 }
 
 /*--------------------------------------------------------------------------
@@ -106,17 +123,20 @@ sct_our_name(char *key, char *tail)
     if (nsfsct_plat_jobname(job) != 0) {
         return -1;
     }
-    nsfsct_split(job, key, tail);
-    return 0;
+    return nsfsct_split(job, key, tail) ? 0 : NSFSCT_RC_NOTSAFE;
 }
 
 int
 nsfsct_register(void *anchor)
 {
     char key[NSFSCT_KEYLEN], tail[NSFSCT_TAILLEN];
+    int  rc;
 
-    if (anchor == NULL)               return -1;
-    if (sct_our_name(key, tail) != 0) return -1;
+    if (anchor == NULL) return -1;
+    /* A key folding could not change could equal a procedure name, and an SSCT
+     * under a procedure name makes the next `S <name>` fail IEF612I (round 1).
+     * Not registering costs the rendezvous; registering costs the restart. */
+    if ((rc = sct_our_name(key, tail)) != 0) return rc;
 
     /* REFUSE RATHER THAN CHAIN A SECOND ONE.  An SSCT already under our name
      * is the IEF612I case, and adding another is the failure and not the fix

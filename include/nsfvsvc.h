@@ -528,8 +528,10 @@ typedef struct nsfv_anchor {
                                   **     WHY THE TAIL AND NOT THE WHOLE NAME:
                                   **     SSCTSNAM is CL4 and a jobname is 8, so
                                   **     NSFSTACK and NSFSTEST both register as
-                                  **     `NSFS`.  The SSCT name carries
-                                  **     characters 0..3 and this word carries
+                                  **     `nsfs`.  The SSCT name carries
+                                  **     characters 0..3 (folded to lower case
+                                  **     so it is never a procedure name,
+                                  **     ADR-0048 6) and this word carries
                                   **     4..7, so the two together reconstruct
                                   **     the name EXACTLY -- not a hash, whose
                                   **     collision would be the silent adoption

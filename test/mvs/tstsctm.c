@@ -10,7 +10,8 @@
  * WHAT THAT DOES NOT ESTABLISH, said here and in the round record: it proves the
  * rendezvous distinguishes two names.  It does NOT prove two stacks can run.
  *
- * THROWAWAY NAMES, ON PURPOSE.  The two-name arm registers `NSZ1` and `NSZ2`,
+ * THROWAWAY NAMES, ON PURPOSE.  The two-name arm registers `nsz1` and `nsz2`
+ * -- lower case, like every key nsfsct_split derives (ADR-0048 6) --
  * which belong to no product, so a live NSFS's own registration is never
  * touched -- the throwaway-id discipline the SMP rules state, one mechanism
  * over.  The full-API arm uses this JOB's derived name, which is the test
@@ -24,6 +25,8 @@
  * ADOPTION IS NOT TESTED HERE.  Round 1 registers, finds and removes.
  *
  * PARM:  (none) / 'GATE'  the two-name gate
+ *        'HOLD'           chain NSFS's derived SSCT ('nsfs') and leave it --
+ *                         the round-1 failure state, for the S NSFS check
  *        'PROBE'          report whether an SSCT exists under a given name --
  *                         the operator-driven half of the retain/free check,
  *                         which a test program cannot drive by itself because
@@ -76,52 +79,57 @@ gate(void)
     /* Precondition, not an assertion about the stack: if either throwaway name
      * is already chained, a previous run left one behind and this run cannot be
      * aimed.  SKIP rather than register a second one. */
-    if (nsfsct_plat_find("NSZ1") != NULL || nsfsct_plat_find("NSZ2") != NULL) {
+    if (nsfsct_plat_find("nsz1") != NULL || nsfsct_plat_find("nsz2") != NULL) {
         printf("  NSZ1/NSZ2 ALREADY CHAINED -- a previous run leaked one.\n");
         wtof("TSTSCTM: THROWAWAY NAMES ALREADY CHAINED -- GATE SKIPPED");
         return -2;
     }
 
     /* --- register name 1 --- */
-    CHECK_EQ((long)nsfsct_plat_register("NSZ1", &g_a1), 0L,
+    CHECK_EQ((long)nsfsct_plat_register("nsz1", &g_a1), 0L,
              "A: NSZ1 registers on the real chain");
-    wtof_name("REGISTERED", "NSZ1");
-    s1 = nsfsct_plat_find("NSZ1");
+    wtof_name("REGISTERED", "nsz1");
+    s1 = nsfsct_plat_find("nsz1");
     CHECK(s1 == (void *)&g_a1,
           "A: NSZ1 is found under NSZ1 -- the control for every refusal below");
 
     /* THE TWO-NAME PROPERTY.  A second name must not see the first's. */
-    CHECK(nsfsct_plat_find("NSZ2") == NULL,
+    CHECK(nsfsct_plat_find("nsz2") == NULL,
           "A: NSZ2 is NOT found while only NSZ1 is chained");
+    /* CASE IS PART OF THE NAME ON THE REAL CHAIN.  The whole fix for round 1
+     * rests on this: the lower-case key must not answer to the upper-case
+     * spelling a procedure name has. */
+    CHECK(nsfsct_plat_find("NSZ1") == NULL,
+          "A: 'NSZ1' (upper case) is NOT found while 'nsz1' is chained");
 
     /* --- register name 2 alongside --- */
-    CHECK_EQ((long)nsfsct_plat_register("NSZ2", &g_a2), 0L,
+    CHECK_EQ((long)nsfsct_plat_register("nsz2", &g_a2), 0L,
              "A: NSZ2 registers alongside NSZ1");
-    wtof_name("REGISTERED", "NSZ2");
-    s2 = nsfsct_plat_find("NSZ2");
+    wtof_name("REGISTERED", "nsz2");
+    s2 = nsfsct_plat_find("nsz2");
     CHECK(s2 == (void *)&g_a2, "A: NSZ2 finds its OWN anchor");
     CHECK(s2 != s1, "A: ...which is not NSZ1's -- two names, two anchors");
-    CHECK(nsfsct_plat_find("NSZ1") == (void *)&g_a1,
+    CHECK(nsfsct_plat_find("nsz1") == (void *)&g_a1,
           "A: and NSZ1 is undisturbed -- a one-name test cannot see this");
 
     /* --- removal, each with its control in the same run --- */
-    CHECK_EQ((long)nsfsct_plat_remove("NSZ1"), 0L, "A: NSZ1 removes");
-    wtof_name("REMOVED", "NSZ1");
-    CHECK(nsfsct_plat_find("NSZ1") == NULL,
+    CHECK_EQ((long)nsfsct_plat_remove("nsz1"), 0L, "A: NSZ1 removes");
+    wtof_name("REMOVED", "nsz1");
+    CHECK(nsfsct_plat_find("nsz1") == NULL,
           "A: a removed SSCT is not found -- and it WAS found, four assertions"
           " up, on this same chain");
-    CHECK(nsfsct_plat_find("NSZ2") == (void *)&g_a2,
+    CHECK(nsfsct_plat_find("nsz2") == (void *)&g_a2,
           "A: removing NSZ1 left NSZ2 ALONE -- removal is by name, not a sweep");
 
     /* Removal survives a corrupt anchor, with the intact control just above. */
     memset(g_a2.eye, 0, 8);
-    CHECK_EQ((long)nsfsct_plat_remove("NSZ2"), 0L,
+    CHECK_EQ((long)nsfsct_plat_remove("nsz2"), 0L,
              "A: removal SURVIVES a corrupt anchor -- ssct_remove_by_name never"
              " dereferences SSCTSUSE (ADR-0048 5.2)");
-    wtof_name("REMOVED", "NSZ2");
-    CHECK(nsfsct_plat_find("NSZ2") == NULL, "A: ...and it is gone");
+    wtof_name("REMOVED", "nsz2");
+    CHECK(nsfsct_plat_find("nsz2") == NULL, "A: ...and it is gone");
 
-    CHECK_EQ((long)nsfsct_plat_remove("NSZ1"), -1L,
+    CHECK_EQ((long)nsfsct_plat_remove("nsz1"), -1L,
              "A: removing an absent name reports failure, not success");
 
     /* --- the full API, under THIS job's own derived name --- */
@@ -160,9 +168,9 @@ gate(void)
     }
 
     /* --- cleanup is asserted, not hoped --- */
-    (void)nsfsct_plat_remove("NSZ1");
-    (void)nsfsct_plat_remove("NSZ2");
-    CHECK(nsfsct_plat_find("NSZ1") == NULL && nsfsct_plat_find("NSZ2") == NULL,
+    (void)nsfsct_plat_remove("nsz1");
+    (void)nsfsct_plat_remove("nsz2");
+    CHECK(nsfsct_plat_find("nsz1") == NULL && nsfsct_plat_find("nsz2") == NULL,
           "A: NOTHING LEFT CHAINED -- an SSCT this test leaked would be"
           " registered until IPL and would block a start under that name");
     return 0;
@@ -178,7 +186,7 @@ probe(void)
     printf("\n--- PROBE ---\n");
     /* NSFS's own name, derived the way NSFS derives it.  This job cannot read
      * another job's TIOT, so the name is spelled out: the STC is NSFS, which is
-     * 'NSFS' blank-padded, giving key 'NSFS' and tail '    '. */
+     * 'NSFS' blank-padded, giving key 'nsfs' and tail '    '. */
     memcpy(job, "NSFS    ", NSFSCT_JOBLEN);
     nsfsct_split(job, key, tail);
 
@@ -235,6 +243,36 @@ main(int argc, char **argv)
 
     if (role[0] == 'P') {
         rc = probe();
+    } else if (role[0] == 'H') {
+        /* HOLD: chain an SSCT under NSFS's derived key ('nsfs') and LEAVE it.
+         *
+         * This is the state round 1 failed in -- an SSCT under the derived name
+         * when `S NSFS` is issued -- made WITHOUT a retained anchor, so it
+         * costs no CSA until IPL.  The round then issues S NSFS: it must START
+         * (round 1: IEF612I PROCEDURE NOT FOUND), refuse to chain a second one
+         * (NSF059W), and its clean stop must remove this one by name.
+         *
+         * SSCTSUSE points into this job's own storage, which goes away with
+         * the job.  Round 1 dereferences it nowhere (register only asks
+         * whether the name is chained); round 2's adoption would, which is why
+         * HOLD belongs to round 1 only. */
+        char job[NSFSCT_JOBLEN], key[NSFSCT_KEYLEN], tail[NSFSCT_TAILLEN];
+        memcpy(job, "NSFS    ", NSFSCT_JOBLEN);
+        (void)nsfsct_split(job, key, tail);
+        mk(&g_a1, NSFSCT_EYE, NSFSCT_VER, tail);
+        if (nsfsct_plat_find(key) != NULL) {
+            printf("  '%.4s' is already chained -- HOLD has nothing to do\n", key);
+            wtof("TSTSCTM: HOLD %.4s ALREADY CHAINED", key);
+            return SCTM_CC_SKIP;
+        }
+        CHECK_EQ((long)nsfsct_plat_register(key, &g_a1), 0L,
+                 "HOLD: the derived key 'nsfs' chains on the real SSI chain");
+        CHECK(nsfsct_plat_find(key) != NULL, "HOLD: ...and is found under it");
+        CHECK(nsfsct_plat_find("NSFS") == NULL,
+              "HOLD: ...but NOT under 'NSFS', the procedure name");
+        wtof("TSTSCTM: HOLD %.4s CHAINED SSCTSUSE=%08X -- NOW S NSFS",
+             key, (unsigned)&g_a1);
+        rc = 0;
     } else if (role[0] == 'R' && role[1] == 'M') {
         /* RECOVERY AID: RMxxxx removes the SSCT named xxxx.
          *

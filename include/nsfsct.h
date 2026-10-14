@@ -57,14 +57,29 @@
 #define NSFSCT_FOREIGN   4  /* eye+version ok, jobname tail differs           */
 
 /*--------------------------------------------------------------------------
- * PURE.  Split an 8-character jobname into the SSCT key (chars 0..3) and the
- * tail stored in the anchor (chars 4..7).  Neither output is NUL-terminated --
- * both are fixed-width fields, compared with memcmp, exactly as MVS stores
- * them.  A short jobname arrives blank-padded from the TIOT and stays that way;
- * this function never trims, because trimming would make "NSF " and "NSF"
- * two spellings of one name.
+ * PURE.  Split an 8-character jobname into the SSCT key (chars 0..3, FOLDED TO
+ * LOWER CASE) and the tail stored in the anchor (chars 4..7, as they are).
+ * Neither output is NUL-terminated -- both are fixed-width fields, compared
+ * with memcmp, exactly as MVS stores them.  A short jobname arrives
+ * blank-padded from the TIOT and stays that way; this function never trims,
+ * because trimming would make "NSF " and "NSF" two spellings of one name.
+ *
+ * WHY LOWER CASE (ADR-0048 6, decided after round 1).  Round 1 found that a
+ * chained SSCT whose name equals a PROCEDURE name makes `S <name>` fail
+ * IEF612I PROCEDURE NOT FOUND: MVS resolves the operand as a subsystem first.
+ * A key equal to jobname[0:4] is exactly that whenever the jobname is four
+ * characters or fewer, which is the production case (NSFS).  A procedure
+ * name is upper case, and so is START's operand, so a key with at least one
+ * lower-case letter can never equal one.  Folding keeps all four characters,
+ * so the key and the tail still reconstruct the jobname EXACTLY (upper case is
+ * the inverse) -- nothing is lost and the anchor layout does not move.
+ *
+ * RETURNS 1 when the key differs from jobname[0:4] (some character was a
+ * letter), 0 when folding changed nothing -- a key of digits, blanks and
+ * national characters only, which IS a possible procedure name.  The caller
+ * must not register such a key; nsfsct_register refuses it.
  *------------------------------------------------------------------------*/
-void nsfsct_split(const char *jobname, char *key, char *tail) asm("NSFSCSPL");
+int nsfsct_split(const char *jobname, char *key, char *tail) asm("NSFSCSPL");
 
 /*--------------------------------------------------------------------------
  * PURE.  Classify what an SSCT pointed at.  `eye` and `version` are the
@@ -93,9 +108,11 @@ const char *nsfsct_verdict_name(int verdict) asm("NSFSCVDS");
  *------------------------------------------------------------------------*/
 
 /* Register this instance's SSCT with `anchor` in SSCTSUSE.  REFUSES, loudly and
- * without chaining anything, if an SSCT already exists under our name: that is
- * the IEF612I case, and a second chain entry is the failure, not the fix
- * (ADR-0048 2).  Returns 0 on success, -1 on refusal or failure. */
+ * without chaining anything, if an SSCT already exists under our name: a
+ * second chain entry is the failure, not the fix (ADR-0048 2).  Returns 0 on
+ * success, NSFSCT_RC_NOTSAFE if the derived key could equal a procedure name
+ * (see nsfsct_split), -1 on any other refusal or failure. */
+#define NSFSCT_RC_NOTSAFE  (-2)
 int nsfsct_register(void *anchor) asm("NSFSCREG");
 
 /* Find our SSCT and classify what it points at.  Returns a verdict; `*out`

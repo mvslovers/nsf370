@@ -37,14 +37,25 @@ t_split(void)
 
     printf("\n--- 1. jobname split ---\n");
 
-    nsfsct_split("NSFSTACK", key, tail);
-    CHECK(memcmp(key,  "NSFS", 4) == 0, "1: key is jobname[0:4]");
-    CHECK(memcmp(tail, "TACK", 4) == 0, "1: tail is jobname[4:8]");
+    CHECK_EQ((long)nsfsct_split("NSFSTACK", key, tail), 1L,
+             "1: a key with letters is SAFE (it cannot be a procedure name)");
+    CHECK(memcmp(key,  "nsfs", 4) == 0, "1: key is jobname[0:4] in LOWER case");
+    CHECK(memcmp(tail, "TACK", 4) == 0, "1: tail is jobname[4:8], as it is");
 
-    /* THE COLLISION THE WHOLE RULE EXISTS FOR: two jobnames, one CL4 key. */
+    /* THE CASE ROUND 1 FAILED.  A four-character jobname is the production
+     * case, and the old key equalled it -- and so equalled the procedure name
+     * START looks up. */
+    CHECK_EQ((long)nsfsct_split("NSFS    ", key, tail), 1L,
+             "1: NSFS is safe");
+    CHECK(memcmp(key, "NSFS", 4) != 0,
+          "1: the key for job NSFS is NOT 'NSFS' -- so `S NSFS` cannot meet it");
+    CHECK(memcmp(key, "nsfs", 4) == 0, "1: ...it is 'nsfs'");
+
+    /* THE COLLISION THE TAIL EXISTS FOR: two jobnames, one CL4 key. */
     {
         char k2[NSFSCT_KEYLEN], t2[NSFSCT_TAILLEN];
-        nsfsct_split("NSFSTEST", k2, t2);
+        (void)nsfsct_split("NSFSTACK", key, tail);
+        (void)nsfsct_split("NSFSTEST", k2, t2);
         CHECK(memcmp(key, k2, 4) == 0,
               "1: NSFSTACK and NSFSTEST COLLIDE on the CL4 key -- which is the"
               " reason the tail exists");
@@ -52,15 +63,54 @@ t_split(void)
               "1: ...and the TAILS distinguish them exactly");
     }
 
+    /* Only letters fold.  Digits and national characters stay, so the key
+     * still reconstructs the name exactly (upper case is the inverse). */
+    CHECK_EQ((long)nsfsct_split("N#1SXXXX", key, tail), 1L,
+             "1: one letter is enough to be safe");
+    CHECK(memcmp(key, "n#1s", 4) == 0,
+          "1: digits and national characters are not changed");
+
     /* A short name arrives blank-padded and is NOT trimmed: trimming would make
      * "NSF " and "NSF" two spellings of one name. */
-    nsfsct_split("NSF     ", key, tail);
-    CHECK(memcmp(key,  "NSF ", 4) == 0, "1: a short name keeps its padding");
+    (void)nsfsct_split("NSF     ", key, tail);
+    CHECK(memcmp(key,  "nsf ", 4) == 0, "1: a short name keeps its padding");
     CHECK(memcmp(tail, "    ", 4) == 0, "1: ...tail included");
 
-    nsfsct_split(NULL, key, tail);
+    /* NOT SAFE: no letter in the first four characters, so folding changes
+     * nothing and the key could be a procedure name. */
+    CHECK_EQ((long)nsfsct_split("@#$1XXXX", key, tail), 0L,
+             "1: a key without a letter is NOT safe");
+    CHECK(memcmp(key, "@#$1", 4) == 0, "1: ...and comes back unchanged");
+
+    CHECK_EQ((long)nsfsct_split(NULL, key, tail), 0L,
+             "1: a NULL jobname is not safe");
     CHECK(memcmp(key, "    ", 4) == 0,
-          "1: a NULL jobname yields blanks, never invented identity");
+          "1: ...and yields blanks, never invented identity");
+}
+
+/* ---- 1b. an unsafe key is never registered, and never looked up --------- */
+static void
+t_unsafe(void)
+{
+    NSFSCT_HOST_ANCHOR a;
+    void *out = (void *)&a;
+
+    printf("\n--- 1b. an unsafe key ---\n");
+    nsfsct_host_reset();
+    mk_anchor(&a, NSFSCT_EYE, NSFSCT_VER, "XXXX");
+    nsfsct_host_set_jobname("@#$1XXXX");
+    CHECK_EQ((long)nsfsct_register(&a), (long)NSFSCT_RC_NOTSAFE,
+             "1b: register REFUSES a key that could be a procedure name");
+    CHECK_EQ((long)nsfsct_host_count(), 0L, "1b: ...and chains nothing");
+
+    /* Something someone else chained under that very name must not be read
+     * as ours: find answers NONE without dereferencing it. */
+    CHECK_EQ((long)nsfsct_plat_register("@#$1", &a), 0L,
+             "1b: (a foreign SSCT under the unsafe name, made by the test)");
+    CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_NONE,
+             "1b: find answers NONE for an unsafe key, whatever is chained");
+    CHECK(out == NULL, "1b: ...and hands back no anchor");
+    nsfsct_host_reset();
 }
 
 /* ---- 2. classify: every row of the truth table -------------------------- */
@@ -128,6 +178,10 @@ t_plumbing(void)
     CHECK(out == NULL, "3: ...and no anchor handed back");
 
     CHECK_EQ((long)nsfsct_register(&a_anchor), 0L, "3: A registers");
+    CHECK(nsfsct_plat_find("nsfs") != NULL,
+          "3: ...under the FOLDED key 'nsfs'");
+    CHECK(nsfsct_plat_find("NSFS") == NULL,
+          "3: ...and NOT under 'NSFS', the procedure name");
     CHECK_EQ((long)nsfsct_host_count(), 1L, "3: exactly one registration");
 
     CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_OK,
@@ -244,6 +298,7 @@ main(void)
 {
     printf("=== nsf370 d2 round 1: the rendezvous (TSTSCT) ===\n");
     t_split();
+    t_unsafe();
     t_classify();
     t_plumbing();
     t_find_verdicts();
