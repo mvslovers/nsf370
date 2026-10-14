@@ -627,9 +627,9 @@ UINCLP   LR    R4,R3
 *  reused
 *  for read-out).  Then MVCK the caller's ubuf (source key 8) into
 *  stage
-*  (dst key 0), <= 255 bytes/piece -- raw D9, since as370 mis-assembles
-*  the
-*  MVCK mnemonic (drops the R1/R3 registers); see tstmvck.c.  The piece
+*  (dst key 0), <= 255 bytes/piece.  The MVCK mnemonic needs as370
+*  1.6.3 or later (#129): older as370 dropped the R1/R3 registers, so
+*  this was a raw DC X'D9...' before.  The piece
 *  length is saved in R0 (MVCK is not trusted to preserve R1) and used
 *  to
 *  advance, so the loop never depends on a register MVCK may clobber.
@@ -654,7 +654,7 @@ WRINSZ   LR    R0,R1                       save piece length
          LA    R4,SLSTAGE(,R7)             R4 = &stage (dst B1)
          ALR   R4,R11
          LA    R3,MVCKK8                   R3 = source key 8
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         MVCK  0(R1,R4),0(R5),R3           dst key 0 <- src key R3
          ALR   R11,R0                      off += piece
          SLR   R10,R0                      remaining -= piece
          B     WRINLP
@@ -698,10 +698,9 @@ WRINEND  DS    0H
 *    <=
 *       MVCKMAX, so no loop is needed).
 *
-*  Both are source key 8 -> dst key 0, raw D9: as370 mis-assembles the
-*  MVCK
-*  mnemonic (drops the R1/R3 registers), see tstmvck.c.  Piece length
-*  rides
+*  Both are source key 8 -> dst key 0.  The MVCK mnemonic needs as370
+*  1.6.3 or later (#129); older as370 dropped the R1/R3 registers, so
+*  these were raw DC X'D9...' before.  Piece length rides
 *  in R0 because MVCK is not trusted to preserve R1.
 *----------------------------------------------------------------------
 RQEIN    DS    0H
@@ -724,7 +723,7 @@ RQINSZ   LR    R0,R1                       save piece length
          LA    R4,SLSTAGE(,R7)             R4 = &stage (dst B1)
          ALR   R4,R11
          LA    R3,MVCKK8                   R3 = source key 8
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         MVCK  0(R1,R4),0(R5),R3           dst key 0 <- src key R3
          ALR   R11,R0                      off += piece
          SLR   R10,R0                      remaining -= piece
          B     RQINLP
@@ -735,7 +734,7 @@ RQINEND  DS    0H
          LA    R4,SLRQE(,R7)               R4 = &slot.rqe (dst B1)
          LA    R1,RQELEN                   R1 = 64 (one piece)
          LA    R3,MVCKK8                   R3 = source key 8
-         DC    X'D9134000',X'5000'         MVCK 0(1,4),0(5),3
+         MVCK  0(R1,R4),0(R5),R3           dst key 0 <- src key R3
 RQINPUB  DS    0H
          XC    SLRECB(4,R7),SLRECB(R7)     reply_ecb = 0
          LA    R3,FNRQE
