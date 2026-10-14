@@ -4,7 +4,7 @@
  * nsfstim.h -- the platform seam that arms the real interval timer for NSFTMR
  * (spec ch. 06). Kept separate from nsftmr.h the same way nsftime.h is separate
  * from its callers: MVS-only code lives in asm/nsfstim.asm, the host build swaps
- * in src/nsfstim_host.c via the project.toml [host].replace map (the NSFXQ /
+ * in src/nsfstim_host.c via the mbt.toml [build.host].replace map (the NSFXQ /
  * NSFTIME pattern).
  *
  * On MVS the arming is a single STIMER (SVC 47, TYPE=REAL) re-armed to the head

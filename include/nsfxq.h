@@ -28,9 +28,9 @@
  *   - MVS : asm/nsfxq.asm      -- a CS retry loop (on-target build+validation
  *                                 is deferred to M0-6).
  *   - host: src/nsfxq_host.c   -- GCC/clang atomic builtins, swapped in for the
- *                                 asm by the project.toml [host].replace map so
+ *                                 asm by the mbt.toml [build.host].replace map so
  *                                 the lock-free contract is exercised for real
- *                                 under make test-host.
+ *                                 under mbt test.
  */
 
 #include "nsfque.h"

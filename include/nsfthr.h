@@ -9,8 +9,8 @@
  *   MVS : src/nsfthr.c       -- libc370 `cthread` (ATTACH a subtask, SVC-2 POST,
  *                               WAIT, TTIMER-bounded wait, termecb join + DETACH)
  *   host: src/nsfthr_host.c   -- a pthread + a condition variable, so the SAME
- *                               subtask function runs under `make test-host`
- * swapped by the project.toml [host].replace map (the NSFXQ / NSFEVT_PLAT
+ *                               subtask function runs under `mbt test`
+ * swapped by the mbt.toml [build.host].replace map (the NSFXQ / NSFEVT_PLAT
  * pattern), so the CTCI bottom half (src/nsfctcib.c) stays portable.
  *
  * SAME ADDRESS SPACE (ADR-0022 scope). The subtask lives in the executive's own

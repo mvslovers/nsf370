@@ -6,7 +6,7 @@
  *
  * Both are single scalar facts the platform answers differently on MVS and on
  * the host, so they share one seam (MVS: asm/nsftime.asm, host:
- * src/nsftime_host.c, swapped by the project.toml [host].replace map -- the
+ * src/nsftime_host.c, swapped by the mbt.toml [build.host].replace map -- the
  * same mechanism NSFXQ uses). The name leads on `nsftime` because nsf_now() is
  * the shared clock; nsf_taskid() rides along as the second platform fact rather
  * than earn its own asm file for a single instruction.

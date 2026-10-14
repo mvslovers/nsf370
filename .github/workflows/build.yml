@@ -6,8 +6,11 @@ on:
     branches: [main]
 
 jobs:
+  # Cross-build of every module and test module on the mbt 3 reusable
+  # workflow. The host suite runs in its own job below, not through this
+  # workflow's host_tests step, which only runs once the cross-build passed.
   build:
-    uses: mvslovers/mbt/.github/workflows/build.yml@main
+    uses: mvslovers/mbt/.github/workflows/build3.yml@main
 
   # No assembler card may reach column 72.  IFOX00 applies the continuation
   # rule to COMMENT cards too, so such a card eats the one after it -- and
@@ -41,24 +44,31 @@ jobs:
       - name: Every sock_lookup call site is classified
         run: tools/check-sock-lookup.sh
 
-  # Native gcc host suite (`make test-host`) -- the portable C tests run with
-  # the host compiler, no cc370 and no MVS.  The delegated `build` job above
-  # only cross-compiles them, so host-only breakage (a non-portable asm()
-  # alias, a single-core thread race) went unnoticed until it hit a
-  # developer's Linux box.  Runs in parallel with the cross-build.
+  # Native host suite (`mbt test`) -- the portable C tests built with the host
+  # compiler, no cc370 and no MVS. Kept as its own job, independent of the
+  # cross-build: host-only breakage (a non-portable asm() alias, a single-core
+  # thread race) must show even while the cross-build is red.
   host-tests:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          submodules: recursive
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+      - name: Install mbt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the newest mbt 3 release; it switches to the pinned one by itself
+          TAG=$(gh release list -R mvslovers/mbt --limit 100 --json tagName,isDraft \
+                --jq '[.[] | select(.isDraft | not) | .tagName | select(startswith("v3."))][0]')
+          [ -n "$TAG" ] || { echo "no mbt 3 release on mvslovers/mbt" >&2; exit 3; }
+          VER="${TAG#v}"
+          cd "$RUNNER_TEMP"
+          gh release download "$TAG" -R mvslovers/mbt -p "mbt-$VER-linux-amd64.tar.gz" -p "mbt-$VER-sha256.txt"
+          sha256sum -c --ignore-missing "mbt-$VER-sha256.txt"
+          tar -xzf "mbt-$VER-linux-amd64.tar.gz"
+          install -D "mbt-$VER-linux-amd64/mbt" "$HOME/.mbt-bin/mbt"
+          echo "$HOME/.mbt-bin" >> "$GITHUB_PATH"
 
       - name: Run host test suite
-        run: make test-host
+        run: mbt test

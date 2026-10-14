@@ -7,7 +7,7 @@
  * (timerECB) or a stop request (stopECB). The WAIT is platform-specific:
  *   MVS : src/nsfevt_plat.c   -- libc370 ecb_waitlist (WAIT ECBLIST, SVC 1)
  *   host: src/nsfevt_plat_host.c -- a pthread mutex + condition variable
- * swapped by the project.toml [host].replace map (the NSFXQ / NSFTIME pattern),
+ * swapped by the mbt.toml [build.host].replace map (the NSFXQ / NSFTIME pattern),
  * so the loop logic in src/nsfevt.c stays portable.
  */
 #include "nsf.h"
