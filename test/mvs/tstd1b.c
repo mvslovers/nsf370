@@ -34,10 +34,11 @@
 #include "nsfreqc.h"
 #include "nsfsel.h"     /* NSFSELITEM, SEL_F_TIMED                            */
 #include <mbtcheck.h>
-#include <clibos.h>
-#include <clibecb.h>
+#include <mvs/ecb.h>
 #include <stdio.h>
 #include <string.h>
+#include <mvs/apf.h>
+#include <mvs/wto.h>
 
 #define D1B_SRC      0xC0A8C801u
 #define D1B_A_PORT   3011u

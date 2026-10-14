@@ -941,10 +941,9 @@ reus = false  # undeclared in project.toml: ld370's default
 target = "NSF.LINKLIB"
 
 [toolchain]
-# mbt 3 pins its own version here. libc370 stays at the last 1.x release
-# (1.0.8, pinned 2026-09-30 so the release build does not pick up the
-# incompatible 2.0 headers, libc370#245) until the libc370 2.x port, which
-# moves both libc370 and cc370 to current releases. build3.yml floats on the
-# toolchain's main; release3.yml builds against these pins.
+# The release build pins these; build3.yml floats on the toolchain's main so a
+# cc370/libc370 regression surfaces in a PR build. libc370 2.8.0 and later
+# need cc370 1.6.0 or later.
 mbt = "3.0"
-libc370 = "1.0.8"
+cc370 = "1.6.3"
+libc370 = "2.11.0"

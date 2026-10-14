@@ -100,8 +100,8 @@
 #include "nsfreqx.h"         /* NSFREQX_CHUNK                                  */
 #include <mbtcheck.h>
 #include <string.h>
-#include <clibos.h>          /* __isauth (TESTAUTH FCTN=1)                     */
-#include <clibwto.h>         /* wtof -- console markers survive the cancel     */
+#include <mvs/wto.h>         /* wtof -- console markers survive the cancel     */
+#include <mvs/apf.h>         /* __isauth */
 
 #define PEER_IP    0xC0A8C802u          /* 192.168.200.2 -- the host side      */
 #define PEER_PORT  3004                 /* samples/host/recvkey_peer.py        */

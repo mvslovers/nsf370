@@ -76,13 +76,14 @@
 #include "nsfreqc.h"
 #include "nsfsoc.h"         /* NSF_AF_INET / NSF_SOCK_DGRAM                    */
 
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1), __ascb              */
-#include <clibecb.h>        /* ecb_timed_wait (the pause)                      */
-#include <clibwto.h>        /* wtof -- survives a CANCEL, SYSPRINT does not    */
+#include <mvs/ecb.h>        /* ecb_timed_wait (the pause)                      */
+#include <mvs/wto.h>        /* wtof -- survives a CANCEL, SYSPRINT does not    */
 #include <mbtcheck.h>
 #include <stdio.h>
 #include <stdlib.h>         /* malloc/free -- a private-storage address only    */
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
+#include <mvs/xmem.h>       /* __ascb */
 
 #define APPD_ASCBASID   0x24U       /* ASCBASID halfword in the ASCB           */
 #define APPD_CC_NORUN   20          /* "could not run" -- never 0, never 1     */

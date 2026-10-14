@@ -10,7 +10,7 @@
  * by cc370 on the host.
  */
 #include "nsfmsg.h"
-#include <clibwto.h>            /* libc370 wto() */
+#include <mvs/wto.h>            /* libc370 wto() */
 
 void nsfmsg_emit(const char *line)
 {

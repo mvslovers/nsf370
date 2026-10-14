@@ -843,7 +843,7 @@ int main(void)
     printf("=== nsf370 NSFCTCI bottom-half tests (subtask model, host shims) ===\n");
 #ifdef __MVS__
     printf("host-only suite (drives the channel + thread shims); MVS validates via TSTCTCM\n");
-    return 0;
+    return mbt_test_summary("TSTCTCI");
 #else
 
     sts_init();

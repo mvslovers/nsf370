@@ -24,11 +24,15 @@
 #include "nsftmr.h"           /* nsftmr_count (armed timers, reported at STATS) */
 
 #include <string.h>
-#include <clibos.h>           /* __super/__prob/__issup/__ascb/__xmpost/getmain */
-#include <clibwto.h>          /* wtof                                          */
-#include <cvt.h>              /* CVT, CVTPTR                                   */
-#include <ihascvt.h>          /* SCVT (scvtsvct), SVCTABLE, SVCENTRY           */
-#include <ihaasvt.h>          /* ASVT (asvtmaxu, asvtenty) -- liveness guard   */
+#include <mvs/wto.h>          /* wtof                                          */
+#include <ibm/mvs/cvt.h>      /* CVT, CVTPTR                                   */
+#include <ibm/mvs/ihascvt.h>  /* SCVT (scvtsvct), SVCTABLE, SVCENTRY           */
+#include <ibm/mvs/ihaasvt.h>  /* ASVT (asvtmaxu, asvtenty) -- liveness guard   */
+#include <mvs/apf.h>          /* PSWKEY0/__issup/__prob/__super */
+#include <mvs/link.h>         /* __loadhi */
+#include <mvs/storage.h>      /* freemain/getmain */
+#include <mvs/xmem.h>         /* __ascb/__xmpost */
+#include <s370/atomic.h>      /* __cas */
 
 /* Shutdown drain (issue #55).  Same shape and cadence as the probe STC's
  * nsfv_drain: nudge, poll to a ceiling, settle, re-check. */

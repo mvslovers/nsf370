@@ -42,9 +42,8 @@
  */
 #include "nsfstim.h"            /* nsftmr_plat_arm / _disarm / _ecb (STIMER)   */
 
-#include <clibos.h>            /* clib_identify_cthread (IDENTIFY CTHREAD)     */
-#include <clibthrd.h>          /* cthread_create / _post / _detach / _push /... */
-#include <clibecb.h>          /* ECB, ecb_waitlist, ecb_timed_wait, bits      */
+#include <mvs/thread.h>        /* cthread_create / _post / _detach / _push /... */
+#include <mvs/ecb.h>          /* ECB, ecb_waitlist, ecb_timed_wait, bits      */
 
 #include <mbtcheck.h>
 #include <stdio.h>
@@ -112,7 +111,10 @@ int main(void)
      * (NSF stays unauthorized). Force-links the CTHREAD module via =V(CTHREAD). */
     idrc = clib_identify_cthread();
     printf("clib_identify_cthread rc=%d\n", idrc);
-    CHECK_EQ((long)idrc, 0, "IDENTIFY CTHREAD succeeded (ATTACH EP=CTHREAD ready)");
+    /* RC 4 = the name already exists: since libc370 2.3.0 the C startup
+     * IDENTIFYs CTHREAD itself when the thread driver is linked, and since #427
+     * the call reports IDENTIFY's real code (1.x always returned 0). */
+    CHECK(idrc == 0 || idrc == 4, "IDENTIFY CTHREAD succeeded (ATTACH EP=CTHREAD ready)");
 
     /* ---- TEST 1: SVC-2 POST from a subtask into the executive's multi-ECB
      * WAIT, alongside the async STIMER heartbeat. THE LINCHPIN. ---- */

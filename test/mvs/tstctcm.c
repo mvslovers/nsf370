@@ -51,8 +51,10 @@
 #include <mbtcheck.h>
 #include <string.h>
 #include <stdio.h>
-#include <clibecb.h>            /* ECB, ecb_timed_waitlist, ecb_post (mini loop) */
-#include <svc99.h>             /* __txdmy/__txrddn/__txddn, S99* verbs (part 1c) */
+#include <mvs/ecb.h>            /* ECB, ecb_timed_waitlist, ecb_post (mini loop) */
+#include <mvs/dynalloc.h>      /* __txdmy/__txrddn/__txddn, S99* verbs (part 1c) */
+#include <ibm/mvs/iefzb4d0.h>   /* S99VRBAL/S99VRBUN */
+#include <ibm/mvs/iefzb4d2.h>   /* txt99 */
 
 /* Guest/host IP addresses for the crafted ICMP echo (part 2). Defaults match the
  * live MVSCE CTCI pair on mvsdev (CLAUDE.md §5): guest HOME 192.168.200.1, host
@@ -350,6 +352,7 @@ static int run_device_probe(void)
 
 /* ---- part 1c: SVC 99 SUCCESS path via a DUMMY allocation ----------------- */
 
+#ifndef NSFCTCI_CUU
 /* A system-generated DDNAME (DALRTDDN) is 8 uppercase, non-blank characters.
  * Checked charset-transparently (strchr over an EBCDIC literal). */
 static int ddname_ok(const char *d)
@@ -408,6 +411,7 @@ static int run_alloc_success(void)
     CHECK(rc == 0, "SVC 99 S99VRBUN unallocation succeeds (rc 0)");
     return 0;
 }
+#endif /* !NSFCTCI_CUU */
 
 int main(void)
 {

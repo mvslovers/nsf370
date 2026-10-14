@@ -32,10 +32,11 @@
 #include "nsfreq.h"
 #include "nsfreqc.h"
 #include <mbtcheck.h>
-#include <clibos.h>
-#include <clibecb.h>    /* ecb_timed_wait -- the poll pause (tstrqxc pattern) */
+#include <mvs/ecb.h>    /* ecb_timed_wait -- the poll pause (tstrqxc pattern) */
 #include <stdio.h>
 #include <string.h>
+#include <mvs/apf.h>    /* __isauth */
+#include <mvs/wto.h>    /* wtof */
 
 #define D1A_PORT     3009u
 #define D1A_SRC      0xC0A8C801u        /* 192.168.200.1 -- the guest         */

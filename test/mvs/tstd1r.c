@@ -7,9 +7,9 @@
  * written into it.  TPROT asks the machine, under the CALLER's key, whether the
  * caller may store there -- by condition code, without faulting.
  *
- * THIS IS ENTIRELY UNPROVEN BEFORE THIS TEST.  asm/*.asm never compiles on
- * host, so nothing offline can substitute for it: the d1b PR said so and this
- * is the gate it named.
+ * THIS IS ENTIRELY UNPROVEN BEFORE THIS TEST.  The asm/ sources never
+ * compile on host, so nothing offline can substitute for it: the d1b PR
+ * said so and this is the gate it named.
  *
  * THREE CASES
  *  (1) NO EYECATCHER  -> refused, and the block NOT WRITTEN (a sentinel in it
@@ -54,15 +54,15 @@
  * Return codes: 0 passed, 1 ran and failed, 20 could not run.
  *--------------------------------------------------------------------------*/
 #include "nsfvsvc.h"
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                      */
-#include <clibtry.h>        /* ___try -- capture the abend, no dump            */
-#include <clibwto.h>        /* wtof -- survives a hang, unlike SYSPRINT        */
-#include <cvt.h>            /* CVTPTR / cvtabend -- the chase starts at 16     */
-#include <ihascvt.h>        /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
+#include <mvs/recovery.h>   /* ___try -- capture the abend, no dump            */
+#include <mvs/wto.h>        /* wtof -- survives a hang, unlike SYSPRINT        */
+#include <ibm/mvs/cvt.h>    /* CVTPTR / cvtabend -- the chase starts at 16     */
+#include <ibm/mvs/ihascvt.h> /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
 #include <mbtcheck.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
 
 #define D1R_CC_SKIP  20
 #define D1R_SENT     0x5AC0F001u        /* sentinel: "nothing wrote here"     */
@@ -295,7 +295,7 @@ static int case_foreign_r8(void)
         printf("  case 2: target rc %08X -> %08X, seq %08X -> %08X\n",
                (unsigned)before_rc, (unsigned)target->rc,
                (unsigned)before_seq, (unsigned)target->seq);
-        CHECK(target->rc == before_rc && target->seq == before_seq,
+        CHECK((UINT)target->rc == before_rc && target->seq == before_seq,
               "2.4(2): a foreign R8 was REFUSED and the block NOT written");
         /* And the refusal is now ATTRIBUTABLE: the eyecatcher provably landed
         ** (gated above), so the eyecatcher check cannot be what refused, and

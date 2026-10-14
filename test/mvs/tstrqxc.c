@@ -137,15 +137,15 @@
 #include "nsfvsvc.h"
 #include "nsfreq.h"         /* NSFRQE -- the image the request carries         */
 #include "nsftime.h"        /* nsf_now -- STCK, the measurement roles          */
-#include <clibecb.h>        /* ecb_timed_wait -- the poll pause                */
-#include <clibos.h>         /* __isauth (TESTAUTH FCTN=1)                      */
-#include <clibtry.h>        /* ___try -- capture the abend, no dump            */
-#include <clibwto.h>        /* wtof -- survives a hang, unlike SYSPRINT        */
-#include <cvt.h>            /* CVTPTR / cvtabend -- the chase starts at 16     */
-#include <ihascvt.h>        /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
+#include <mvs/ecb.h>        /* ecb_timed_wait -- the poll pause                */
+#include <mvs/recovery.h>   /* ___try -- capture the abend, no dump            */
+#include <mvs/wto.h>        /* wtof -- survives a hang, unlike SYSPRINT        */
+#include <ibm/mvs/cvt.h>    /* CVTPTR / cvtabend -- the chase starts at 16     */
+#include <ibm/mvs/ihascvt.h> /* SCVT (scvtsvct), SVCTABLE, SVCENTRY             */
 #include <mbtcheck.h>
 #include <stdio.h>
 #include <string.h>
+#include <mvs/apf.h>        /* __isauth */
 
 /* "The gate could not run" -- deliberately not 1, which already means "ran and
  * failed" (mbt_test_summary).  Returned from the test; the harness is not
