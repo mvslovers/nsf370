@@ -13,7 +13,7 @@
 //*
 //* Installation:
 //*   Copy to SYS2.PROCLIB(NSFS)            (cataloged proc; no // PEND)
-//*   Deploy the load modules:  make deploy  -> NSF.LINKLIB
+//*   Deploy the load modules:  mbt deploy   -> NSF.LINKLIB
 //*     (NSFS = this STC, NSFVSVC = the CSA-resident SVC routine it __loadhi's
 //*      and points a stolen SVCTABLE slot at)
 //*   The STC self-authorises at runtime via clib_apf_setup (SVC 244), so
@@ -24,7 +24,7 @@
 //* Stopping:    /P NSFS         (restores the SVC slot; allow ~30s for the
 //*                               in-flight drain before assuming a hang)
 //*
-//* Client:      make test-mvs ARGS="--only TSTRQXM"   (NSFS must be started)
+//* Client:      mbt test --mvs --only TSTRQXM         (NSFS must be started)
 //*
 //NSFS     EXEC PGM=NSFS,REGION=4M,TIME=1440
 //STEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB

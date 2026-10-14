@@ -1,13 +1,14 @@
+schema = 3
+
 [project]
 name = "nsf370"
 version = "0.1.0-dev"
-type = "application"
+kind = "application"
 
 [build]
-# NSF builds warnings-clean. -I include exposes the public headers.
-cflags = ["-std=gnu99", "-I", "include"]
+cflags = ["-std=gnu99"]
 
-[host]
+[build.host]
 # Fast native inner loop for the portable foundation/protocol tests
 # (`make test-host`). NSF_DEBUG=1 turns on the eyecatcher / double-free /
 # leak-gate checks (compiled out of production; see nsfmm.c).
@@ -57,19 +58,19 @@ replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsfti
 [dependencies]
 
 # -- M0-1 build-skeleton smoke test -------------------------------------
+# Defaults for every test; test/**/*.c and *.asm are tests unless excluded.
+[tests]
+rent = false
+reus = false
+
 # Trivial dual (host + MVS) test proving the toolchain, the base types and
 # the NSF_SIZE_ASSERT machinery compile and run (exit 0 = pass, 1 = fail).
 # Complemented by the M0-2 foundation unit tests below.
-[[test]]
-name = "TSTSMOKE"
-startup = "crt1"
-sources = ["test/tstsmoke.c"]
+[test.TSTSMOKE]
 
 # -- M0-2 foundation unit tests (NSFQUE / NSFXQ / NSFMM) ----------------
 # NSFQUE: FIFO order, q_remove from the middle, bounded reject, Q_ENTRY.
-[[test]]
-name = "TSTQUE"
-startup = "crt1"
+[test.TSTQUE]
 sources = ["test/tstque.c", "src/nsfque.c"]
 
 # NSFXQ: exit->mainline handoff push/drain ordering. asm/nsfxq.asm is swapped
@@ -78,20 +79,14 @@ sources = ["test/tstque.c", "src/nsfque.c"]
 # M5-2a: the Phase-2 NSFRQE crossing (ADR-0041) -- the pure field rules at each
 # of the three hops (caller -> CSA slot -> STC-private copy -> back). Host-only
 # logic; the SVC/CSA/key/POST transport is Stage-0 and not host-simulable.
-[[test]]
-name = "TSTREQX"
-startup = "crt1"
+[test.TSTREQX]
 sources = ["test/tstreqx.c", "src/nsfreqx.c"]
 
-[[test]]
-name = "TSTXQ"
-startup = "crt1"
+[test.TSTXQ]
 sources = ["test/tstxq.c", "asm/nsfxq.asm"]
 
 # NSFMM: alloc/exhaustion/free, counters, enforcement ABENDs, leak gate.
-[[test]]
-name = "TSTMM"
-startup = "crt1"
+[test.TSTMM]
 sources = ["test/tstmm.c", "src/nsfmm.c", "src/nsfabend.c"]
 
 # -- M0-3 buffer manager unit tests (NSFBUF) ---------------------------
@@ -99,9 +94,7 @@ sources = ["test/tstmm.c", "src/nsfmm.c", "src/nsfabend.c"]
 # prepend/reject, head/tail trim, chain-aware copyin/copyout, chaining, and
 # the two-pool leak gate (buf_free of a mixed chain returns both pools to
 # baseline). Links NSFMM + nsf_abend (buf_free routes through mm_free).
-[[test]]
-name = "TSTBUF"
-startup = "crt1"
+[test.TSTBUF]
 sources = ["test/tstbuf.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c"]
 
 # -- M0-4 trace + statistics unit tests (NSFTRC / NSFSTS) --------------
@@ -109,9 +102,7 @@ sources = ["test/tstbuf.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c"]
 # text truncation into the 128 B entry, oldest-first ring wrap with correct
 # cursor/count, hexdump formatting, and the NSFTRACE eyecatcher. Links the
 # platform seam (asm/nsftime.asm -> src/nsftime_host.c on the host).
-[[test]]
-name = "TSTTRC"
-startup = "crt1"
+[test.TSTTRC]
 sources = ["test/tsttrc.c", "src/nsftrc.c", "src/nsffmt.c", "asm/nsftime.asm"]
 
 # libc370 vsnprintf/snprintf toolchain-divergence probe (issue #25.2): TSTTRC's
@@ -120,26 +111,19 @@ sources = ["test/tsttrc.c", "src/nsftrc.c", "src/nsffmt.c", "asm/nsftime.asm"]
 # place, independent of NSFTRC -- host = false because the divergence is
 # invisible on host (a host test would just prove glibc is C99-conformant).
 # KEEP even after nsffmt.c lands: the wrapper's contract is built against this.
-[[test]]
-name = "TSTVSNP"
-startup = "crt1"
+[test.TSTVSNP]
 host = false
-sources = ["test/mvs/tstvsnp.c"]
 
 # NSFFMT: the safe formatting seam (nsf_vsnprintf/nsf_snprintf) that fixes the
 # TSTVSNP-pinned libc370 gap -- always NUL-terminates on truncation, clamped
 # return value. Portable C, dual host+MVS: the wrapper's own clamping logic is
 # platform-independent, so this runs and asserts identically both ways.
-[[test]]
-name = "TSTFMT"
-startup = "crt1"
+[test.TSTFMT]
 sources = ["test/tstfmt.c", "src/nsffmt.c"]
 
 # NSFSTS: distinct counter registration, STS_INC/STS_ADD, registry overflow,
 # reset-to-zero, and the component+name+value render into a caller buffer.
-[[test]]
-name = "TSTSTS"
-startup = "crt1"
+[test.TSTSTS]
 sources = ["test/tststs.c", "src/nsfsts.c", "src/nsffmt.c"]
 
 # -- M0-5 timer manager unit tests (NSFTMR) ----------------------------
@@ -148,9 +132,7 @@ sources = ["test/tststs.c", "src/nsfsts.c", "src/nsffmt.c"]
 # idempotent cancel, and nsftmr_run re-arm/disarm via the platform-seam probe.
 # The arming seam asm/nsfstim.asm is swapped for src/nsfstim_host.c on the host
 # ([host].replace above); the host drives ticks by calling nsftmr_run directly.
-[[test]]
-name = "TSTTMR"
-startup = "crt1"
+[test.TSTTMR]
 sources = ["test/tsttmr.c", "src/nsftmr.c", "src/nsfque.c", "asm/nsfstim.asm"]
 
 # NSFTMR timer-accuracy job -- the ADR-0011 gate (spec 6.3). MVS-only: it MEASURES
@@ -159,9 +141,7 @@ sources = ["test/tsttmr.c", "src/nsftmr.c", "src/nsfque.c", "asm/nsfstim.asm"]
 # from nsftmr_run AND from the async STIMER-REAL + POST-exit seam (asm/nsfstim.asm,
 # whose live run is an M0-6 task). host = false -> skipped by test-host; runs under
 # test-mvs and PASSes only if mean in [90,110] ms and no interval > 200 ms.
-[[test]]
-name = "TSTTMACC"
-startup = "crt1"
+[test.TSTTMACC]
 host = false
 sources = ["test/mvs/tsttmacc.c", "asm/nsftime.asm", "test/asm/tststmw.asm"]
 
@@ -170,18 +150,14 @@ sources = ["test/mvs/tsttmacc.c", "asm/nsftime.asm", "test/asm/tststmw.asm"]
 # NSFXQ handoff drained from a pthread-simulated exit, and the shutdown leak
 # gate. Portable loop + the WAIT/POST seam (src/nsfevt_plat.c swapped for the
 # pthread cond-var host shim by [host].replace); timer + xq seams swapped too.
-[[test]]
-name = "TSTEVT"
-startup = "crt1"
+[test.TSTEVT]
 sources = ["test/tstevt.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "src/nsfsts.c", "src/nsffmt.c", "asm/nsfstim.asm", "asm/nsfxq.asm"]
 
 # NSFEVT on-MVS validation (host = false): the loop WAITs on {timerECB, stopECB},
 # the async STIMER exit (asm/nsfstim.asm NSFTMEXP) POSTs timerECB and re-arms, the
 # loop observes N timer cycles at ~100 ms, then a simulated stop shuts it down
 # cleanly. This is where the async STIMER exit is proven on 3.8j (CC 0 vs S0C6).
-[[test]]
-name = "TSTEVTM"
-startup = "crt1"
+[test.TSTEVTM]
 host = false
 sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "src/nsfsts.c", "src/nsffmt.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
 
@@ -190,9 +166,7 @@ sources = ["test/mvs/tstevtm.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm
 # loop path (tmr_start -> STIMER exit -> nsftmr_wake) and time when it fires: the
 # bug fired it after 210 ticks (21.0 s), the ADR-0034 fix after ~2.0 s. Re-arms
 # delta-20 three times so the cadence is pinned at 2.0/4.0/6.0 s.
-[[test]]
-name = "TSTTMCAD"
-startup = "crt1"
+[test.TSTTMCAD]
 host = false
 sources = ["test/mvs/tsttmcad.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsftmr.c", "src/nsfsts.c", "src/nsffmt.c", "asm/nsfstim.asm", "asm/nsfxq.asm", "asm/nsftime.asm"]
 
@@ -208,9 +182,7 @@ sources = ["test/mvs/tsttmcad.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfm
 # test/cfg/, never staged as an MVS dataset, so this can only fail under
 # test-mvs; on-MVS coverage of the parser's EBCDIC path is not essential since
 # it is already exercised live by the real PROFILE at S NSF.
-[[test]]
-name = "TSTCFG"
-startup = "crt1"
+[test.TSTCFG]
 mvs = false
 sources = ["test/tstcfg.c", "src/nsfcfg.c", "src/nsffmt.c"]
 
@@ -221,18 +193,14 @@ sources = ["test/tstcfg.c", "src/nsfcfg.c", "src/nsffmt.c"]
 # src/nsfmsg_host.c) are swapped by [host].replace, so a test injects a command,
 # posts the console ECB, and asserts evt_mainloop drained + dispatched + shut
 # down clean. Pulls the executive + foundation it drives.
-[[test]]
-name = "TSTOPR"
-startup = "crt1"
+[test.TSTOPR]
 sources = ["test/tstopr.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfstc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # NSFSTC: the NSFCFG->component-init wiring -- trace-flag mapping, NSFPOOL count
 # resolution, cross-statement referential integrity (spec 14.5), and
 # nsf_init_from_cfg's success (pools created, leak gate) + refuse-to-start
 # failure path (no partial state). Pure portable C over real cfg_parse output.
-[[test]]
-name = "TSTSTC"
-startup = "crt1"
+[test.TSTSTC]
 sources = ["test/tststc.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsftrc.c", "src/nsfbuf.c", "src/nsfmm.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsftime.asm", "asm/nsfstim.asm"]
 
 # NSFSTC on-MVS component validation (host = false): parse an embedded profile,
@@ -241,9 +209,7 @@ sources = ["test/tststc.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsftrc.c", "src
 # ESTAE establish/delete both link and run on MVS. The full S NSF / F NSF,* /
 # P NSF / induced-ABEND-percolate flow is the PROC-driven operator validation
 # (jcl/NSFPROC.jcl), which a batch RC test cannot observe.
-[[test]]
-name = "TSTSTCM"
-startup = "crt1"
+[test.TSTSTCM]
 host = false
 sources = ["test/mvs/tststcm.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -258,9 +224,7 @@ sources = ["test/mvs/tststcm.c", "src/nsfstc.c", "src/nsfcfg.c", "src/nsfmsg.c",
 # on the native build. tstdev.c is portable (the pthread is inside nsfhost.c) and
 # skips trivially where nsfhost_ops() is NULL (MVS) -- CTCI validates the
 # abstraction on MVS (M1-3+).
-[[test]]
-name = "TSTDEV"
-startup = "crt1"
+[test.TSTDEV]
 sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm"]
 
 # -- M1-4 CTCI frame codec (nsfctcif): CTCISEG<->raw IP ----------------------
@@ -268,9 +232,7 @@ sources = ["test/tstdev.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c"
 # vectors for decode AND encode -- a round-trip alone would hide a USHORT-vs-
 # byte-wise endianness regression (self-consistent on either box). No device, no
 # NSFMM: runs host + MVS unchanged.
-[[test]]
-name = "TSTCTCIF"
-startup = "crt1"
+[test.TSTCTCIF]
 sources = ["test/tstctcif.c", "src/nsfctcif.c"]
 
 # -- M1-4 CTCI bottom half (NSFCTCI): DEVOPS + DEVIO over the host shim -------
@@ -281,9 +243,7 @@ sources = ["test/tstctcif.c", "src/nsfctcif.c"]
 # demux, decode->PBUF (EV_PACKET_RECEIVED), stale-ECB guard, error re-drive,
 # sendq->WRITE framing + single-free ownership, leak gate. A wrong CCW flag is
 # caught only by the real device (TSTCTCM on MVSCE).
-[[test]]
-name = "TSTCTCI"
-startup = "crt1"
+[test.TSTCTCI]
 sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M1-3 CTCI top half (NSFCTCI): allocate + open the CUU pair + EXCP --------
@@ -294,9 +254,7 @@ sources = ["test/tstctci.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c"
 # carries the DEFERRED EXCP channel path (compiled -> cross-links, executed only
 # with -DNSFCTCI_CUU + a live 3088 pair; see the PR runbook). Cross-links clean;
 # its EXCP runtime on 3.8j is UNVALIDATED (blocked on the Hercules device).
-[[test]]
-name = "TSTCTCM"
-startup = "crt1"
+[test.TSTCTCM]
 host = false
 sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -310,9 +268,7 @@ sources = ["test/mvs/tstctcm.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctc
 # leaves the parent alive. Needs only the STIMER seam (asm/nsfstim.asm); cthread /
 # IDENTIFY / WAIT ECBLIST come from libc370 (autocalled). cthread is the first use
 # in the ecosystem, so it is validated here, not assumed.
-[[test]]
-name = "TSTCTHR"
-startup = "crt1"
+[test.TSTCTHR]
 host = false
 sources = ["test/mvs/tstcthr.c", "asm/nsfstim.asm"]
 
@@ -324,9 +280,7 @@ sources = ["test/mvs/tstcthr.c", "asm/nsfstim.asm"]
 # on the main task, leaving the target ECB untouched; plus the nsfthr_join bound
 # (a live subtask join times out -> RETAIN instead of hanging). The pthread host
 # shim always fires, so only MVS can tell the shapes apart.
-[[test]]
-name = "TSTTHRW"
-startup = "crt1"
+[test.TSTTHRW]
 host = false
 sources = ["test/mvs/tstthrw.c", "src/nsfthr.c", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -334,23 +288,17 @@ sources = ["test/mvs/tstthrw.c", "src/nsfthr.c", "asm/nsfstim.asm", "asm/nsftime
 # NSFCKSUM: the Internet checksum (RFC 1071) over a PBUF chain. Pinned FIRST,
 # against literal vectors, before any packet code (spec 11.5). Needs only the
 # PBUF type from nsfbuf.h (fabricated on the stack) -- no NSFMM/NSFBUF pools.
-[[test]]
-name = "TSTCKSUM"
-startup = "crt1"
+[test.TSTCKSUM]
 sources = ["test/tstcksum.c", "src/nsfcksum.c"]
 
 # NSFIP: header validate/demux/build + routing table. Drives the IP layer over a
 # capture DEVOPS (deterministic, loop not running) + one NSFHOST loopback flow.
-[[test]]
-name = "TSTIP"
-startup = "crt1"
+[test.TSTIP]
 sources = ["test/tstip.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # NSFICM: ICMP echo responder (in-place, single-owner). Injects an echo request
 # over the NSFHOST loopback and asserts a well-formed reply emerges.
-[[test]]
-name = "TSTICMP"
-startup = "crt1"
+[test.TSTICMP]
 sources = ["test/tsticmp.c", "src/nsficmp.c", "src/nsfip.c", "src/nsfcksum.c", "src/nsfhost_plat.c", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-1 socket object model (NSFSOC) + the NSFRQE frozen contract ----------
@@ -362,9 +310,7 @@ sources = ["test/tsticmp.c", "src/nsficmp.c", "src/nsfip.c", "src/nsfcksum.c", "
 # alias scan in its own link. soc_complete's app-ecb POST uses the thread seam
 # (src/nsfthr.c -> nsfthr_host.c on host, which wakes via src/nsfevt_plat.c ->
 # host shim); nsftrc timestamps pull the nsftime seam.
-[[test]]
-name = "TSTSOC"
-startup = "crt1"
+[test.TSTSOC]
 sources = ["test/tstsoc.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsftime.asm"]
 
 # -- M3-2 NSFREQ: the request transport + fn dispatcher --------------------
@@ -378,9 +324,7 @@ sources = ["test/tstsoc.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt_plat.c",
 # (#ifndef __MVS__). The MVS transport round-trip is TSTREQM. Needs the socket
 # layer (nsfsoc), the event loop (nsfevt + nsftmr + the plat/stim/xq/time seams)
 # and the thread seam (nsfthr -> host shim, which wakes via nsfevt_plat).
-[[test]]
-name = "TSTREQ"
-startup = "crt1"
+[test.TSTREQ]
 sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfapp.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-2 NSFREQ on MVS: the same-AS transport round-trip ------------------
@@ -390,9 +334,7 @@ sources = ["test/tstreq.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfapp.c"
 # TCB) -- what the host TSTREQ pthread round-trip stands in for. Proves the
 # transport on 3.8j; NO user-visible feature (UDP + EZASOKET are M3-3). Same MVS
 # source set as TSTREQ (nsfthr/nsfevt_plat/asm used as-is, no [host].replace).
-[[test]]
-name = "TSTREQM"
-startup = "crt1"
+[test.TSTREQM]
 host = false
 sources = ["test/mvs/tstreqm.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -404,9 +346,7 @@ sources = ["test/mvs/tstreqm.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfs
 # completing a parked RECVFROM). Dual host+MVS: the direct-call functional tests
 # and the UDPPCB/UDPADDR SIZE_ASSERTs run on cc370 too (the threaded part is
 # host-only). The MVS full-stack live gate is test/mvs/tstudpm.c.
-[[test]]
-name = "TSTUDP"
-startup = "crt1"
+[test.TSTUDP]
 sources = ["test/tstudp.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M3-3 UDP on MVS: the full stack over the real CTCI pair (live gate) ------
@@ -417,9 +357,7 @@ sources = ["test/tstudp.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c"
 # ADR-0027's IOHALT read-park in production (watch issue #28); a datagram to an
 # unbound port draws ICMP port unreachable. Same MVS source set as the CTCI STC
 # path + nsfudp/nsfreq/nsfsoc. Built + run with -DNSFCTCI_CUU=0x0500 etc.
-[[test]]
-name = "TSTUDPM"
-startup = "crt1"
+[test.TSTUDPM]
 host = false
 sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -441,9 +379,7 @@ sources = ["test/mvs/tstudpm.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_pl
 # dispatcher and never crosses a boundary -- so neither could see the two halves
 # disagree about what ulen counts. This is the only binary holding facade,
 # crossing and dispatcher at once.
-[[test]]
-name = "TSTEZA"
-startup = "crt1"
+[test.TSTEZA]
 mvs = false
 sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqx.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfsel.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -453,9 +389,7 @@ sources = ["test/host/tsteza.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsfreqx.c"
 # nsf_sendto -> nsf_recvfrom -> nsf_close -> nsf_termapi over CTCI (0500/0501) +
 # IP + ICMP + UDP + the request path, exactly as a relinked C app would. Built +
 # run with -DNSFCTCI_CUU=0x0500 etc. Same source set as TSTUDPM + src/nsfeza.c.
-[[test]]
-name = "TSTEZAM"
-startup = "crt1"
+[test.TSTEZAM]
 host = false
 sources = ["test/mvs/tstezam.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -468,9 +402,7 @@ sources = ["test/mvs/tstezam.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c",
 # (`nc 192.168.200.1 3007` / `nc -l 192.168.200.2 3008`) + bounded so the job always
 # ends. Built + run with -DNSFCTCI_CUU=0x0500 etc. Source set = TSTEZAM with
 # nsftcp.c + nsfsel.c in place of nsfudp.c.
-[[test]]
-name = "TSTEZAT"
-startup = "crt1"
+[test.TSTEZAT]
 host = false
 sources = ["test/mvs/tstezat.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -482,9 +414,7 @@ sources = ["test/mvs/tstezat.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c",
 # executive); Phase B drives INIT/SOCK/BIND/GETS/CLOS/TERM through the veneer
 # over a dummy protocol + the executive. Links src/nsfeza.c + asm/ezasoh03.asm
 # on top of the TSTREQM request harness.
-[[test]]
-name = "TSTEZAH"
-startup = "crt1"
+[test.TSTEZAH]
 host = false
 sources = ["test/mvs/tstezah.c", "asm/ezasoh03.asm", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfthr.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -497,9 +427,7 @@ sources = ["test/mvs/tstezah.c", "asm/ezasoh03.asm", "src/nsfeza.c", "src/nsfreq
 # test/asm/tsthalt.asm carries the two SVC-issuing entries neither IOHALT nor
 # PURGE has anywhere else in the codebase -- see its header + test/mvs/tsthio.c
 # for the primary-source citations. No changes to src/ or asm/.
-[[test]]
-name = "TSTHIO"
-startup = "crt1"
+[test.TSTHIO]
 host = false
 sources = ["test/mvs/tsthio.c", "test/asm/tsthalt.asm", "test/asm/tststmw.asm", "asm/nsfctcio.asm", "src/nsfctci.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfabend.c", "src/nsffmt.c"]
 
@@ -515,9 +443,7 @@ sources = ["test/mvs/tsthio.c", "test/asm/tsthalt.asm", "test/asm/tststmw.asm", 
 # class pool exhaustion with s->pcb left NULL, the destroy leak gate). The
 # on-target byte-order re-run is TSTTCPM. Same source set as TSTUDP with
 # nsftcp.c in place of nsfudp.c.
-[[test]]
-name = "TSTTCP"
-startup = "crt1"
+[test.TSTTCP]
 mvs = false
 sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -531,9 +457,7 @@ sources = ["test/tsttcp.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c"
 # combined (3+ seeds, x20) / SYN+FIN loss, each a seeded pseudo-random transfer
 # verified byte-exact + orderly FIN teardown + leak gate; plus TIME_WAIT reclaim
 # under pool pressure through the real verbs. Same source set as TSTTCP.
-[[test]]
-name = "TSTLOSS"
-startup = "crt1"
+[test.TSTLOSS]
 mvs = false
 sources = ["test/tstloss.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -544,9 +468,7 @@ sources = ["test/tstloss.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c
 # the 0x22F3 checksum on 3.8j (where TSTTCP -- native little-endian -- cannot).
 # The cross-compile also fires the TCB SIZE_ASSERT (188 B) on target. No live
 # handshake yet (that is M4-2's gate). Same source set as TSTTCP.
-[[test]]
-name = "TSTTCPM"
-startup = "crt1"
+[test.TSTTCPM]
 host = false
 sources = ["test/mvs/tsttcpm.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfdev.c", "src/nsfhost_plat.c", "src/nsfthr.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -559,9 +481,7 @@ sources = ["test/mvs/tsttcpm.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_pl
 # the locally-originated idle-link SYN (the ADR-0030 rarmed read-park). Same MVS
 # source set as TSTUDPM with nsftcp.c in place of nsfudp.c. Built + run with
 # -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
-[[test]]
-name = "TSTTCPH"
-startup = "crt1"
+[test.TSTTCPH]
 host = false
 sources = ["test/mvs/tsttcph.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -573,9 +493,7 @@ sources = ["test/mvs/tsttcph.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_pl
 # window-update-on-drain rule live -- the scenario that deadlocks if it is wrong.
 # Same MVS source set as TSTTCPH. Built + run with
 # -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
-[[test]]
-name = "TSTTCPD"
-startup = "crt1"
+[test.TSTTCPD]
 host = false
 sources = ["test/mvs/tsttcpd.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -588,9 +506,7 @@ sources = ["test/mvs/tsttcpd.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_pl
 # Proves the persist path live AND that the timer wiring never fires rexmit on the
 # lossless link. Same MVS source set as TSTTCPD. Built + run with
 # -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
-[[test]]
-name = "TSTTCPR"
-startup = "crt1"
+[test.TSTTCPR]
 host = false
 sources = ["test/mvs/tsttcpr.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -603,9 +519,7 @@ sources = ["test/mvs/tsttcpr.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_pl
 # The gate: all 40 connect->close succeed + twreclaim > 0. Same MVS source set as
 # TSTTCPH. Built + run with
 # -DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u -DNSFCTCI_DST=0xC0A8C802u.
-[[test]]
-name = "TSTTCPW"
-startup = "crt1"
+[test.TSTTCPW]
 host = false
 sources = ["test/mvs/tsttcpw.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -617,9 +531,7 @@ sources = ["test/mvs/tsttcpw.c", "src/nsftcp.c", "src/nsfreq.c", "src/nsftime_pl
 # controllable dummy PROTOPS.poll gives per-socket readiness. Dual host+MVS (the
 # engine is byte-order-agnostic; the MVS run proves cross-compile + on-3.8j run).
 # The FACADE mask translation is tested in tsteza; the real tcp_poll in tsttcp.
-[[test]]
-name = "TSTSEL"
-startup = "crt1"
+[test.TSTSEL]
 sources = ["test/tstsel.c", "src/nsfsel.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfthr.c", "src/nsfevt_plat.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
 # -- M5 Stage-0a' SVC cross-AS transport probe: the CLIENT (TSTSVC) ----------
@@ -633,20 +545,15 @@ sources = ["test/tstsel.c", "src/nsfsel.c", "src/nsfsoc.c", "src/nsfreq.c", "src
 # N>=40 times, verifying the token round-tripped byte-exact (echo = token+1) plus
 # a monotonic served counter. PREREQUISITE: the probe STC must be started first
 # (S NSFV). No NSF sources, no asm -- links only libc370 (__isauth autocalled).
-[[test]]
-name = "TSTSVC"
-startup = "crt1"
+[test.TSTSVC]
 host = false
-sources = ["test/mvs/tstsvc.c"]
 
 # -- M5-2a the cross-AS NSFRQE live gate (TSTRQXM) ----------------------------
 # MVS-only (host = false). A THIN client: it links the API layer and the two
 # transport halves, and NO stack -- no device, no executive. Every socket op is
 # executed by the NSFS STC in another address space, which is the M5-2a claim.
 # PREREQUISITE: S NSFS.
-[[test]]
-name = "TSTRQXM"
-startup = "crt1"
+[test.TSTRQXM]
 host = false
 sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -658,11 +565,8 @@ sources = ["test/mvs/tstrqxm.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_pl
 # cases: no eyecatcher; an eyecatcher at an address the caller does not own
 # (its OWN CSA staging, so the revert arm corrupts only its own scratch); and
 # the never-referenced tail, a NEGATIVE control that must be ACCEPTED.
-[[test]]
-name = "TSTD1R"
-startup = "crt1"
+[test.TSTD1R]
 host = false
-sources = ["test/mvs/tstd1r.c"]
 
 # -- M5-2d1 live gates 2.2/2.3: B DRIVES A'S DESCRIPTOR (TSTD1B) ------------
 # MVS-only, PARM-selected role. Two REAL address spaces: A holds a socket, B
@@ -671,9 +575,7 @@ sources = ["test/mvs/tstd1r.c"]
 # socket, the transport could. The sweep reports ATTEMPTS as well as hits,
 # because "0 hits" alone is a null nobody can read. Also 2.3, SELECT with a
 # foreign descriptor in the mask. Runs only after TSTD1A (2.1) is green.
-[[test]]
-name = "TSTD1B"
-startup = "crt1"
+[test.TSTD1B]
 host = false
 sources = ["test/mvs/tstd1b.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -686,9 +588,7 @@ sources = ["test/mvs/tstd1b.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_pla
 # address space does. Same source list as TSTRQXM (the cross-AS client shape:
 # nsfreqc.c registers the transport, so every verb runs in the NSFS address
 # space). PEER: samples/host/d1accept_peer.py 192.168.200.1 3009
-[[test]]
-name = "TSTD1A"
-startup = "crt1"
+[test.TSTD1A]
 host = false
 sources = ["test/mvs/tstd1a.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -714,9 +614,7 @@ sources = ["test/mvs/tstd1a.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_pla
 # CC 20 still shows as FAIL in the matrix, and a round that has to explain one
 # expected red cell erodes exactly the confidence a full-green round buys. Run
 # it deliberately, via the JCL, or not at all.
-[[test]]
-name = "TSTRQXR"
-startup = "crt1"
+[test.TSTRQXR]
 host = false
 sources = ["test/mvs/tstrqxr.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
 
@@ -726,12 +624,9 @@ sources = ["test/mvs/tstrqxr.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_pl
 # socket, left registered by a job that ends without TERMAPI -- so that
 # `F NSFS,APPS` can be asked what the client-death guard says about it.
 # Links the client seam (nsfreqc.c) like TSTRQXM, not the STC.
-[[test]]
-name = "TSTAPPD"
-startup = "crt1"
+[test.TSTAPPD]
 host = false
 sources = ["test/mvs/tstappd.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqc.c", "src/nsfreqx.c", "src/nsfsoc.c", "src/nsfudp.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfthr.c", "src/nsfabend.c", "src/nsffmt.c", "src/nsfdev.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
-
 
 # -- M5 Stage-0b Step 1: the MVCK (Move with Key) probe (TSTMVCK) ------------
 # MVS-only (host = false): MVCK/SSK/storage keys have no host analog. Settles
@@ -742,11 +637,8 @@ sources = ["test/mvs/tstappd.c", "src/nsfeza.c", "src/nsfreq.c", "src/nsftime_pl
 # protection exception (S0C4) caught by libc370 try() with no dump. A MECHANISM
 # probe: it self-auths (SVC 244 -- SSK is privileged, MVCK runs the SVC routine's
 # key-0 context); NOT the ubuf client (which stays UNAUTHORIZED). No NSF sources.
-[[test]]
-name = "TSTMVCK"
-startup = "crt1"
+[test.TSTMVCK]
 host = false
-sources = ["test/mvs/tstmvck.c"]
 
 # -- M5 Stage-0b Step 2: the ubuf keyed CSA-bounce CLIENT (TSTUBUF) ----------
 # MVS-only (host = false): the keyed CSA bounce (MVCK/storage keys/cross-AS SVC
@@ -759,11 +651,8 @@ sources = ["test/mvs/tstmvck.c"]
 # chunk over sizes 0/1/100/2048/5000/10, verifying every byte transformed (+1)
 # byte-exact and a guard byte after ulen untouched (no overrun). PREREQUISITE:
 # the probe STC must be started first (S NSFV). Links only libc370.
-[[test]]
-name = "TSTUBUF"
-startup = "crt1"
+[test.TSTUBUF]
 host = false
-sources = ["test/mvs/tstubuf.c"]
 
 # -- M5 Stage-0c: the client-death guard CLIENT (TSTDEATH) -------------------
 # MVS-only (host = false): the guard reads real control blocks (CVT -> ASVT) and
@@ -778,11 +667,8 @@ sources = ["test/mvs/tstubuf.c"]
 # modelled by staging a DEAD IDENTITY from a living client (the decrement is
 # skipped by construction); the kill-vs-POST race is the manual check in the PR.
 # PREREQUISITE: the probe STC must be started first (S NSFV). Links only libc370.
-[[test]]
-name = "TSTDEATH"
-startup = "crt1"
+[test.TSTDEATH]
 host = false
-sources = ["test/mvs/tstdeath.c"]
 
 # -- M5-2c0: the XFER write-out key window gate (TSTXFW) ---------------------
 # MVS-only (host = false): SVC dispatch, CSA and storage keys have no host
@@ -814,11 +700,8 @@ sources = ["test/mvs/tstdeath.c"]
 # production STC sets a non-RQE request to HELD and never revisits it, so an
 # XFER against NSFS would park in WAIT forever. RUN IT LAST in the NSFV round.
 # Client stays UNAUTHORISED (asserts __isauth() == 0) and never self-auths.
-[[test]]
-name = "TSTXFW"
-startup = "crt1"
+[test.TSTXFW]
 host = false
-sources = ["test/mvs/tstxfw.c"]
 
 # -- M5-2b1: the write-out fault tests (TSTRQXF) ----------------------------
 # MVS-only (host = false). TWO scenarios asking different questions.
@@ -843,11 +726,8 @@ sources = ["test/mvs/tstxfw.c"]
 # asserted.
 # RUN IT LAST, after every other gate, then P NSFS / S NSFS.
 # PREREQUISITE: the NSFS STC must be started. Client stays UNAUTHORISED.
-[[test]]
-name = "TSTRQXF"
-startup = "crt1"
+[test.TSTRQXF]
 host = false
-sources = ["test/mvs/tstrqxf.c"]
 
 # -- M5-2b4: the slot pool under CONTENTION (TSTRQXC) ------------------------
 # MVS-only (host = false): two address spaces sharing one CSA pool through a
@@ -889,9 +769,7 @@ sources = ["test/mvs/tstrqxf.c"]
 # each request across the SVC. It is the TSTTMACC precedent; nothing else in
 # this test uses NSF code, so libc370 remains the only other dependency.
 # PREREQUISITE: S NSFS. The client stays UNAUTHORISED.
-[[test]]
-name = "TSTRQXC"
-startup = "crt1"
+[test.TSTRQXC]
 host = false
 sources = ["test/mvs/tstrqxc.c", "asm/nsftime.asm"]
 
@@ -918,9 +796,7 @@ sources = ["test/mvs/tstrqxc.c", "asm/nsftime.asm"]
 # per-interval counts are not comparable with Job B's measurement).
 # Submit jcl/RQX2A.jcl and jcl/RQX2B.jcl together against a FRESHLY started
 # NSFS; a solo submit times out and returns CC 20, never CC 0.
-[[test]]
-name = "TSTRQX2"
-startup = "crt1"
+[test.TSTRQX2]
 host = false
 sources = ["test/mvs/tstrqx2.c", "asm/nsftime.asm"]
 
@@ -941,11 +817,8 @@ sources = ["test/mvs/tstrqx2.c", "asm/nsftime.asm"]
 # not apply -- that governs the clients (TSTUBUF/TSTDEATH/TSTRQXM).
 # NO PROBE STC IS NEEDED: unlike TSTUBUF/TSTDEATH there is no anchor, no
 # private SVC and no rendezvous -- do NOT start NSFV for this one.
-[[test]]
-name = "TSTMVCD"
-startup = "crt1"
+[test.TSTMVCD]
 host = false
-sources = ["test/mvs/tstmvcd.c"]
 
 # -- M0-8 the NSF started task (first production load module) ------------
 # The executive: init (config-driven) -> event loop -> MODIFY/STOP -> shutdown,
@@ -960,10 +833,10 @@ sources = ["test/mvs/tstmvcd.c"]
 # blanket ICMP protocol-unreachable (which also removes the host-kernel
 # ENOPROTOOPT caching that the live-run friction notes flag). S NSF stays clean;
 # the request/SELECT path is inert until an application drives it.
-[[module]]
-name = "NSF"
-startup = "crt1"
+[module.NSF]
 sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+rent = false  # undeclared in project.toml: ld370's default
+reus = false  # undeclared in project.toml: ld370's default
 
 # -- M5-2a the NSFS (Phase-2) STC ---------------------------------------------
 # The executive in its own address space, reached by applications through the
@@ -988,11 +861,11 @@ sources = ["src/nsfmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c",
 # NSF itself stays UNAUTHORISED -- which is exactly why this is a separate
 # module and not a mode of that one. The RED LINE is unchanged: the CLIENT
 # stays unauthorised (ADR-0038); the STC does not.
-[[module]]
-name = "NSFS"
-startup = "crt1"
+[module.NSFS]
 ac = 1
 sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfswap.c", "src/nsfapp.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm", "asm/nsfsevt.asm"]
+rent = false  # undeclared in project.toml: ld370's default
+reus = false  # undeclared in project.toml: ld370's default
 
 # -- M3-5 the NSFECHO UDP echo sample (the M3 exit-gate demonstration) ---------
 # The first user-visible NSF program: a UDP echo server over the EZASOKET C API
@@ -1001,10 +874,10 @@ sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c"
 # stack in one load module, so the source list mirrors TSTEZAM's (the M3-4 live
 # gate) with samples/nsfecho.c in place of the test main. Deployed into
 # NSF.LINKLIB (make deploy) and run via jcl/NSFECHO.jcl (PARM = UDP port).
-[[module]]
-name = "NSFECHO"
-startup = "crt1"
+[module.NSFECHO]
 sources = ["samples/nsfecho.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+rent = false  # undeclared in project.toml: ld370's default
+reus = false  # undeclared in project.toml: ld370's default
 
 # -- M4-5 the NSFTECHO TCP echo sample (the M4 exit-gate demonstration) --------
 # The stream sibling of NSFECHO: a TCP echo server over the EZASOKET C API
@@ -1014,10 +887,10 @@ sources = ["samples/nsfecho.c", "src/nsfeza.c", "src/nsfudp.c", "src/nsfreq.c", 
 # stack -- the source list mirrors NSFECHO's with nsftcp.c + nsfsel.c in place of
 # nsfudp.c. Deployed into NSF.LINKLIB (make deploy), run via jcl/NSFTECHO.jcl
 # (PARM = TCP port).
-[[module]]
-name = "NSFTECHO"
-startup = "crt1"
+[module.NSFTECHO]
 sources = ["samples/nsftecho.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfsoc.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "asm/nsfctcio.asm", "src/nsfdev.c", "src/nsfbuf.c", "src/nsfsts.c", "src/nsftrc.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfmm.c", "src/nsfque.c", "src/nsftmr.c", "src/nsfabend.c", "src/nsffmt.c", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm"]
+rent = false  # undeclared in project.toml: ld370's default
+reus = false  # undeclared in project.toml: ld370's default
 
 # -- M5 Stage-0a' the SVC transport probe STC (NSFV) --------------------------
 # The probe target address space (ADR-0038, supersedes ADR-0036's transport):
@@ -1032,9 +905,7 @@ sources = ["samples/nsftecho.c", "src/nsfeza.c", "src/nsftcp.c", "src/nsfsel.c",
 # NSF.LINKLIB (make deploy), run via jcl/NSFV.jcl (S NSFV). NSFS stays reserved
 # for M5-2. The SSI probe (NSFP, Stage-0a) has been RETIRED -- superseded by this
 # SVC transport; ADR-0036 records the SSI design (ADR-0038 supersedes its transport).
-[[module]]
-name = "NSFV"
-startup = "crt1"
+[module.NSFV]
 ac = 1
 # nsfreqx.c comes along for the SLOT-POOL ARITHMETIC only (M5-2b3, ADR-0042):
 # the probe STC classifies client liveness with the same host-pinned
@@ -1042,6 +913,8 @@ ac = 1
 # hand-written copy of that truth table. It is pure C with no dependencies --
 # no CSA, no SVC, no keys -- so it adds nothing else to this module.
 sources = ["src/nsfv.c", "src/nsfreqx.c"]
+rent = false  # undeclared in project.toml: ld370's default
+reus = false  # undeclared in project.toml: ld370's default
 
 # -- M5 Stage-0a' the private SVC routine (NSFVSVC) ---------------------------
 # The routine a stolen SVC slot dispatches, in the CALLER's address space, to
@@ -1053,12 +926,13 @@ sources = ["src/nsfv.c", "src/nsfreqx.c"]
 # bypassing the by-name SVC loader -- the ancestor's transport SVC is CSECT
 # STCPSVC). __loadhi'd into CSA by the STC. Links only the branch POST it inlines
 # (CVT0PT01) + the WAIT macro; no libc370 C functions (no CRT).
-[[module]]
-name = "NSFVSVC"
+[module.NSFVSVC]
 entry = "NSFVSVC"
 startup = false
 ac = 1
 sources = ["asm/nsfvsvc.asm"]
+rent = false  # undeclared in project.toml: ld370's default
+reus = false  # undeclared in project.toml: ld370's default
 
 # `make deploy` target load library. Matches the ecosystem convention
 # (HTTPD.LINKLIB / UFSD.LINKLIB) rather than the {HLQ}.{NAME}.{VRM}.LINKLIB
@@ -1067,12 +941,10 @@ sources = ["asm/nsfvsvc.asm"]
 target = "NSF.LINKLIB"
 
 [toolchain]
-# Pins the refs release.yml builds the published artifacts against; build.yml
-# deliberately keeps floating on main so a cc370/libc370 regression surfaces
-# in a PR build (mbt#68). cc370 is omitted -- it defaults to main and has no
-# releases to pin to yet. Without this the release CI builds against libc370
-# main, which becomes the incompatible 2.0 after the cut (libc370#245).
+# mbt 3 pins its own version here. libc370 stays at the last 1.x release
+# (1.0.8, pinned 2026-09-30 so the release build does not pick up the
+# incompatible 2.0 headers, libc370#245) until the libc370 2.x port, which
+# moves both libc370 and cc370 to current releases. build3.yml floats on the
+# toolchain's main; release3.yml builds against these pins.
+mbt = "3.0"
 libc370 = "1.0.8"
-
-[release]
-version_files = ["VERSION"]

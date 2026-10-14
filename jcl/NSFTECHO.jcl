@@ -10,7 +10,7 @@
 //*   telnet 192.168.200.1 <port>
 //* Type lines; they echo back. A line beginning "QUIT" ends the server.
 //*
-//* Install:   make deploy                 -> NSF.LINKLIB(NSFTECHO)
+//* Install:   mbt deploy                  -> NSF.LINKLIB(NSFTECHO)
 //* Submit:    this member (PARM = TCP port; default 7, the echo port)
 //*            //ECHO EXEC PGM=NSFTECHO,PARM='3007'   for another port
 //* Stop:      send a "QUIT" line (clean), or CANCEL NSFTECHO. The server blocks

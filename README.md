@@ -27,37 +27,31 @@ compatibility.
 
 - **cc370** — host cross-compile suite (S/370 objects on Linux/macOS)
 - **libc370** — the cc370 target C library (sysroot; not a project dependency)
-- **MBT V2** (MVS Build Tools) — build orchestration; `mbt` is a git submodule
+- **mbt 3** (MVS Build Tools) — build orchestration; the `mbt` program on
+  your `PATH`, configured by `mbt.toml`
 
 ## Quick start
 
 ```sh
-git clone --recursive https://github.com/mvslovers/nsf370.git
+git clone https://github.com/mvslovers/nsf370.git
 cd nsf370
-cp .env.example .env          # fill in your MVS connection details
 
-make test-host                # build + run the portable tests natively (no MVS)
-
-make run-mvs                  # optional: start a local MVS/CE in Docker
-make deps                     # resolve deps + allocate datasets on MVS
-make test-mvs                 # deploy + run the tests on MVS
+mbt test                      # build + run the portable tests natively (no MVS)
+mbt build --all --tests       # cross-compile every load module and test module
+mbt test --mvs                # deploy + run the tests on MVS
+mbt deploy                    # put the load modules into NSF.LINKLIB
+mbt doctor                    # check the toolchain and the MVS connection
 ```
 
-Once there are load modules to build (from M0-2/M1 on), `make modules`,
-`make package` and `make deploy` build, XMIT and upload them. Run `make help`
-for the full target list.
-
-If you cloned without `--recursive`:
-
-```sh
-git submodule update --init
-```
+The MVS system comes from `~/.mbt/targets.toml` (`mbt target list`); an mbt 2
+style `.env` (template: `.env.example`) converts with
+`mbt target import .env --name NAME`. Run `mbt --help` for the full command
+list.
 
 ## Layout
 
 ```
-project.toml   MBT V2 project (modules, tests, deps)
-Makefile       includes mbt/mk/mbt.mk
+mbt.toml       mbt 3 project (modules, tests, toolchain, deploy target)
 src/           portable C sources (nsf*.c)
 asm/           HLASM sources (nsf*.asm)
 include/       public headers (one per component)

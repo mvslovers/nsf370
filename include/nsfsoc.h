@@ -107,7 +107,7 @@ typedef struct protops {
  * PROTOPS is APPEND-ONLY. The inits that name only the ops they implement (UDP's
  * g_udp_ops, the dummy PROTOPS in the M3 tests) are DESIGNATED (.attach = ...):
  * they zero-fill the ops they omit to NULL and stay -Wmissing-field-initializers-
- * clean under the host build's -Werror (project.toml [host].cflags) when a member
+ * clean under the host build's -Werror (mbt.toml [build.host].cflags) when a member
  * is appended at the end. The inits that still list all members POSITIONALLY
  * (g_tcp_ops, tstsel, tsteza) do NOT get that for free: appending a member makes
  * them -Werror-fatal (convert them to designated then), and REORDERING members

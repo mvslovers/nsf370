@@ -15,7 +15,7 @@
  *   MVS : src/nsfopr_plat.c       EXTRACT COMM (COMECB + CIB chain) + QEDIT
  *   host: src/nsfopr_plat_host.c  an injectable queue so the loop test can drive
  *                                 the whole operator path
- * swapped by the project.toml [host].replace map. The main loop (NSFEVT) adds
+ * swapped by the mbt.toml [build.host].replace map. The main loop (NSFEVT) adds
  * the console ECB to its ECBLIST via evt_set_operator(nsfopr_ecb, nsfopr_drain).
  */
 

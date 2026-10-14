@@ -14,7 +14,7 @@
  * final one-line EMIT is platform-specific and lives behind nsfmsg_emit:
  *   MVS : src/nsfmsg_plat.c       -> libc370 wto() (a real WTO)
  *   host: src/nsfmsg_host.c       -> a capture ring the tests read back + stdout
- * swapped by the project.toml [host].replace map (the NSFXQ / NSFEVT pattern),
+ * swapped by the mbt.toml [build.host].replace map (the NSFXQ / NSFEVT pattern),
  * so the callers (nsfopr, nsfstc, nsfmain) stay portable and host-testable.
  *
  * CHARSET TRANSPARENCY (spec 15.3). nsfmsg compares nothing; it only formats
