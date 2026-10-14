@@ -51,7 +51,7 @@ cflags = ["-Wall", "-Wextra", "-Werror", "-DNSF_DEBUG=1", "-pthread"]
 #              libc370 cthread (ATTACH a subtask, SVC-2 POST, WAIT, termecb join)
 #              on MVS (src/nsfthr.c), a pthread + condvar on the host
 #              (src/nsfthr_host.c) so the SAME CTCI subtask logic runs both ways.
-replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "src/nsftime_plat.c" = "src/nsftime_plat_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c", "asm/nsfctcio.asm" = "src/nsfctcio_host.c", "src/nsfctci.c" = "src/nsfctci_host.c", "src/nsfthr.c" = "src/nsfthr_host.c" }
+replace = { "asm/nsfxq.asm" = "src/nsfxq_host.c", "asm/nsftime.asm" = "src/nsftime_host.c", "src/nsftime_plat.c" = "src/nsftime_plat_host.c", "asm/nsfstim.asm" = "src/nsfstim_host.c", "src/nsfevt_plat.c" = "src/nsfevt_plat_host.c", "src/nsfmsg_plat.c" = "src/nsfmsg_host.c", "src/nsfopr_plat.c" = "src/nsfopr_plat_host.c", "src/nsfhost_plat.c" = "src/nsfhost.c", "asm/nsfctcio.asm" = "src/nsfctcio_host.c", "src/nsfctci.c" = "src/nsfctci_host.c", "src/nsfthr.c" = "src/nsfthr_host.c", "src/nsfsct_plat.c" = "src/nsfsct_plat_host.c" }
 
 # No mvslovers dependencies yet. libc370 is the cc370 sysroot (provided by
 # the toolchain), NOT a project dependency -- same model as rexx370 v2.
@@ -81,6 +81,25 @@ sources = ["test/tstque.c", "src/nsfque.c"]
 # logic; the SVC/CSA/key/POST transport is Stage-0 and not host-simulable.
 [test.TSTREQX]
 sources = ["test/tstreqx.c", "src/nsfreqx.c"]
+
+# d2 round 1 (ADR-0048): the rendezvous.  HOST-ONLY (mvs = false), because it
+# drives the in-memory shim through hooks that exist only there -- the cross
+# build caught that as an unresolved NSFSCT@H before this line was written.
+# The PURE half -- name split and the
+# classify truth table -- plus the register/find/remove plumbing driven against
+# the in-memory shim ([build.host].replace swaps src/nsfsct_plat.c).  What it
+# does NOT establish is the MVS mechanism or the real anchor offsets; TSTSCTM
+# does the first and the cross build does the second.
+[test.TSTSCT]
+mvs = false
+sources = ["test/tstsct.c", "src/nsfsct.c", "src/nsfsct_plat.c"]
+
+# d2 round 1, the LIVE gate: register / find / remove across TWO DISTINCT NAMES
+# against the real SSI chain.  Two names, not two stacks -- only one instance can
+# steal SVC 239, and the rendezvous does not need a second one to be tested.
+[test.TSTSCTM]
+host = false
+sources = ["test/mvs/tstsctm.c", "src/nsfsct.c", "src/nsfsct_plat.c"]
 
 [test.TSTXQ]
 sources = ["test/tstxq.c", "asm/nsfxq.asm"]
@@ -863,7 +882,7 @@ reus = false  # undeclared in project.toml: ld370's default
 # stays unauthorised (ADR-0038); the STC does not.
 [module.NSFS]
 ac = 1
-sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfswap.c", "src/nsfapp.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm", "asm/nsfsevt.asm"]
+sources = ["src/nsfsmain.c", "src/nsfstc.c", "src/nsfopr.c", "src/nsfopr_plat.c", "src/nsfmsg.c", "src/nsfmsg_plat.c", "src/nsfevt.c", "src/nsfevt_plat.c", "src/nsftrc.c", "src/nsfsts.c", "src/nsfbuf.c", "src/nsftmr.c", "src/nsfmm.c", "src/nsfque.c", "src/nsfcfg.c", "src/nsfabend.c", "src/nsfdev.c", "src/nsfctcib.c", "src/nsfctcif.c", "src/nsfctci.c", "src/nsfthr.c", "src/nsfip.c", "src/nsficmp.c", "src/nsfcksum.c", "src/nsfsoc.c", "src/nsfreq.c", "src/nsftime_plat.c", "src/nsfreqx.c", "src/nsfsx.c", "src/nsfsct.c", "src/nsfsct_plat.c", "src/nsfswap.c", "src/nsfapp.c", "src/nsfsel.c", "src/nsftcp.c", "src/nsfudp.c", "src/nsffmt.c", "asm/nsfctcio.asm", "asm/nsfxq.asm", "asm/nsfstim.asm", "asm/nsftime.asm", "asm/nsfsevt.asm"]
 rent = false  # undeclared in project.toml: ld370's default
 reus = false  # undeclared in project.toml: ld370's default
 

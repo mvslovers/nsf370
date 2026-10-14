@@ -19,6 +19,7 @@
 #include "nsfvsvc.h"          /* NSFV_ANCHOR / NSFV_REQ_* / NSFV_SVCNUM        */
 #include "nsfreq.h"           /* NSFRQE, nsfreq_dispatch                       */
 #include "nsfreqx.h"          /* the host-tested field rules + guard truth table */
+#include "nsfsct.h"           /* the d2 rendezvous (ADR-0048, round 1)         */
 #include "nsfevtp.h"          /* NSFECB_POSTED                                 */
 #include "nsfsts.h"           /* the wakeposts counter (issue #64, 64-0)       */
 #include "nsftmr.h"           /* nsftmr_count (armed timers, reported at STATS) */
@@ -546,6 +547,8 @@ nsfsx_reap(NSFV_SLOT *slot, UINT observed, int verdict, int storage_ok)
 int
 nsfsx_start(void)
 {
+    int rc;
+
     g_anchor = nsfsx_anchor_alloc();
     if (!g_anchor) {
         /* NAME THE SIZE.  The pool is one contiguous SP=241 GETMAIN, and the
@@ -599,6 +602,37 @@ nsfsx_start(void)
     if (g_wakeposts == NULL) {
         g_wakeposts = sts_register("NSFSX", "wakeposts");
     }
+    /* REGISTER THE RENDEZVOUS (ADR-0048 round 1).  AFTER the anchor exists,
+    ** because it is the anchor's address that goes into SSCTSUSE, and after
+    ** the slot is stolen so a start that fails earlier leaves nothing chained.
+    **
+    ** A FAILURE HERE WARNS AND CONTINUES.  The transport is already up and
+    ** working; what a missing registration costs is that a LATER start cannot
+    ** find whatever this one might retain -- the status quo before d2, not a
+    ** correctness failure.  Refusing to start over it would turn a recovery
+    ** improvement into an outage, which is ADR-0044's pin applied to the same
+    ** kind of question.
+    **
+    ** The most likely reason is the one worth naming in the message: an SSCT
+    ** already chained under our name, which nsfsct_register REFUSES rather than
+    ** duplicating (the IEF612I case).  Round 1 does not adopt it, does not
+    ** classify it and does not remove it -- that is round 2. */
+    rc = nsfsct_register(g_anchor);
+    if (rc == NSFSCT_RC_NOTSAFE) {
+        /* The jobname's first four characters hold no letter, so the derived
+        ** SSCT name could equal a procedure name -- and a chained SSCT under a
+        ** procedure name makes the next `S <name>` fail IEF612I (ADR-0048 6).
+        ** Not registering is the safe side: it costs the rendezvous, never
+        ** the restart. */
+        wtof("NSF059W RENDEZVOUS NOT REGISTERED -- JOBNAME HAS NO LETTER IN"
+             " ITS FIRST 4 CHARACTERS -- CONTINUING");
+    } else if (rc != 0) {
+        wtof("NSF059W RENDEZVOUS NOT REGISTERED -- A LATER START CANNOT FIND"
+             " A RETAINED ANCHOR (ALREADY CHAINED?) -- CONTINUING");
+    } else {
+        wtof("NSF060I RENDEZVOUS REGISTERED -- ANCHOR=%08X", (unsigned)g_anchor);
+    }
+
     wtof("NSF041I NSFS TRANSPORT READY -- ANCHOR=%08X ECB=%08X",
          (unsigned)g_anchor, (unsigned)&g_wake_ecb);
     return 0;
@@ -699,8 +733,25 @@ nsfsx_stop(void)
         wtof("NSF054W %u CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE"
              " RETAINED (EXHAUSTED=%u)",
              g_anchor->inflight, g_anchor->exhausted);
+        /* THE SSCT IS DELIBERATELY NOT REMOVED ON THIS PATH, and this is the
+        ** one line in round 1 that is dangerous to get backwards.
+        **
+        ** The pointer exists to SURVIVE exactly this branch: the anchor is
+        ** being retained precisely because a client is still parked in it, and
+        ** a later start can only find it if the named registration outlives
+        ** this STC (ADR-0048 2).  Removing here would leave the 139264 bytes
+        ** stranded with nothing naming them -- reinstating the per-recycle leak
+        ** d2 exists to remove, while every message on this path still read
+        ** correctly.  Nothing would complain; the storage would simply become
+        ** unreachable again.
+        **
+        ** It is asserted in the gate rather than trusted to this comment. */
         g_anchor = NULL;
     } else {
+        /* The free path, and the ONLY path that removes.  Order matters: the
+        ** registration goes before the storage it names, so no window exists
+        ** in which a chained SSCT points at freed CSA. */
+        (void)nsfsct_remove();
         nsfsx_router_unload();
         nsfsx_anchor_free();
     }
