@@ -192,7 +192,7 @@ familiarity and for application compatibility:
   - Cross-compiles on Linux/macOS to S/370 object code
   - Reason: Dignus Systems/C is technically superior but commercial;
     using cc370 ensures anyone in the community can build and contribute
-- **C Runtime:** libc370 (the cc370 target C library: headers, libc.a, crt0/crt1/crtm startfiles, SYS1/crent macros)
+- **C Runtime:** libc370 (the cc370 target C library: headers, libc.a with the C startup, crtm.o, SYS1/crent macros)
 - **Assembler:** IFOX00 (free with MVS 3.8j) for HLASM modules
 - **Linkage Editor:** Standard MVS Linkage Editor (IEWL)
 - **Build System:** MBT V2 (MVS Build Tools) — project.toml drives host cross-compile + on-MVS assemble/link (bootstrap/build/link/package); separate host build for unit tests (see 3.10)
