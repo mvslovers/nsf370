@@ -1,0 +1,82 @@
+Spool file: JESJCLIN (ID #1, Step: JES2)
+//NSFV     JOB MSGLEVEL=1                                               STC  728
+//STARTING EXEC NSFV
+
+Spool file: JESMSGLG (ID #2, Step: JES2)
+                                                J E S 2   J O B   L O G
+ 3.17.26 STC  728  RAKF0010I STC NSFV     STARTED USING DEFAULT STC ACCOUNT
+ 3.17.26 STC  728  $HASP373 NSFV     STARTED
+ 3.17.26 STC  728  IEF403I NSFV - STARTED - TIME=03.17.26
+ 3.17.26 STC  728  NSFV000I NSFV SVC PROBE 0.1.0-probe STARTING (SVC 239)
+ 3.17.26 STC  728  NSFV035I SVC ROUTINE LOADED AT 00A83448
+ 3.17.26 STC  728  NSFV034I SVC 239 STOLEN (OLD EP 0000CCC8, NEW EP 00A83448, 40 FREE)
+ 3.17.26 STC  728  NSFV001I NSFV READY -- ANCHOR=00A9D788 ASCB=00FDC238
+ 3.18.32 STC  728  NSFV010I NSFV STOP RECEIVED
+ 3.18.32 STC  728  NSFV095I SVC 239 RESTORED
+ 3.18.32 STC  728  NSFV036I SVC ROUTINE UNLOADED
+ 3.18.32 STC  728  NSFV011I NSFV SHUTDOWN COMPLETE
+ 3.18.32 STC  728  IEF404I NSFV - ENDED - TIME=03.18.32
+ 3.18.32 STC  728  $HASP395 NSFV     ENDED
+
+Spool file: JESJCL (ID #3, Step: JES2)
+    1     //NSFV     JOB MSGLEVEL=1                                               STC  728
+    2     //STARTING EXEC NSFV
+    3     XXNSFV     PROC
+          ***
+          *** NSFV - M5 Stage-0a' SVC cross-AS transport probe STC (ADR-0038).
+          ***
+          *** A do-nothing probe that round-trips a 32-bit token from a client address
+          *** space to this STC and back over a PRIVATE SVC, to prove the Phase-2 cross-AS
+          *** transport mechanics with an UNAUTHORIZED client -- the thing the SSI probe
+          *** (NSFP, ADR-0036) could not do.  NOT the production stack (NSFS is reserved
+          *** for M5-2).  Supersedes NSFP's SSI transport (ADR-0038); NSFP stays in-repo
+          *** as the SSI reference.
+          ***
+          *** Installation:
+          ***   Copy to SYS2.PROCLIB(NSFV)            (cataloged proc; no // PEND)
+          ***   Deploy the load modules:  make deploy  -> NSF.LINKLIB
+          ***     (NSFV = this STC, NSFVSVC = the CSA-resident SVC routine it __loadhi's
+          ***      and points a stolen SVCTABLE slot at)
+          ***   The STC self-authorizes at runtime via clib_apf_setup (SVC 244) for
+          ***   __loadhi / key-0 CSA / the SVCTABLE store, so NSF.LINKLIB need not be APF.
+          ***   The CLIENT is NOT authorized (ADR-0038 red line).
+          ***
+          *** Starting:    /S NSFV     (steals an unused installation SVC slot; the slot
+          ***                           is RESTORED at stop AND on abend)
+          *** Commands:    /F NSFV,STATS     (report served + in-flight counters)
+          *** Stopping:    /P NSFV           (restores the SVC slot)  or  /F NSFV,STOP
+          ***
+          *** Client:      make test-mvs ARGS="--only TSTSVC"   (NSFV must be started)
+          ***
+    4     XXNSFV     EXEC PGM=NSFV,REGION=4M,TIME=1440
+    5     XXSTEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+    6     XXSYSUDUMP DD  SYSOUT=*
+    7     XXSYSPRINT DD  SYSOUT=*
+
+Spool file: JESYSMSG (ID #4, Step: JES2)
+RAKF0010I STC NSFV     STARTED USING DEFAULT STC ACCOUNT
+IEF236I ALLOC. FOR NSFV NSFV
+IEF237I 251  ALLOCATED TO STEPLIB
+IEF237I JES2 ALLOCATED TO SYSUDUMP
+IEF237I JES2 ALLOCATED TO SYSPRINT
+IEF237I JES2 ALLOCATED TO SYS00001
+IEF237I DMY  ALLOCATED TO SYS00002
+NSFV000I NSFV SVC PROBE 0.1.0-probe STARTING (SVC 239)
+NSFV035I SVC ROUTINE LOADED AT 00A83448
+NSFV034I SVC 239 STOLEN (OLD EP 0000CCC8, NEW EP 00A83448, 40 FREE)
+NSFV001I NSFV READY -- ANCHOR=00A9D788 ASCB=00FDC238
+NSFV010I NSFV STOP RECEIVED
+NSFV095I SVC 239 RESTORED
+NSFV036I SVC ROUTINE UNLOADED
+NSFV011I NSFV SHUTDOWN COMPLETE
+IEF285I   JES2.STC00728.SO0103                         SYSOUT
+IEF142I NSFV NSFV - STEP WAS EXECUTED - COND CODE 0000
+IEF285I   NSF.LINKLIB                                  KEPT
+IEF285I   VOL SER NOS= WORK00.
+IEF285I   JES2.STC00728.SO0101                         SYSOUT
+IEF285I   JES2.STC00728.SO0102                         SYSOUT
+
+Spool file: SYSPRINT (ID #102, Step: NSFV, ProcStep: NSFV)
+
+Spool file: UNK0103 (ID #103, Step: JES2)
+
