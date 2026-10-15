@@ -100,8 +100,15 @@ static void scenario_flow(DEVOPS *ops)
     g_rx_devok  = 1;
     g_rx_expect = dev;
 
+    /* The host driver takes its private block at INIT (nsfhost.c host_init),
+     * so even a never-started host device counts.  That is the conservative
+     * side: the guard only ever errs toward NOT freeing. */
+    CHECK_EQ((long)dev_busy_count(), 1L,
+             "#83: a registered host device holding priv counts busy");
     CHECK(dev_start(dev) == 0, "dev_start brought the device up");
     CHECK_EQ((long)dev->state, (long)NSFDEV_S_UP, "device state is UP");
+    CHECK_EQ((long)dev_busy_count(), 1L,
+             "#83: a started device is busy -- it may have I/O outstanding");
 
     for (i = 0; i < TSTDEV_N; i++) {
         PBUF *b = buf_alloc(64);
@@ -134,6 +141,8 @@ static void scenario_flow(DEVOPS *ops)
 
     CHECK(dev_shutdown(dev) == 0, "dev_shutdown quiesced the device");
     CHECK_EQ((long)dev->state, (long)NSFDEV_S_DOWN, "device state is DOWN");
+    CHECK_EQ((long)dev_busy_count(), 0L,
+             "#83: a cleanly shut-down device is no longer busy");
     CHECK_EQ((long)nsfevt_inuse(), 0, "EVT pool at baseline after the flow");
 }
 
@@ -196,6 +205,39 @@ static void scenario_notup(DEVOPS *ops)
     CHECK(dev_shutdown(dev) == 0, "dev_shutdown on a DOWN device is a no-op");
 }
 
+/* ---- scenario 4 (#83): a device whose driver RETAINED its storage ----
+ *
+ * The CTCI driver's shape when a subtask will not join: its shutdown op keeps
+ * dev->priv (NSF206W ... STORAGE RETAINED) and dev_shutdown still sets DOWN.
+ * The state alone then reads idle while a subtask may still have an EXCP
+ * outstanding on pool storage -- so busy must look at priv as well. */
+static int  g_keep;
+static int  keep_start(NETDEV *dev)    { dev->priv = &g_keep; return 0; }
+static int  keep_send(NETDEV *dev, PBUF *b) { (void)dev; buf_free(b); return 0; }
+static int  keep_shutdown(NETDEV *dev) { (void)dev; return 0; }
+static DEVOPS g_keep_ops = { NULL, keep_start, keep_send, keep_shutdown };
+
+static void scenario_retained(void)
+{
+    NETDEV *dev;
+    DEVCFG  cfg;
+
+    make_cfg(&cfg, "KEEP0", 0x0E26);
+
+    nsfevt_init();
+    dev_init();
+    dev = dev_register(&cfg, &g_keep_ops);
+    CHECK(dev != NULL, "dev_register (retained scenario)");
+    CHECK(dev_start(dev) == 0, "dev_start (retained scenario)");
+    CHECK(dev_shutdown(dev) == 0, "dev_shutdown (driver retains its storage)");
+    CHECK_EQ((long)dev->state, (long)NSFDEV_S_DOWN,
+             "the state reads DOWN although the driver kept its storage");
+    CHECK_EQ((long)dev_busy_count(), 1L,
+             "#83: ...and the device still counts as busy, because priv is set");
+    dev->priv = NULL;                   /* the test's own cleanup */
+    CHECK_EQ((long)dev_busy_count(), 0L, "#83: priv cleared -> not busy");
+}
+
 int main(void)
 {
     DEVOPS *ops;
@@ -221,6 +263,7 @@ int main(void)
     scenario_flow(ops);
     scenario_bound(ops);
     scenario_notup(ops);
+    scenario_retained();
 
     /* Leak gate: every buffer sent, looped back and freed; every queued frame
      * freed at shutdown. Both PBUF pools and the EVT pool back to baseline. */

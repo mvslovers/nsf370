@@ -203,6 +203,20 @@ UINT dev_count(void)
     return n;
 }
 
+UINT dev_busy_count(void)
+{
+    UINT n = 0;
+    int  i;
+
+    for (i = 0; i < NSFDEV_MAX; i++) {
+        if (g_used[i] &&
+            (g_devtab[i].state != NSFDEV_S_DOWN || g_devtab[i].priv != NULL)) {
+            n++;
+        }
+    }
+    return n;
+}
+
 int dev_start(NETDEV *dev)
 {
     if (dev == NULL) {

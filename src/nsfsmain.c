@@ -103,10 +103,17 @@ static NSFCFG g_cfg;
  *
  * nsfsx_recover_quiesce() handles the second group -- restoring the slot and
  * marking the anchor inactive, and deliberately NOT draining, unloading or
- * freeing (see its header). It runs BEFORE nsf_shutdown(), because
- * mm_shutdown() releases every pool region and because the slot restore is the
- * one action whose absence costs an IPL: it goes ahead of every later step that
- * is a fresh chance to fault.
+ * freeing (see its header). It runs first because the slot restore is the one
+ * action whose absence costs an IPL: it goes ahead of every later step that is
+ * a fresh chance to fault.
+ *
+ * THE POOL REGIONS ARE THE FIRST GROUP, AND SINCE #83 RECOVERY LEAVES THEM.
+ * This exit used to call nsf_shutdown(), whose mm_shutdown() FREEMAINs every
+ * region -- including the CTCIBUF region whose READ buffer a parked EXCP holds
+ * page-fixed.  That FREEMAIN abended A0A-2 ("PART OF AREA BEING FREED IS STILL
+ * FIXED", IEAVGM00) inside this exit, every time the CTCI pair was up, so
+ * NSF901I never appeared.  nsf_recover_shutdown() disarms the timer exit and
+ * frees nothing.
  *
  * The environment reading (NSF902I) is emitted rather than assumed: whether an
  * ESTAE exit is entered supervisor or problem state, and whether the task is
@@ -155,7 +162,7 @@ static void nsf_recover(SDWA *sdwa)
         break;
     }
 
-    nsf_shutdown();
+    nsf_recover_shutdown();
     nsfmsg("NSF901I NSF EMERGENCY TEARDOWN COMPLETE");
     if (sdwa != NULL) {
         sdwa->SDWARCDE = SDWACWT;       /* continue with termination = percolate */
@@ -291,6 +298,19 @@ static void nsf_quiesce_device(NETDEV *dev, void *arg)
     dev_shutdown(dev);
 }
 
+/* The orderly teardown, with its third state said out loud (#83): a busy
+ * device means nsf_shutdown released NO region, and that must not read the same
+ * as having released them (CLAUDE.md 8.5). */
+static void nsf_teardown(void)
+{
+    UINT busy = nsf_shutdown();
+
+    if (busy != 0u) {
+        nsfmsg("NSF068W %u DEVICE(S) MAY STILL HAVE I/O OUTSTANDING -- POOL"
+               " REGIONS LEFT TO MVS", (unsigned)busy);
+    }
+}
+
 int main(int argc, char **argv)
 {
     char        err[NSFCFG_MSGLEN];
@@ -403,7 +423,7 @@ int main(int argc, char **argv)
     /* 4. Operator interface (CIB/QEDIT); add its console ECB to the ECBLIST. */
     if (nsfopr_init() != 0) {
         nsfmsg("NSF807E NSF CONSOLE INTERFACE UNAVAILABLE");
-        nsf_shutdown();
+        nsf_teardown();
         return 8;
     }
     evt_set_operator(nsfopr_ecb(), nsfopr_drain);
@@ -413,6 +433,7 @@ int main(int argc, char **argv)
      *    PBUF to nsfip_input. nsfip_config resolves each route's device by LINK
      *    name, so it MUST run AFTER the interfaces are registered. */
     evt_register(EV_PACKET_RECEIVED, nsf_rx_packet);
+    nsf_set_io_guard(dev_busy_count);            /* #83: before any device I/O */
     nsf_start_devices(&g_cfg);
     nsficmp_init();                              /* register ICMP counters */
     (void)nsfip_config(&g_cfg);                  /* routing table from HOME/GATEWAY */
@@ -441,7 +462,13 @@ int main(int argc, char **argv)
      * nsfreq_dispatch() directly on the STC-private copy. */
     if (nsfsx_start() != 0) {
         nsfmsg("NSF009E NSFS TRANSPORT INITIALIZATION FAILED");
-        nsf_shutdown();
+        /* THE DEVICES ARE UP HERE (#83): nsf_start_devices ran above, so the
+         * CTCI READ is parked on a page-fixed pool buffer.  Quiesce them as the
+         * clean stop does -- CLOSE purges each subtask's EXCP, and the join
+         * ends it -- before anything frees a region.  Before #83 this path
+         * went straight to nsf_shutdown() and abended A0A-2 (40-CHK STC 1506). */
+        dev_foreach(nsf_quiesce_device, NULL);
+        nsf_teardown();
         return 8;
     }
     evt_set_request(nsfsx_ecb(), nsfsx_drain, nsfsx_pending);
@@ -541,7 +568,7 @@ int main(int argc, char **argv)
     }
 
     __estae(ESTAE_DELETE, NULL, NULL);
-    nsf_shutdown();
+    nsf_teardown();
     nsfmsg("NSF011I NSFS SHUTDOWN COMPLETE");
     return 0;
 }

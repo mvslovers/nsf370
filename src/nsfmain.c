@@ -50,17 +50,22 @@ static NSFCFG g_cfg;
  * ESTAE recovery (spec 17.1). MVS enters here on any unhandled abend on the
  * executive task. First-failure data is already captured for the dump: the
  * trace ring ("NSFTRACE"), the statistics registry ("NSFSTATS") and every pool
- * header carry eyecatchers (spec 17.2). We WTO a marker, attempt the SAME
- * orderly teardown the clean path uses (nsf_shutdown: disarm the timer exit,
- * free the pool regions), then percolate (SDWARCDE = SDWACWT == 0) so RTM
- * produces the dump and terminates the address space -- no Hercules restart is
- * ever needed to clean up (goal, ADR-0006). Minimal + defensive: it may run in
- * a damaged environment, so it does the least that is useful and never loops.
+ * header carry eyecatchers (spec 17.2). We WTO a marker, release only what
+ * nobody else will (ADR-0049: here, disarm the timer exit -- the pool regions
+ * and the devices are left to MVS), then percolate (SDWARCDE = SDWACWT == 0)
+ * so RTM produces the dump and terminates the address space -- no Hercules
+ * restart is ever needed to clean up (goal, ADR-0006). Minimal + defensive: it
+ * may run in a damaged environment, so it does the least that is useful and
+ * never loops.
  */
 static void nsf_recover(SDWA *sdwa)
 {
     nsfmsg("NSF900E NSF ABEND INTERCEPTED -- CAPTURING AND PERCOLATING");
-    nsf_shutdown();
+    /* NOT nsf_shutdown (#83): the CTCI subtasks may still have an EXCP
+     * outstanding on pool storage, and freeing a region with fixed pages
+     * abends A0A-2 inside this exit.  The regions are private-area storage
+     * MVS reclaims at address-space end. */
+    nsf_recover_shutdown();
     nsfmsg("NSF901I NSF EMERGENCY TEARDOWN COMPLETE");
     if (sdwa != NULL) {
         sdwa->SDWARCDE = SDWACWT;       /* continue with termination = percolate */
@@ -196,6 +201,19 @@ static void nsf_quiesce_device(NETDEV *dev, void *arg)
     dev_shutdown(dev);
 }
 
+/* The orderly teardown, with its third state said out loud (#83): a busy
+ * device means nsf_shutdown released NO region, and that must not read the same
+ * as having released them (CLAUDE.md 8.5). */
+static void nsf_teardown(void)
+{
+    UINT busy = nsf_shutdown();
+
+    if (busy != 0u) {
+        nsfmsg("NSF068W %u DEVICE(S) MAY STILL HAVE I/O OUTSTANDING -- POOL"
+               " REGIONS LEFT TO MVS", (unsigned)busy);
+    }
+}
+
 int main(int argc, char **argv)
 {
     char err[NSFCFG_MSGLEN];
@@ -275,7 +293,7 @@ int main(int argc, char **argv)
     /* 4. Operator interface (CIB/QEDIT); add its console ECB to the ECBLIST. */
     if (nsfopr_init() != 0) {
         nsfmsg("NSF807E NSF CONSOLE INTERFACE UNAVAILABLE");
-        nsf_shutdown();
+        nsf_teardown();
         return 8;
     }
     evt_set_operator(nsfopr_ecb(), nsfopr_drain);
@@ -285,6 +303,7 @@ int main(int argc, char **argv)
      *    PBUF to nsfip_input. nsfip_config resolves each route's device by LINK
      *    name, so it MUST run AFTER the interfaces are registered. */
     evt_register(EV_PACKET_RECEIVED, nsf_rx_packet);
+    nsf_set_io_guard(dev_busy_count);            /* #83: before any device I/O */
     nsf_start_devices(&g_cfg);
     nsficmp_init();                              /* register ICMP counters */
     (void)nsfip_config(&g_cfg);                  /* routing table from HOME/GATEWAY */
@@ -350,7 +369,7 @@ int main(int argc, char **argv)
      *    release the regions. */
     dev_foreach(nsf_quiesce_device, NULL);
     __estae(ESTAE_DELETE, NULL, NULL);
-    nsf_shutdown();
+    nsf_teardown();
     nsfmsg("NSF011I NSF SHUTDOWN COMPLETE");
     return 0;
 }

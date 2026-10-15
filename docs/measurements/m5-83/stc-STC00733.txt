@@ -1,0 +1,82 @@
+Spool file: JESJCLIN (ID #1, Step: JES2)
+//NSF      JOB MSGLEVEL=1                                               STC  733
+//STARTING EXEC NSF
+
+Spool file: JESMSGLG (ID #2, Step: JES2)
+                                                J E S 2   J O B   L O G
+ 3.22.22 STC  733  RAKF0010I STC NSF      STARTED USING DEFAULT STC ACCOUNT
+ 3.22.22 STC  733  $HASP373 NSF      STARTED
+ 3.22.22 STC  733  IEF403I NSF - STARTED - TIME=03.22.22
+ 3.22.22 STC  733  +NSF000I NSF 0.1.0-dev STARTING
+ 3.22.22 STC  733  +NSF210I CTCI 0500/0501 UP DD SYS00003/SYS00005 MTU 1500
+ 3.22.22 STC  733  +NSF211I INTERFACE LNK1 CUU 0500 UP
+ 3.22.22 STC  733  +NSF001I NSF INITIALIZATION COMPLETE
+ 3.22.22 STC  733  +NSF803I NSF OPERATOR INTERFACE ACTIVE
+ 3.22.46 STC  733  +NSF830I NSF STOP ACCEPTED -- SHUTTING DOWN
+ 3.22.46 STC  733  +NSF011I NSF SHUTDOWN COMPLETE
+ 3.22.46 STC  733  IEF404I NSF - ENDED - TIME=03.22.46
+ 3.22.46 STC  733  $HASP395 NSF      ENDED
+
+Spool file: JESJCL (ID #3, Step: JES2)
+    1     //NSF      JOB MSGLEVEL=1                                               STC  733
+    2     //STARTING EXEC NSF
+    3     XXNSF      PROC M=NSFPRM0,
+          XX            D='SYS2.PARMLIB'
+          ***
+          *** NSF - Network Services Facility STC procedure (M0-8 skeleton).
+          ***
+          *** Installation:
+          ***   Copy to SYS2.PROCLIB(NSF)                 (cataloged proc; no // PEND)
+          ***   Copy config member to SYS2.PARMLIB(NSFPRM0)
+          ***   Deploy the load module:  make deploy       -> NSF.LINKLIB
+          ***
+          *** Starting:    /S NSF
+          ***              /S NSF,M=NSFPRM1              (alternate config member)
+          ***              /S NSF,D='MY.PARMLIB'         (alternate parmlib dataset)
+          *** Commands:    /F NSF,DISPLAY
+          ***              /F NSF,STATS
+          ***              /F NSF,TRACE IP ON
+          ***              /F NSF,HELP
+          *** Stopping:    /P NSF   (or  /F NSF,STOP)
+          ***
+    4     XXNSF      EXEC PGM=NSF,REGION=4M,TIME=1440
+    5     XXSTEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+    6     XXSYSUDUMP DD  SYSOUT=*
+    7     XXSYSPRINT DD  SYSOUT=*
+          ***  PROFILE.TCPIP config member, read at init via fopen("DD:PROFILE").
+    8     XXPROFILE  DD  DSN=&D(&M),DISP=SHR,FREE=CLOSE
+
+Spool file: JESYSMSG (ID #4, Step: JES2)
+ STMT NO. MESSAGE
+-
+    8     IEF653I SUBSTITUTION JCL - DSN=SYS2.PARMLIB(NSFPRM0),DISP=SHR,FREE=CLOSE
+RAKF0010I STC NSF      STARTED USING DEFAULT STC ACCOUNT
+IEF236I ALLOC. FOR NSF NSF
+IEF237I 251  ALLOCATED TO STEPLIB
+IEF237I JES2 ALLOCATED TO SYSUDUMP
+IEF237I JES2 ALLOCATED TO SYSPRINT
+IEF237I 151  ALLOCATED TO PROFILE
+IEF237I JES2 ALLOCATED TO SYS00001
+IEF237I DMY  ALLOCATED TO SYS00002
+NSF000I NSF 0.1.0-dev STARTING
+IEF285I   SYS2.PARMLIB                                 KEPT
+IEF285I   VOL SER NOS= MVS000.
+IEF237I 500  ALLOCATED TO SYS00003
+IEF237I 501  ALLOCATED TO SYS00005
+NSF210I CTCI 0500/0501 UP DD SYS00003/SYS00005 MTU 1500
+NSF211I INTERFACE LNK1 CUU 0500 UP
+NSF001I NSF INITIALIZATION COMPLETE
+NSF803I NSF OPERATOR INTERFACE ACTIVE
+NSF830I NSF STOP ACCEPTED -- SHUTTING DOWN
+NSF011I NSF SHUTDOWN COMPLETE
+IEF285I   JES2.STC00733.SO0103                         SYSOUT
+IEF142I NSF NSF - STEP WAS EXECUTED - COND CODE 0000
+IEF285I   NSF.LINKLIB                                  KEPT
+IEF285I   VOL SER NOS= WORK00.
+IEF285I   JES2.STC00733.SO0101                         SYSOUT
+IEF285I   JES2.STC00733.SO0102                         SYSOUT
+
+Spool file: SYSPRINT (ID #102, Step: NSF, ProcStep: NSF)
+
+Spool file: UNK0103 (ID #103, Step: JES2)
+
