@@ -297,3 +297,72 @@ check would either lose a character (two jobnames differing only in character
 **Not established by this annotation:** that MVS 3.8j accepts a lower-case
 `SSCTSNAM` on the SSI chain and that `S NSFS` then really starts. Both are
 round 1's live re-run (`docs/measurements/d2-round1b/`).
+
+## Annotation (2026-10-15): round 2, the adoption protocol (#136)
+
+Decided by Mike after the survey (`docs/measurements/d2-round2-survey/survey.md`);
+built in `src/nsfsx.c`, with every decision a host-pinned pure function. **Built
+and host-/cross-green only: nothing in this annotation has run on MVS.**
+
+**What a start does with the verdict** (`nsfsct_start_action`):
+
+| Verdict | Posture of the anchor | Start |
+|---|---|---|
+| NONE | — | allocate, register |
+| OK | retain posture, its server has ended | **adopt** |
+| OK | retain posture, server still alive; or in service | **aside**: allocate, touch nothing, do not register |
+| OK | `nslots` differs (damaged) | **replace** |
+| BADEYE, BADVER | — | **replace**: remove the SSCT by name, leave the storage, allocate, register |
+| FOREIGN | — | aside |
+
+The **aside** rows for an OK verdict were not in the survey. They close
+`P NSFS` followed at once by `S NSFS`: the old instance is still inside its
+10 s drain, its anchor already shows the retain posture, and it may yet free
+that anchor. "Its server has ended" is answered from the ASVT
+(`nsfreqx_server_gone`): the recorded server ASCB is ours, or no live entry
+holds it. An ASCB reused by a third address space reads as alive, which is the
+safe side.
+
+**The scrub** (`nsfreqx_adopt_action`), once, at start, before the SVC slot is
+stolen:
+- **S1:** reap PENDING / HELD / DONE whose owner is DEAD, through
+  `nsfreqx_reap_ok(state, DEAD, 1)`.
+- **S2:** post a LIVE owner of a PENDING or HELD slot, after setting the slot
+  HELD by CS. Without HELD, a drain pass could dispatch the request of a
+  client that is leaving through `WQUIES`.
+- **No S3:** `inflight` is not recomputed.
+- **Out of scope:** CLAIMED and UNKNOWN stay where they are.
+
+**The survey's trap** is closed by the function's shape. No `storage_ok` value
+turns a LIVE or UNKNOWN owner into a reap. TSTREQX asserts that for every state,
+and a mutation that brings the trap back fails three assertions.
+
+**The routine.** Its address is recorded in the anchor (`router_lpa`/`router_epa`).
+- `inflight` 0 after a 2 s settle: the recorded copy is freed and a fresh one
+  loaded.
+- Otherwise the recorded copy is **reused**, because the parked tasks are in
+  it. A redeployed NSFVSVC then does not take effect until a stop that drains;
+  `NSF065W` says so.
+
+**Version 4, against round 1's "ANCVERNO stays 3".** The router fields are
+appended after `slots[]`, so no offset the routine uses moves. But round 2
+creates a second reader of the layout. An adopting STC reading `router_lpa`
+out of a 137272-byte version-3 anchor would read past its GETMAIN and free
+whatever it found there. At version 4 such an anchor classifies BADVER and is
+replaced. `ANCVERNO EQU 4` is the only change to `nsfvsvc.asm`, and the
+routine's object differs in exactly that literal. The cost is the one the
+naming annotation above priced: every Stage-0 gate is re-run.
+
+**Found on the way, a round-1 defect.** `nsfsx_stop` removed the SSCT by name
+on every free path. So an instance refused registration (`NSF059W`) unchained
+the SSCT of an anchor that was still retained. Now only an SSCT this instance
+registered or adopted is removed (`g_sct_owned`).
+
+**Not established:**
+- that any of this works on MVS;
+- that `nsfsx_recover_quiesce` completes its two stores before #83's second
+  abend, which the abend induction for the adoption gate relies on;
+- the BADVER row live, unless a version-3 anchor can be retained before the
+  deploy.
+
+The gate is #136's list.

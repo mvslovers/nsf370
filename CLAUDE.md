@@ -451,7 +451,8 @@ write-out key categories are closed.
   anchor at the next start via a per-instance SSCT. **Round 1** (register /
   find / remove; the SSCT name is jobname[0:4] in lower case, so `S NSFS`
   never meets it) is live-green on dev1 (`docs/measurements/d2-round1b/`).
-  **Round 2** (adoption) is next: #136.
+  **Round 2** (adoption, #136) is built on `d2-round2`, host- and
+  cross-green, **not yet run on MVS**; anchor version 4.
 - **c3 — retire the probe verbs** (`ECHO`/`XFER`/`UNSTAGE`/`SLOT`; promote
   `QUERY`) only once their eight dependent live gates have replacements.
   Obligation #4 stays half-discharged until then.

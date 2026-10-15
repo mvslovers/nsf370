@@ -9,11 +9,11 @@ commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 
 1. **d2 round 2: adopt a retained anchor at start** (#136, ADR-0048). Round 1
    (register / find / remove) is merged (#135) and live-green on dev1. The
-   survey is on branch `d2-round2` (a31962d, not yet on main) and the
-   decisions (verdicts, router address after `slots[]`, scrub S1 + S2) are in
-   #136. Implementation not started; who writes the SVC-routine and router
-   parts is still open. Why first: every NSFS abend today leaves about
-   139 KB of CSA until IPL.
+   survey and the implementation are on branch `d2-round2` (not yet on main;
+   ADR-0048 round-2 annotation). Host- and cross-green; the live round is
+   next: every Stage-0 gate (anchor version 4), TSTSCTM, Job A and #136's
+   adoption rows, with predictions written first and MBT pinged. Why first:
+   every NSFS abend today leaves about 139 KB of CSA until IPL.
 2. **TCP hardening + docs** — the rest of M5's scope; no issue yet.
 3. **#83 `A0A` inside the recovery exit** — `nsf_shutdown()` takes a second
    abend inside ESTAE, so recovery never reaches `NSF901I`.
