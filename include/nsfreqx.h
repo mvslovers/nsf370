@@ -32,7 +32,8 @@
  *   nsfreqx_classify    NSFRXCLS    nsfreqx_slot_action NSFRXACT
  *   nsfreqx_slot_legal  NSFRXLEG    nsfreqx_reap_ok    NSFRXRPO
  *   nsfreqx_rc_errno    NSFRXRCE    nsfreqx_actionable NSFRXABL
- *   nsfreqx_land_copy   NSFRXLCP
+ *   nsfreqx_land_copy   NSFRXLCP    nsfreqx_adopt_action NSFRXADA
+ *   nsfreqx_server_gone NSFRXSGN
  * ========================================================================== */
 
 #ifndef NSFREQX_H
@@ -396,6 +397,74 @@ int nsfreqx_slot_legal(UINT from, UINT to) asm("NSFRXLEG");
  * -------------------------------------------------------------------------- */
 int nsfreqx_reap_ok(UINT observed_state, int verdict,
                     int storage_ok) asm("NSFRXRPO");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_adopt_action -- what an ADOPTING start does with one slot of the
+ * anchor a previous instance retained (d2 round 2, #136, ADR-0048 7).
+ *
+ * Runs ONCE per slot, at start, before the SVC slot is stolen -- so no new
+ * client can enter while it runs -- and AFTER the adopting STC has re-stamped
+ * the anchor's server fields.  The decisions (maintainer, 2026-10-15):
+ *
+ *   S1  DEAD owner, PENDING / HELD / DONE   -> REAP.  Routed through
+ *       nsfreqx_reap_ok(state, DEAD, 1), so this function adds no second
+ *       encoding of the reclaim rule.
+ *   S2  LIVE owner, PENDING / HELD           -> POST.  The client resumes in the
+ *       routine, finds its slot not DONE and leaves through WQUIES: slot FREE,
+ *       inflight given back, RCCORR to the caller.  The caller sets the slot
+ *       HELD BEFORE posting, so no drain pass can dispatch it while the client
+ *       is on its way out.
+ *   everything else                          -> NONE.
+ *
+ * THE ROWS THAT ARE NONE, AND WHY EACH IS:
+ *   LIVE + DONE      the reply was already posted; a DONE slot that stays DONE
+ *                    is 40-CHK's false-LIVE leak, and a second post fixes
+ *                    nothing.
+ *   UNKNOWN          #88.  Neither posted into nor reaped, as everywhere.
+ *   CLAIMED          needs the fourth state CLAIMED -> REAPING (reap_ok).
+ *   LIVE + storage   NOT the drain's REAP_BAD.  The scrub never reclaims a
+ *   untrusted        LIVE owner's slot -- S1 is DEAD owners only -- and never
+ *                    posts through storage it cannot trust.  A PENDING slot
+ *                    in that state is left for the drain, whose REAP_BAD row
+ *                    is the existing, pinned rule for it.
+ *
+ * THE TRAP THIS SHAPE CLOSES (survey section 5, Q3).  reap_ok reclaims a LIVE
+ * owner's slot when storage_ok is 0, and in a retained anchor the published
+ * wake-ECB pointer is NULL -- so a scrub computing storage_ok the drain's way
+ * BEFORE the re-stamp would have judged every slot untrusted and freed live
+ * clients' storage.  Here no value of storage_ok can turn a LIVE owner into a
+ * REAP: that is asserted for every state in TSTREQX, not left to the order of
+ * two statements in nsfsx_start.
+ * -------------------------------------------------------------------------- */
+#define NSFREQX_ADOPT_NONE  0
+#define NSFREQX_ADOPT_REAP  1
+#define NSFREQX_ADOPT_POST  2
+int nsfreqx_adopt_action(UINT state, int verdict, int storage_ok)
+                                                         asm("NSFRXADA");
+
+/* --------------------------------------------------------------------------
+ * nsfreqx_server_gone -- has the address space that RETAINED an anchor ended?
+ *
+ * An anchor in the retain posture (ACTIVE clear, wake-ECB pointer NULL) is
+ * not yet proof that its STC is gone: `P NSFS` followed at once by `S NSFS`
+ * starts the new instance while the old one is still inside its 10 s drain,
+ * and the old one may yet free that anchor.  Adopting it then would be a
+ * use-after-free in common storage.  So adoption also needs the old server's
+ * address space to have ENDED.
+ *
+ * The anchor records the server's ASCB address and no ASID, so the question
+ * is answered by scanning the ASVT for that address:
+ *   our own ASCB          -> GONE: MVS reused its ASCB for us
+ *   found in a live entry -> NOT gone (or reused by a third address space,
+ *                            which reads the same and is the safe side:
+ *                            adoption is refused, the anchor stays leaked)
+ *   not found             -> GONE
+ * A zero ASCB, or no ASVT, answers NOT gone -- an identity that cannot be
+ * established never licenses an adoption.  Compare ADDRESSES only, never
+ * anything read through them (the ADR-0040 rule).
+ * -------------------------------------------------------------------------- */
+int nsfreqx_server_gone(UINT server_ascb, UINT our_ascb, UINT asvt_maxu,
+                        const UINT *asvt_enty) asm("NSFRXSGN");
 
 /* --------------------------------------------------------------------------
  * nsfreqx_rc_errno -- the router return code a client got, as an errno.

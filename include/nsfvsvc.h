@@ -274,8 +274,20 @@
  *
  * BUMP THIS WITH EVERY LAYOUT MOVE, or the check is decorative.  1 was the
  * single-slot anchor through M5-2b2; 2 is the pool; 3 adds the M5-2b4 header
- * words (`collisions` + one reserved), which moves the slot array by 8. */
-#define NSFV_ANCHOR_VER   3U
+ * words (`collisions` + one reserved), which moves the slot array by 8.
+ *
+ * 4 APPENDS `router_lpa`/`router_epa` AFTER THE SLOT ARRAY (d2 round 2, #136).
+ * No existing offset moves and the SVC routine never reads the new words, so
+ * the router<->STC contract the version was written for did not change.  It is
+ * bumped anyway because round 2 creates a SECOND reader of the layout: an STC
+ * ADOPTING an anchor a previous instance retained.  A version-3 anchor is
+ * 137272 bytes, and an adopting STC that read `router_lpa` out of one would
+ * read past the end of its GETMAIN -- and freemain whatever it found.  At 4,
+ * nsfsct_classify answers BADVER for it, which is the safe outcome: the SSCT
+ * is removed, the old anchor stays where it is, and a fresh one is allocated.
+ * The routine checks ANCVERNO, so NSFVSVC and NSFS must be deployed together;
+ * a stale routine refuses every request (RCCORR) rather than mis-striding. */
+#define NSFV_ANCHOR_VER   4U
 
 /* ============================================================
  * NSFV_REQ -- the client's request block (R1 -> here at the SVC).
@@ -450,8 +462,8 @@ NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
  * in CSA against a newer NSFS is a real, documented divergence (see
  * NSFV_ANCHOR_VER).
  *
- * Target layout, 4-byte pointers: 56-byte header + 64 x 2144 = 137,272 bytes,
- * one contiguous SP=241 GETMAIN.  Measured on MVSCE (b0): CSA total 2064 KB,
+ * Target layout, 4-byte pointers: 56-byte header + 64 x 2144 + 8-byte trailer
+ * = 137,280 bytes, one contiguous SP=241 GETMAIN.  Measured on MVSCE (b0): CSA total 2064 KB,
  * largest contiguous SP=241 GETMAIN >= 1 MB -- so the pool is 6.5 % of CSA.
  *
  * ============ ASSEMBLER MIRROR (asm/nsfvsvc.asm carries these as EQUs) ======
@@ -483,8 +495,12 @@ NSFV_OFF_ASSERT(NSFV_SLOT, stage,     96);
  *   SLRQEG     EQU 92    CL4  rqe_guard
  *   SLSTAGE    EQU 96    2048 stage
  *   SLOTLEN    EQU 2144       one slot, the scan's stride
+ *  trailer, after the slot array (version 4) -- NOT mirrored: the routine
+ *  never reads it, so it carries no EQU
+ *   router_lpa      +137272  A    where the routine was loaded (freemain)
+ *   router_epa      +137276  A    its entry point (the SVC table value)
  *  and the routine's own constant, which is NOT an offset:
- *   ANCVERNO   EQU 3          == NSFV_ANCHOR_VER; the routine rejects an
+ *   ANCVERNO   EQU 4          == NSFV_ANCHOR_VER; the routine rejects an
  *                                anchor whose ANCVER differs
  *   ANCPROBE   EQU X'40'      == NSFV_ANCHOR_PROBE's high byte, TM'd against
  *                                ANCFLAG(R2): does this server service the
@@ -537,13 +553,12 @@ typedef struct nsfv_anchor {
                                   **     collision would be the silent adoption
                                   **     the rule exists to prevent.
                                   **
-                                  **     THE LAYOUT DOES NOT MOVE.  Same offset,
-                                  **     same width, so NSFV_ANCHOR stays 137272
-                                  **     bytes and NSFV_ANCHOR_VER stays 3 -- a
-                                  **     renamed word is not a moved one, and
-                                  **     the alternative (a new 8-byte field)
-                                  **     would move every slot and cost a full
-                                  **     Stage-0 round.
+                                  **     THE LAYOUT DID NOT MOVE IN ROUND 1.
+                                  **     Same offset, same width: a renamed
+                                  **     word is not a moved one, and a new
+                                  **     8-byte header field would have moved
+                                  **     every slot.  (Round 2's version 4 is
+                                  **     the router trailer below, not this.)
                                   **
                                   **     THE ASM MIRROR STILL CALLS IT ANCRSV0
                                   **     (asm/nsfvsvc.asm), DELIBERATELY: the
@@ -553,8 +568,21 @@ typedef struct nsfv_anchor {
                                   **     to re-verify.  Offset and width agree,
                                   **     which is all the mirror has to do.     */
     NSFV_SLOT slots[NSFV_NSLOTS]; /* +38 the pool                             */
-} NSFV_ANCHOR;                    /* 56 + 64*2144 = 137272 bytes              */
-NSF_SIZE_ASSERT(NSFV_ANCHOR, 137272);
+    void     *router_lpa;         /* +137272 where THIS anchor's SVC routine
+                                  **     was loaded, for its freemain; NULL when
+                                  **     none is recorded.  d2 round 2 (#136):
+                                  **     the routine is retained with the anchor
+                                  **     on both retain paths, and before this
+                                  **     word its address lived only in the
+                                  **     dead STC's statics, so a later start
+                                  **     could find the anchor but never the
+                                  **     code.  APPENDED, not inserted, so no
+                                  **     offset the routine uses moves.       */
+    void     *router_epa;         /* +137276 its entry point: the SVC table
+                                  **     value, and the base of the anchor-
+                                  **     address patch (NSFV_ANCH_OFF)        */
+} NSFV_ANCHOR;                    /* 56 + 64*2144 + 8 = 137280 bytes          */
+NSF_SIZE_ASSERT(NSFV_ANCHOR, 137280);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, version,        8);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, flags,         12);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, server_ecb,    16);
@@ -568,6 +596,8 @@ NSFV_OFF_ASSERT(NSFV_ANCHOR, exhausted,     44);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, collisions,    48);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, jobname_tail,  52);
 NSFV_OFF_ASSERT(NSFV_ANCHOR, slots,         56);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, router_lpa, 137272);
+NSFV_OFF_ASSERT(NSFV_ANCHOR, router_epa, 137276);
 
 /* ============================================================
  * COLLISIONS -- what the counter counts, and what it cannot tell you.

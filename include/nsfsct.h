@@ -1,9 +1,10 @@
 /*----------------------------------------------------------------------------
  * nsfsct.h -- the d2 rendezvous: a named SSCT carrying the anchor address.
  *
- * ADR-0048, ROUND 1.  Register / find / remove, and NOTHING ELSE.  Adoption --
- * what a start does with a retained anchor once it has found one -- is round 2,
- * and no declaration here may anticipate it.
+ * ADR-0048.  Round 1: register / find / remove.  Round 2 (#136) adds ONE pure
+ * decision, nsfsct_start_action -- what a start does with the verdict.  The
+ * adoption itself (re-stamp, scrub, router) is src/nsfsx.c's, because every
+ * step of it is a store into the anchor.
  *
  * WHY AN SSCT AT ALL.  A retained anchor is unreachable today:
  * `nsfsx_anchor_alloc` getmains unconditionally and never looks for one, which
@@ -26,7 +27,7 @@
  * by the caller.  Same reasoning nsfreqx.h records for the same reason.
  *
  * 8-char aliases: NSFSCSPL NSFSCCLS NSFSCVDS NSFSCREG NSFSCFND NSFSCRMV
- *                 NSFSCJOB NSFSCPFN NSFSCPRG NSFSCPRM
+ *                 NSFSCJOB NSFSCPFN NSFSCPRG NSFSCPRM NSFSCSTA NSFSCPST
  *--------------------------------------------------------------------------*/
 #ifndef NSFSCT_H
 #define NSFSCT_H
@@ -43,12 +44,12 @@
  * headers ARE available -- a mirror nobody compares is a mirror that drifts. */
 #define NSFSCT_EYE       "NSFVANCR"
 #define NSFSCT_EYELEN    8
-#define NSFSCT_VER       3U
+#define NSFSCT_VER       4U
 
 /*--------------------------------------------------------------------------
  * VERDICTS.  What `find` may return -- and every one of these is a statement
  * about what was FOUND, never about what to do with it.  Acting on a verdict
- * is round 2 (ADR-0048 7).
+ * is nsfsct_start_action's (round 2).
  *------------------------------------------------------------------------*/
 #define NSFSCT_NONE      0  /* no SSCT under our name -- the ordinary start   */
 #define NSFSCT_OK        1  /* found; eyecatcher, version and identity agree  */
@@ -100,6 +101,54 @@ int nsfsct_classify(const char *eye, UINT version,
 
 /* PURE.  A verdict's name, for messages and for the record.  Never a decision. */
 const char *nsfsct_verdict_name(int verdict) asm("NSFSCVDS");
+
+/*--------------------------------------------------------------------------
+ * PURE.  The POSTURE of an anchor whose verdict was OK -- an OK verdict says
+ * the anchor is ours, not that nobody is using it.  Checked in this order:
+ *
+ *   DAMAGED   nslots differs from ours under the same version
+ *   SERVED    ACTIVE is set, or a wake-ECB pointer is published: someone is
+ *             serving it (both retain paths clear both)
+ *   ALIVE     the retain posture, but the server that retained it has not
+ *             ended (nsfreqx_server_gone): the previous instance still inside
+ *             its drain, or a second one under the same jobname
+ *   RETAINED  the retain posture, and its server has ended -- adoptable
+ *------------------------------------------------------------------------*/
+#define NSFSCT_POSTURE_RETAINED  0
+#define NSFSCT_POSTURE_DAMAGED   1
+#define NSFSCT_POSTURE_SERVED    2
+#define NSFSCT_POSTURE_ALIVE     3
+int nsfsct_posture(int nslots_ok, int active, int ecb_published,
+                   int server_gone) asm("NSFSCPST");
+
+/*--------------------------------------------------------------------------
+ * PURE.  What a START does with the verdict (round 2, decided 2026-10-15).
+ *
+ *   NONE                      FRESH    allocate, register
+ *   OK, RETAINED              ADOPT    reuse the anchor, keep the SSCT
+ *   OK, DAMAGED               REPLACE  (below)
+ *   OK, SERVED or ALIVE       ASIDE    allocate, touch nothing, do not register
+ *   BADEYE, BADVER            REPLACE  remove the SSCT by name, leave the old
+ *                                      storage where it is, allocate, register
+ *   FOREIGN, anything else    ASIDE
+ *
+ * OK + SERVED/ALIVE is ASIDE because adopting an anchor its owner may yet free
+ * is a use-after-free in common storage, and removing the SSCT would strand
+ * whatever that owner later retains (`P NSFS` then `S NSFS` while the old
+ * instance is still in its 10 s drain).  OK + DAMAGED is REPLACE, not ASIDE:
+ * no owner will ever come back for a damaged anchor, and leaving its SSCT
+ * chained would send every later start ASIDE -- the rendezvous lost until IPL.
+ *
+ * REPLACE never frees the old storage: BADEYE says SSCTSUSE does not lead to
+ * anything we can read as ours, and BADVER that we cannot read its layout --
+ * in neither case is a free something this instance can justify (ADR-0048
+ * 3.2: "removable but not adoptable").
+ *------------------------------------------------------------------------*/
+#define NSFSCT_START_FRESH    0
+#define NSFSCT_START_ADOPT    1
+#define NSFSCT_START_REPLACE  2
+#define NSFSCT_START_ASIDE    3
+int nsfsct_start_action(int verdict, int posture) asm("NSFSCSTA");
 
 /*--------------------------------------------------------------------------
  * THE ROUND-1 API.  All three derive the name from the jobname themselves, so

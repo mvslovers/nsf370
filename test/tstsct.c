@@ -10,9 +10,9 @@
  * real members); the mechanism is TSTSCTM's.  Said here as well as in the round
  * record, because a green host run is exactly the thing that gets over-read.
  *
- * NOT TESTED HERE AND DELIBERATELY SO: adoption.  Round 1 finds and removes;
- * what a start DOES with a retained anchor is round 2, and no assertion below
- * may quietly assume it.
+ * ROUND 2 (#136) adds section 6: the verdict -> start-action table.  The
+ * adoption itself -- re-stamp, scrub, router -- is nsfsx.c's and is not
+ * simulated here; its per-slot decision is pinned in TSTREQX.
  *--------------------------------------------------------------------------*/
 #include "nsfsct.h"
 #include "nsfsct_host.h"
@@ -293,15 +293,82 @@ t_no_identity(void)
     CHECK_EQ((long)nsfsct_register(NULL), -1L, "5: a NULL anchor is refused");
 }
 
+/* ---- 6. what a start does with the verdict (round 2) -------------------- */
+static void
+t_start_action(void)
+{
+    printf("\n--- 6. start action ---\n");
+
+    /* the posture of an OK anchor */
+    CHECK_EQ((long)nsfsct_posture(1, 0, 0, 1),
+             (long)NSFSCT_POSTURE_RETAINED,
+             "6: retain posture + server ended -> RETAINED");
+    CHECK_EQ((long)nsfsct_posture(1, 0, 0, 0), (long)NSFSCT_POSTURE_ALIVE,
+             "6: retain posture, server NOT ended -> ALIVE (still draining?)");
+    CHECK_EQ((long)nsfsct_posture(1, 1, 0, 1), (long)NSFSCT_POSTURE_SERVED,
+             "6: ACTIVE set -> SERVED, whatever the ASVT says");
+    CHECK_EQ((long)nsfsct_posture(1, 0, 1, 1), (long)NSFSCT_POSTURE_SERVED,
+             "6: wake ECB published -> SERVED");
+    CHECK_EQ((long)nsfsct_posture(0, 0, 0, 1), (long)NSFSCT_POSTURE_DAMAGED,
+             "6: nslots differs -> DAMAGED");
+    CHECK_EQ((long)nsfsct_posture(0, 1, 1, 0), (long)NSFSCT_POSTURE_DAMAGED,
+             "6: DAMAGED is checked first");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_NONE, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_FRESH, "6: NONE -> fresh, whatever the posture");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_ADOPT, "6: OK + RETAINED -> ADOPT");
+    /* THE ROWS THAT KEEP ADOPTION FROM BEING A USE-AFTER-FREE: an anchor that
+     * is ours but is being served, or whose server has not ended -- a second
+     * instance, or the previous one still in its drain -- is neither adopted
+     * nor unchained. */
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_ASIDE,
+             "6: OK + ALIVE -> ASIDE (never adopt a live server's anchor)");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_SERVED),
+             (long)NSFSCT_START_ASIDE, "6: OK + SERVED -> ASIDE");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_DAMAGED),
+             (long)NSFSCT_START_REPLACE,
+             "6: OK + DAMAGED -> REPLACE (else every later start goes ASIDE)");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_BADEYE, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_REPLACE, "6: BADEYE -> replace the SSCT");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_BADVER, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_REPLACE, "6: BADVER -> replace the SSCT");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_BADVER,
+                                       NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_REPLACE,
+             "6: BADVER is never adopted, whatever the posture (layout unknown)");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_FOREIGN, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_ASIDE, "6: FOREIGN -> touch nothing");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_FOREIGN,
+                                       NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_ASIDE,
+             "6: FOREIGN is never adopted, whatever the posture");
+    CHECK_EQ((long)nsfsct_start_action(99, NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_ASIDE, "6: an unknown verdict touches nothing");
+
+    /* The version this build classifies with is the one the anchor header
+     * says: a round-1 anchor (version 3, no router trailer) must come back
+     * BADVER, never OK -- an OK would let the adopting STC read past the end
+     * of a 137272-byte GETMAIN. */
+    CHECK_EQ((long)NSFSCT_VER, 4L, "6: the classifier expects version 4");
+    CHECK_EQ((long)nsfsct_classify(NSFSCT_EYE, 3u, "TACK", "TACK"),
+             (long)NSFSCT_BADVER, "6: a round-1 (version 3) anchor is BADVER");
+}
+
 int
 main(void)
 {
-    printf("=== nsf370 d2 round 1: the rendezvous (TSTSCT) ===\n");
+    printf("=== nsf370 d2: the rendezvous (TSTSCT) ===\n");
     t_split();
     t_unsafe();
     t_classify();
     t_plumbing();
     t_find_verdicts();
     t_no_identity();
+    t_start_action();
     return mbt_test_summary("TSTSCT");
 }

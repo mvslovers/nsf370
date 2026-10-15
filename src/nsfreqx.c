@@ -265,6 +265,49 @@ int nsfreqx_reap_ok(UINT observed_state, int verdict, int storage_ok)
 }
 
 /* -------------------------------------------------------------------------- */
+int nsfreqx_adopt_action(UINT state, int verdict, int storage_ok)
+{
+    /* S1.  DEAD owners only, and through the governing predicate -- with
+     * storage_ok forced to 1, so the reclaim can ONLY be the liveness reason.
+     * The storage-trust reason belongs to the drain (see the header). */
+    if (verdict == NSFREQX_CL_DEAD) {
+        return nsfreqx_reap_ok(state, NSFREQX_CL_DEAD, 1)
+                   ? NSFREQX_ADOPT_REAP : NSFREQX_ADOPT_NONE;
+    }
+    /* S2.  A LIVE owner of a slot that was never answered, and only through
+     * storage we trust: the POST goes to the slot's own reply ECB on behalf of
+     * the ASCB recorded in it. */
+    if (verdict == NSFREQX_CL_LIVE && storage_ok &&
+        (state == NSFREQX_ST_PENDING || state == NSFREQX_ST_HELD)) {
+        return NSFREQX_ADOPT_POST;
+    }
+    return NSFREQX_ADOPT_NONE;
+}
+
+/* -------------------------------------------------------------------------- */
+int nsfreqx_server_gone(UINT server_ascb, UINT our_ascb, UINT asvt_maxu,
+                        const UINT *asvt_enty)
+{
+    UINT i;
+
+    if (server_ascb == 0u) {
+        return 0;
+    }
+    if (server_ascb == our_ascb) {
+        return 1;                       /* its ASCB is ours now               */
+    }
+    if (asvt_enty == NULL || asvt_maxu == 0u) {
+        return 0;
+    }
+    for (i = 0; i < asvt_maxu; i++) {
+        UINT entry = asvt_enty[i];
+        if (entry & NSFREQX_ASVT_AVAIL) continue;   /* a free ASID           */
+        if (entry == server_ascb) return 0;         /* still (or again) live */
+    }
+    return 1;
+}
+
+/* -------------------------------------------------------------------------- */
 int nsfreqx_rc_errno(int rc)
 {
     switch (rc) {
