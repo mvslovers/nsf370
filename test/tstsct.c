@@ -13,6 +13,13 @@
  * ROUND 2 (#136) adds section 6: the verdict -> start-action table.  The
  * adoption itself -- re-stamp, scrub, router -- is nsfsx.c's and is not
  * simulated here; its per-slot decision is pinned in TSTREQX.
+ *
+ * ROUND 2b adds section 8 and changes the fixtures: register STAMPS the tail.
+ * Round 1 derived it and threw it away, so a real anchor carried four zero
+ * bytes and the next start read its own predecessor as FOREIGN (live on dev1,
+ * STC00711).  Every fixture here used to write the right tail itself, which is
+ * exactly what hid that -- so they now write a WRONG one ("ZZZZ") and assert
+ * that register replaced it.
  *--------------------------------------------------------------------------*/
 #include "nsfsct.h"
 #include "nsfsct_host.h"
@@ -105,7 +112,7 @@ t_unsafe(void)
 
     /* Something someone else chained under that very name must not be read
      * as ours: find answers NONE without dereferencing it. */
-    CHECK_EQ((long)nsfsct_plat_register("@#$1", &a), 0L,
+    CHECK_EQ((long)nsfsct_plat_register("@#$1", "XXXX", &a), 0L,
              "1b: (a foreign SSCT under the unsafe name, made by the test)");
     CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_NONE,
              "1b: find answers NONE for an unsafe key, whatever is chained");
@@ -168,8 +175,10 @@ t_plumbing(void)
 
     printf("\n--- 3. register / find / remove ---\n");
     nsfsct_host_reset();
-    mk_anchor(&a_anchor, NSFSCT_EYE, NSFSCT_VER, "TACK");
-    mk_anchor(&b_anchor, NSFSCT_EYE, NSFSCT_VER, "TEST");
+    /* A WRONG tail on purpose (round 2b): find can only say OK below if
+     * register stamped the right one. */
+    mk_anchor(&a_anchor, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
+    mk_anchor(&b_anchor, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
 
     /* --- name A --- */
     nsfsct_host_set_jobname("NSFSTACK");
@@ -178,6 +187,8 @@ t_plumbing(void)
     CHECK(out == NULL, "3: ...and no anchor handed back");
 
     CHECK_EQ((long)nsfsct_register(&a_anchor), 0L, "3: A registers");
+    CHECK(memcmp(a_anchor.jobname_tail, "TACK", 4) == 0,
+          "3: ...and STAMPED its tail: 'ZZZZ' became 'TACK' (round 2b)");
     CHECK(nsfsct_plat_find("nsfs") != NULL,
           "3: ...under the FOLDED key 'nsfs'");
     CHECK(nsfsct_plat_find("NSFS") == NULL,
@@ -204,6 +215,8 @@ t_plumbing(void)
     CHECK(out == NULL, "3: ...and hands back nothing");
 
     CHECK_EQ((long)nsfsct_register(&b_anchor), 0L, "3: B registers alongside A");
+    CHECK(memcmp(b_anchor.jobname_tail, "TEST", 4) == 0,
+          "3: ...stamped with B's own tail, 'TEST'");
     CHECK_EQ((long)nsfsct_host_count(), 2L, "3: TWO names coexist");
     CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_OK, "3: B finds its own");
     CHECK(out == (void *)&b_anchor, "3: ...and gets B's anchor, not A's");
@@ -251,9 +264,14 @@ t_find_verdicts(void)
              "4: REMOVAL WORKS ANYWAY -- it goes by name and never dereferences"
              " the anchor");
 
-    /* A foreign anchor -- the CL4 collision reaching find. */
-    mk_anchor(&foreign, NSFSCT_EYE, NSFSCT_VER, "TEST");
-    CHECK_EQ((long)nsfsct_register(&foreign), 0L, "4: register a foreign tail");
+    /* A foreign anchor -- the CL4 collision reaching find.  Registered by
+     * the OTHER jobname, as it would be on MVS: since round 2b register
+     * stamps the registering job's tail, so a fixture cannot plant one. */
+    mk_anchor(&foreign, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
+    nsfsct_host_set_jobname("NSFSTEST");
+    CHECK_EQ((long)nsfsct_register(&foreign), 0L,
+             "4: NSFSTEST registers under the shared key 'nsfs'");
+    nsfsct_host_set_jobname("NSFSTACK");
     CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_FOREIGN,
              "4: find says FOREIGN rather than adopting a stranger's anchor");
     CHECK_EQ((long)nsfsct_remove(), 0L, "4: and it is removable");
@@ -359,6 +377,48 @@ t_start_action(void)
              (long)NSFSCT_BADVER, "6: a round-1 (version 3) anchor is BADVER");
 }
 
+/* ---- 8. register stamps the tail (round 2b) ------------------------------
+ *
+ * THE LIVE SHAPE, EXACTLY: the job is NSFS, so the tail is four blanks, and
+ * the anchor is what nsfsx_anchor_alloc leaves -- memset to zero, the tail
+ * never written.  Round 2's start found that anchor FOREIGN (STC00711).  Zeros
+ * and not "ZZZZ" because a fix that stamps only a non-zero tail would pass a
+ * "ZZZZ" fixture and fail this one. */
+static void
+t_stamp(void)
+{
+    static const char zeros[NSFSCT_TAILLEN] = { 0, 0, 0, 0 };
+    NSFSCT_HOST_ANCHOR a;
+    void *out = NULL;
+
+    printf("\n--- 8. register stamps the tail ---\n");
+    nsfsct_host_reset();
+    nsfsct_host_set_jobname("NSFS    ");
+    mk_anchor(&a, NSFSCT_EYE, NSFSCT_VER, zeros);
+    CHECK(memcmp(a.jobname_tail, zeros, 4) == 0,
+          "8: precondition -- the tail is four zero bytes, as allocated");
+
+    CHECK_EQ((long)nsfsct_register(&a), 0L, "8: job NSFS registers");
+    CHECK(memcmp(a.jobname_tail, "    ", 4) == 0,
+          "8: ...and the tail now reads four blanks, NSFS's own");
+    CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_OK,
+             "8: THE NEXT START FINDS ITS OWN PREDECESSOR -- OK, not FOREIGN");
+    CHECK(out == (void *)&a, "8: ...and gets that anchor back");
+
+    /* A refused register leaves the anchor alone: the refusal is the
+     * IEF612I case, where the anchor belongs to whoever chained first. */
+    {
+        NSFSCT_HOST_ANCHOR b;
+        mk_anchor(&b, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
+        CHECK_EQ((long)nsfsct_register(&b), -1L,
+                 "8: a second register under 'nsfs' is refused");
+        CHECK(memcmp(b.jobname_tail, "ZZZZ", 4) == 0,
+              "8: ...and stamps nothing into the refused anchor");
+    }
+    CHECK_EQ((long)nsfsct_remove(), 0L, "8: remove");
+    CHECK_EQ((long)nsfsct_host_count(), 0L, "8: registry empty");
+}
+
 /* ---- 7. may SSCTSUSE be dereferenced? (round 2) ----------------------- */
 static void
 t_addr(void)
@@ -408,5 +468,6 @@ main(void)
     t_no_identity();
     t_start_action();
     t_addr();
+    t_stamp();
     return mbt_test_summary("TSTSCT");
 }

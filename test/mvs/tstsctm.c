@@ -103,7 +103,7 @@ gate(void)
     }
 
     /* --- register name 1 --- */
-    CHECK_EQ((long)nsfsct_plat_register("nsz1", &g_a1), 0L,
+    CHECK_EQ((long)nsfsct_plat_register("nsz1", "AAAA", &g_a1), 0L,
              "A: NSZ1 registers on the real chain");
     wtof_name("REGISTERED", "nsz1");
     s1 = nsfsct_plat_find("nsz1");
@@ -120,7 +120,7 @@ gate(void)
           "A: 'NSZ1' (upper case) is NOT found while 'nsz1' is chained");
 
     /* --- register name 2 alongside --- */
-    CHECK_EQ((long)nsfsct_plat_register("nsz2", &g_a2), 0L,
+    CHECK_EQ((long)nsfsct_plat_register("nsz2", "BBBB", &g_a2), 0L,
              "A: NSZ2 registers alongside NSZ1");
     wtof_name("REGISTERED", "nsz2");
     s2 = nsfsct_plat_find("nsz2");
@@ -169,7 +169,11 @@ gate(void)
             NSFV_ANCHOR  *csa = NULL;
             unsigned char savekey;
 
-            mk(&g_a1, NSFSCT_EYE, NSFSCT_VER, tail);
+            /* A WRONG TAIL IN BOTH FIXTURES (round 2b).  Round 1's fixtures
+             * wrote the right one themselves, which is what hid that no
+             * production code ever did: the CSA control's OK below can only
+             * come from register stamping it. */
+            mk(&g_a1, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
             CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_NONE,
                      "B: nothing under our name yet -> NONE");
 
@@ -179,6 +183,8 @@ gate(void)
              * the same value names an address in NSFS's own private area. */
             CHECK_EQ((long)nsfsct_register(&g_a1), 0L,
                      "B: register a PRIVATE anchor");
+            CHECK(memcmp(g_a1.jobname_tail, tail, NSFSCT_TAILLEN) == 0,
+                  "B: ...register stamped our tail over 'ZZZZ' (round 2b)");
             out = (void *)1;
             CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_BADEYE,
                      "B: a private SSCTSUSE is BADEYE -- never dereferenced,"
@@ -192,13 +198,17 @@ gate(void)
             if (__super(PSWKEY0, &savekey) == 0) {
                 csa = (NSFV_ANCHOR *)getmain((unsigned)sizeof(NSFV_ANCHOR),
                                              241);
-                if (csa != NULL) mk(csa, NSFSCT_EYE, NSFSCT_VER, tail);
+                if (csa != NULL) mk(csa, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
                 __prob(savekey, NULL);
             }
             CHECK(csa != NULL, "B: a CSA anchor for the control was obtained");
             if (csa != NULL) {
+                CHECK(memcmp(csa->jobname_tail, "ZZZZ", NSFSCT_TAILLEN) == 0,
+                      "B: precondition -- the CSA anchor's tail is 'ZZZZ'");
                 CHECK_EQ((long)nsfsct_register(csa), 0L,
                          "B: register the CSA anchor");
+                CHECK(memcmp(csa->jobname_tail, tail, NSFSCT_TAILLEN) == 0,
+                      "B: ...and register STAMPED our tail into key-0 CSA");
                 v = nsfsct_find(&out);
                 CHECK_EQ((long)v, (long)NSFSCT_OK,
                          "B: find returns OK -- eye, version and identity all"
@@ -414,7 +424,7 @@ main(int argc, char **argv)
             wtof("TSTSCTM: HOLD %.4s ALREADY CHAINED", key);
             return SCTM_CC_SKIP;
         }
-        CHECK_EQ((long)nsfsct_plat_register(key, &g_a1), 0L,
+        CHECK_EQ((long)nsfsct_plat_register(key, tail, &g_a1), 0L,
                  "HOLD: the derived key 'nsfs' chains on the real SSI chain");
         CHECK(nsfsct_plat_find(key) != NULL, "HOLD: ...and is found under it");
         CHECK(nsfsct_plat_find("NSFS") == NULL,

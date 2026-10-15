@@ -70,18 +70,25 @@ nsfsct_plat_find(const char *key)
 }
 
 int
-nsfsct_plat_register(const char *key, void *anchor)
+nsfsct_plat_register(const char *key, const char *tail, void *anchor)
 {
     char           z[NSFSCT_KEYLEN + 1];
     unsigned char  savekey;
     SSCT          *ssct;
     int            rc;
 
-    if (key == NULL || anchor == NULL) return -1;
+    if (key == NULL || tail == NULL || anchor == NULL) return -1;
     sct_keyz(key, z);
 
     /* ssct_new and ssct_install both require supervisor state (clibssct.h). */
     if (__super(PSWKEY0, &savekey)) return -1;
+
+    /* STAMP FIRST, THEN CHAIN (round 2b).  The anchor is key-0 CSA, so the
+     * store belongs in this window; doing it before ssct_install means no
+     * reader of the chain can ever meet our key over an unstamped tail.  If
+     * the install fails the stamp is left behind on an anchor nothing chains,
+     * which names its own allocator and misleads no one. */
+    memcpy(((NSFV_ANCHOR *)anchor)->jobname_tail, tail, NSFSCT_TAILLEN);
 
     /* NO SSVT.  The SSCT is a RENDEZVOUS here, not a transport: nothing is
      * dispatched through it, no IEFSSREQ is issued, and no client touches it

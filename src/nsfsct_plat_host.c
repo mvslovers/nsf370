@@ -82,12 +82,15 @@ nsfsct_plat_find(const char *key)
 }
 
 int
-nsfsct_plat_register(const char *key, void *anchor)
+nsfsct_plat_register(const char *key, const char *tail, void *anchor)
 {
     int i;
-    if (key == NULL || anchor == NULL) return -1;
+    if (key == NULL || tail == NULL || anchor == NULL) return -1;
     for (i = 0; i < SCT_HOST_MAX; i++) {
         if (!g_reg[i].used) {
+            /* Stamp, then chain -- the MVS half's order (round 2b). */
+            memcpy(((NSFSCT_HOST_ANCHOR *)anchor)->jobname_tail, tail,
+                   NSFSCT_TAILLEN);
             g_reg[i].used = 1;
             memcpy(g_reg[i].name, key, NSFSCT_KEYLEN);
             g_reg[i].suse = anchor;

@@ -183,7 +183,15 @@ int nsfsct_start_action(int verdict, int posture) asm("NSFSCSTA");
 
 /* Register this instance's SSCT with `anchor` in SSCTSUSE.  REFUSES, loudly and
  * without chaining anything, if an SSCT already exists under our name: a
- * second chain entry is the failure, not the fix (ADR-0048 2).  Returns 0 on
+ * second chain entry is the failure, not the fix (ADR-0048 2).
+ *
+ * IT STAMPS THE ANCHOR'S jobname_tail (round 2b).  Key and tail together are
+ * the identity find classifies by, so the call that publishes the key is the
+ * one that writes the tail -- before the SSCT is chained, so no chained
+ * anchor is ever unstamped.  Round 1 derived the tail here and discarded it:
+ * every real anchor carried four zero bytes, and the next start read its own
+ * predecessor as FOREIGN (dev1, STC00711).  A refused register stamps
+ * nothing.  Returns 0 on
  * success, NSFSCT_RC_NOTSAFE if the derived key could equal a procedure name
  * (see nsfsct_split), -1 on any other refusal or failure. */
 #define NSFSCT_RC_NOTSAFE  (-2)
@@ -210,7 +218,11 @@ int nsfsct_remove(void) asm("NSFSCRMV");
  *------------------------------------------------------------------------*/
 int   nsfsct_plat_jobname(char *out8)                         asm("NSFSCJOB");
 void *nsfsct_plat_find(const char *key)                       asm("NSFSCPFN");
-int   nsfsct_plat_register(const char *key, void *anchor)     asm("NSFSCPRG");
+/* Writes `tail` into the anchor's jobname_tail, then chains the SSCT, in one
+ * key-0 window.  The tail is NOT optional: a seam that could chain without it
+ * is how round 1 shipped the defect. */
+int   nsfsct_plat_register(const char *key, const char *tail,
+                           void *anchor)                      asm("NSFSCPRG");
 int   nsfsct_plat_remove(const char *key)                     asm("NSFSCPRM");
 
 #endif /* NSFSCT_H */

@@ -997,8 +997,16 @@ nsfsx_start(void)
         wtof("NSF059W RENDEZVOUS NOT REGISTERED -- A LATER START CANNOT FIND"
              " A RETAINED ANCHOR (ALREADY CHAINED?) -- CONTINUING");
     } else {
+        /* THE TAIL IS READ BACK FROM THE ANCHOR, not from the jobname (round
+        ** 2b): it is the positive check that register's key-0 store took,
+        ** and the value a later start will classify by.  NSFS reads
+        ** 40404040; round 1 left 00000000. */
+        const unsigned char *t = (const unsigned char *)g_anchor->jobname_tail;
+
         g_sct_owned = 1;
-        wtof("NSF060I RENDEZVOUS REGISTERED -- ANCHOR=%08X", (unsigned)g_anchor);
+        wtof("NSF060I RENDEZVOUS REGISTERED -- ANCHOR=%08X"
+             " TAIL=%02X%02X%02X%02X",
+             (unsigned)g_anchor, t[0], t[1], t[2], t[3]);
     }
 
     wtof("NSF041I NSFS TRANSPORT READY -- ANCHOR=%08X ECB=%08X",

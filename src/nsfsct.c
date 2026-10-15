@@ -197,7 +197,7 @@ nsfsct_register(void *anchor)
         return -1;
     }
 
-    return nsfsct_plat_register(key, anchor);
+    return nsfsct_plat_register(key, tail, anchor);
 }
 
 int
