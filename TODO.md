@@ -36,6 +36,10 @@ commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 
 - #92 STATS truncation — fixed in PR #95; closing is Mike's.
 - #59 SVC table readable from key 8 — a measurement, kept open as a record.
+- PR #127 (libc370#448: one C startup in `libc.a`, plus `crtm.o`) — open since
+  2026-10-05 with CI red from a run before the mbt 3 migration. It edits the
+  Spec and the frozen Project Brief. Needs a decision: rebase onto `main`, or
+  close.
 
 ## Done recently
 
