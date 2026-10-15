@@ -230,11 +230,29 @@ const NSFCFG *nsf_active_cfg(void)
     return g_active_cfg;
 }
 
-/* -- shared teardown (orderly exit and ESTAE recovery, spec 17.1) ---------- */
+/* -- teardown (orderly exit, spec 17.1; ESTAE recovery, #83) ---------------- */
 
-void nsf_shutdown(void)
+static nsf_io_busy_fn g_io_busy;
+
+void nsf_set_io_guard(nsf_io_busy_fn busy)
+{
+    g_io_busy = busy;
+}
+
+UINT nsf_shutdown(void)
+{
+    UINT busy = (g_io_busy != NULL) ? g_io_busy() : 0u;
+
+    nsftmr_plat_disarm();       /* stop the async STIMER exit (idempotent)     */
+    if (busy == 0u) {
+        mm_shutdown();          /* release every pool region                   */
+    }
+    g_active_cfg = NULL;
+    return busy;
+}
+
+void nsf_recover_shutdown(void)
 {
     nsftmr_plat_disarm();       /* stop the async STIMER exit (idempotent)     */
-    mm_shutdown();              /* release every pool region                   */
-    g_active_cfg = NULL;
+    g_active_cfg = NULL;        /* the regions are left to MVS (#83)           */
 }

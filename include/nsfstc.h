@@ -38,6 +38,7 @@
  *   nsf_trace_flag NSFSCTRF   nsf_cfg_pool_count NSFSCPLC
  *   nsf_cfg_apply_trace NSFSCAPT   nsf_cfg_check_refs NSFSCCRF
  *   nsf_init_from_cfg NSFSCINI   nsf_active_cfg NSFSCCFG   nsf_shutdown NSFSCSHT
+ *   nsf_recover_shutdown NSFSCRSD   nsf_set_io_guard NSFSCIOG
  */
 
 /* Map a NSFTRACE / operator-TRACE component name ("IP","TCP",...,"ALL") to its
@@ -71,9 +72,31 @@ INT nsf_init_from_cfg(const NSFCFG *cfg, char *errbuf, UINT errsize) asm("NSFSCI
  * one. The operator DISPLAY reads it. */
 const NSFCFG *nsf_active_cfg(void) asm("NSFSCCFG");
 
-/* Orderly teardown shared by the normal exit and the ESTAE recovery path
- * (spec 17.1): disarm the platform timer, then release every pool region
- * (mm_shutdown). Idempotent enough to run from a damaged environment. */
-void nsf_shutdown(void) asm("NSFSCSHT");
+/* The device-I/O guard (#83).  `busy` answers how many devices may still have
+ * I/O outstanding on pool storage (dev_busy_count); NULL removes the guard.
+ * A function pointer and not a call into NSFDEV, so this component and its
+ * tests stay free of the device layer.  The STC mains install it before
+ * starting any device. */
+typedef UINT (*nsf_io_busy_fn)(void);
+void nsf_set_io_guard(nsf_io_busy_fn busy) asm("NSFSCIOG");
+
+/* Orderly teardown (spec 17.1): disarm the platform timer, then release every
+ * pool region (mm_shutdown) -- UNLESS the I/O guard reports a busy device.
+ *
+ * Returns 0 when the regions were released, or the number of busy devices, in
+ * which case NONE was released.  A FREEMAIN of a region holding a buffer that
+ * an outstanding EXCP has page-fixed abends A0A-2 ("PART OF AREA BEING FREED IS
+ * STILL FIXED", IEAVGM00), so a region under live I/O is left to MVS, which
+ * reclaims the private area at address-space end.  The caller reports a
+ * non-zero return (NSF068W): skipping the free silently would read the same as
+ * having done it (CLAUDE.md 8.5). */
+UINT nsf_shutdown(void) asm("NSFSCSHT");
+
+/* Recovery teardown, for the ESTAE exit only (#83): disarm the platform timer
+ * and forget the active config, and release NOTHING.  The exit runs while the
+ * device subtasks may still have an EXCP outstanding on pool storage, and the
+ * pool regions are private-area storage MVS reclaims anyway -- the line #79's
+ * audit draws: recovery releases only what nobody else will. */
+void nsf_recover_shutdown(void) asm("NSFSCRSD");
 
 #endif /* NSFSTC_H */

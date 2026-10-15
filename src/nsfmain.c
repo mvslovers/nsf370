@@ -60,7 +60,11 @@ static NSFCFG g_cfg;
 static void nsf_recover(SDWA *sdwa)
 {
     nsfmsg("NSF900E NSF ABEND INTERCEPTED -- CAPTURING AND PERCOLATING");
-    nsf_shutdown();
+    /* NOT nsf_shutdown (#83): the CTCI subtasks may still have an EXCP
+     * outstanding on pool storage, and freeing a region with fixed pages
+     * abends A0A-2 inside this exit.  The regions are private-area storage
+     * MVS reclaims at address-space end. */
+    nsf_recover_shutdown();
     nsfmsg("NSF901I NSF EMERGENCY TEARDOWN COMPLETE");
     if (sdwa != NULL) {
         sdwa->SDWARCDE = SDWACWT;       /* continue with termination = percolate */
@@ -196,6 +200,19 @@ static void nsf_quiesce_device(NETDEV *dev, void *arg)
     dev_shutdown(dev);
 }
 
+/* The orderly teardown, with its third state said out loud (#83): a busy
+ * device means nsf_shutdown released NO region, and that must not read the same
+ * as having released them (CLAUDE.md 8.5). */
+static void nsf_teardown(void)
+{
+    UINT busy = nsf_shutdown();
+
+    if (busy != 0u) {
+        nsfmsg("NSF068W %u DEVICE(S) MAY STILL HAVE I/O OUTSTANDING -- POOL"
+               " REGIONS LEFT TO MVS", (unsigned)busy);
+    }
+}
+
 int main(int argc, char **argv)
 {
     char err[NSFCFG_MSGLEN];
@@ -275,7 +292,7 @@ int main(int argc, char **argv)
     /* 4. Operator interface (CIB/QEDIT); add its console ECB to the ECBLIST. */
     if (nsfopr_init() != 0) {
         nsfmsg("NSF807E NSF CONSOLE INTERFACE UNAVAILABLE");
-        nsf_shutdown();
+        nsf_teardown();
         return 8;
     }
     evt_set_operator(nsfopr_ecb(), nsfopr_drain);
@@ -285,6 +302,7 @@ int main(int argc, char **argv)
      *    PBUF to nsfip_input. nsfip_config resolves each route's device by LINK
      *    name, so it MUST run AFTER the interfaces are registered. */
     evt_register(EV_PACKET_RECEIVED, nsf_rx_packet);
+    nsf_set_io_guard(dev_busy_count);            /* #83: before any device I/O */
     nsf_start_devices(&g_cfg);
     nsficmp_init();                              /* register ICMP counters */
     (void)nsfip_config(&g_cfg);                  /* routing table from HOME/GATEWAY */
@@ -350,7 +368,7 @@ int main(int argc, char **argv)
      *    release the regions. */
     dev_foreach(nsf_quiesce_device, NULL);
     __estae(ESTAE_DELETE, NULL, NULL);
-    nsf_shutdown();
+    nsf_teardown();
     nsfmsg("NSF011I NSF SHUTDOWN COMPLETE");
     return 0;
 }

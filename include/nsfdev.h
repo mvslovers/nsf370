@@ -164,7 +164,7 @@ NSF_SIZE_ASSERT(NETDEV, 68);
  *   dev_count NSFDCNT   dev_start NSFDSTRT   dev_send NSFDSEND
  *   dev_shutdown NSFDSHUT   dev_set_io NSFDSTIO   nsfdev_collect_ecbs NSFDECBS
  *   nsfdev_poll_input NSFDPOLL   nsfdev_kick_output NSFDKICK
- *   nsfdev_work_pending NSFDPEND
+ *   nsfdev_work_pending NSFDPEND   dev_busy_count NSFDBUSY
  */
 
 /* Reset the device table to empty. Call once before registering devices (the
@@ -225,6 +225,12 @@ void    dev_set_io(NETDEV *dev, DEVIO *io) asm("NSFDSTIO");
  * held) -> state DOWN. After this the device's queues hold no PBUFs (leak
  * gate). Idempotent on an already-DOWN device. */
 int     dev_shutdown(NETDEV *dev) asm("NSFDSHUT");
+
+/* How many registered devices may still have I/O outstanding on pool storage
+ * (#83): every one not DOWN, plus every DOWN one whose driver kept its private
+ * block -- the CTCI driver keeps it when a subtask would not join (NSF206W), and
+ * dev_shutdown sets DOWN regardless.  nsf_shutdown's I/O guard. */
+UINT    dev_busy_count(void) asm("NSFDBUSY");
 
 /* --- NSFEVT main-loop integration (spec 5.3) ---------------------------------
  * These are called only by the executive loop, through the function pointers it

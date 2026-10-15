@@ -26,6 +26,13 @@
 #define NSF_DEBUG 0
 #endif
 
+#if NSF_DEBUG
+/* #83: a stand-in for dev_busy_count, so this test needs no NSFDEV.  Only the
+ * leak-gate build reads region counts, so only it uses the guard. */
+static UINT g_busy;
+static UINT fake_busy(void) { return g_busy; }
+#endif
+
 /* A fully-consistent profile exercising DEVICE/LINK/HOME/GATEWAY/NSFPOOL/NSFTRACE
  * (pool names are the real NSFMM pool names so nsf_cfg_pool_count resolves them). */
 static const char VALID[] =
@@ -113,10 +120,35 @@ int main(void)
             buf_free(b);
         }
     }
-    nsf_shutdown();                      /* real teardown: disarm + mm_shutdown */
+    /* ---- 4b. #83: recovery frees nothing, and the I/O guard ---- */
+#if NSF_DEBUG
+    {
+        UINT live = mm_debug_live_regions();
+
+        CHECK(live > 0u, "4b: the pools hold regions before any teardown");
+        /* RECOVERY LEAVES THE REGIONS TO MVS.  An ESTAE exit runs while the
+         * CTCI subtasks may still have an EXCP outstanding on pool storage;
+         * a FREEMAIN of a region with fixed pages abends A0A-2 (#83). */
+        nsf_recover_shutdown();
+        CHECK_EQ((long)mm_debug_live_regions(), (long)live,
+                 "4b: nsf_recover_shutdown frees NO region");
+        CHECK(nsf_active_cfg() == NULL,
+              "4b: ...but forgets the active config");
+        g_busy = 2u;
+        nsf_set_io_guard(fake_busy);
+        CHECK_EQ((long)nsf_shutdown(), 2L,
+                 "4b: with 2 devices busy, nsf_shutdown reports 2...");
+        CHECK_EQ((long)mm_debug_live_regions(), (long)live,
+                 "4b: ...and releases no region (the third state, not a free)");
+        g_busy = 0u;
+    }
+#endif
+    CHECK_EQ((long)nsf_shutdown(), 0L,
+             "nsf_shutdown with no busy device reports 0 (all released)");
 #if NSF_DEBUG
     CHECK_EQ((long)mm_debug_live_regions(), 0L, "all pool regions freed (leak gate)");
 #endif
+    nsf_set_io_guard(NULL);
     CHECK(nsf_active_cfg() == NULL, "shutdown clears the active config");
 
     /* Failure path: a broken-refs config refuses to start and creates nothing. */
