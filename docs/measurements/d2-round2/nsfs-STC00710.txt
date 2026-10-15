@@ -1,0 +1,114 @@
+Spool file: JESJCLIN (ID #1, Step: JES2)
+//NSFS     JOB MSGLEVEL=1                                               STC  710
+//STARTING EXEC NSFS
+
+Spool file: JESMSGLG (ID #2, Step: JES2)
+                                                J E S 2   J O B   L O G
+ 0.24.11 STC  710  RAKF0010I STC NSFS     STARTED USING DEFAULT STC ACCOUNT
+ 0.24.11 STC  710  $HASP373 NSFS     STARTED
+ 0.24.11 STC  710  IEF403I NSFS - STARTED - TIME=00.24.11
+ 0.24.11 STC  710  NSF851I NSFS NON-SWAPPABLE (SYSEVENT DONTSWAP, NDS=1)
+ 0.24.11 STC  710  NSF040I NSFS 0.1.0-dev STARTING (PHASE 2)
+ 0.24.11 STC  710  NSF210I CTCI 0500/0501 UP DD SYS00003/SYS00005 MTU 1500
+ 0.24.11 STC  710  NSF211I INTERFACE LNK1 CUU 0500 UP
+ 0.24.11 STC  710  getmain request for 1048640 bytes from sp=241 failed, rc=0x04 (4)
+ 0.24.11 STC  710  getmain request for 1015872 bytes from sp=241 failed, rc=0x04 (4)
+ 0.24.11 STC  710  getmain request for 1007680 bytes from sp=241 failed, rc=0x04 (4)
+ 0.24.11 STC  710  NSF055I CSA POOL 137280 BYTES (64 SLOTS X 2144) -- LARGEST FREE BLOCK NOW 1003520
+ 0.24.11 STC  710  NSF042I SVC 239 STOLEN (EP 00A9C208)
+ 0.24.11 STC  710  NSF060I RENDEZVOUS REGISTERED -- ANCHOR=00A9C788
+ 0.24.11 STC  710  NSF041I NSFS TRANSPORT READY -- ANCHOR=00A9C788 ECB=000BF490
+ 0.24.11 STC  710  NSF001I NSFS INITIALIZATION COMPLETE
+ 0.24.11 STC  710  NSF803I NSF OPERATOR INTERFACE ACTIVE
+ 0.27.45 STC  710  NSF830I NSF STOP ACCEPTED -- SHUTTING DOWN
+ 0.27.45 STC  710  NSF043I SVC 239 RESTORED
+ 0.27.55 STC  710  NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE RETAINED (EXHAUSTED=2)
+ 0.27.55 STC  710  NSF044I NSFS TRANSPORT STOPPED
+ 0.27.55 STC  710  NSF853I NSFS SWAPPABLE AGAIN (SYSEVENT OKSWAP)
+ 0.27.55 STC  710  NSF011I NSFS SHUTDOWN COMPLETE
+ 0.27.55 STC  710  IEF404I NSFS - ENDED - TIME=00.27.55
+ 0.27.55 STC  710  $HASP395 NSFS     ENDED
+
+Spool file: JESJCL (ID #3, Step: JES2)
+    1     //NSFS     JOB MSGLEVEL=1                                               STC  710
+    2     //STARTING EXEC NSFS
+    3     XXNSFS     PROC M=NSFPRM0,
+          XX            D='SYS2.PARMLIB'
+          ***
+          *** NSFS - the Phase-2 NSF stack STC (M5-2a, ADR-0041).
+          ***
+          *** The same executive as NSF, in its own address space, reached by
+          *** applications through the private SVC (ADR-0038) instead of a local
+          *** subtask queue.  Requests cross as the frozen 64-byte NSFRQE through a
+          *** CSA request slot; the executive dispatches an STC-PRIVATE copy of it.
+          ***
+          *** NSFS and NSFV are ALTERNATIVES, never concurrent: both steal the same
+          *** installation SVC slot.  Stop one before starting the other.
+          ***
+          *** Installation:
+          ***   Copy to SYS2.PROCLIB(NSFS)            (cataloged proc; no // PEND)
+          ***   Deploy the load modules:  make deploy  -> NSF.LINKLIB
+          ***     (NSFS = this STC, NSFVSVC = the CSA-resident SVC routine it __loadhi's
+          ***      and points a stolen SVCTABLE slot at)
+          ***   The STC self-authorises at runtime via clib_apf_setup (SVC 244), so
+          ***   NSF.LINKLIB need not be APF.  The CLIENT is NOT authorised.
+          ***
+          *** Starting:    /S NSFS
+          *** Commands:    /F NSFS,DISPLAY | STATS | TRACE comp ON|OFF | STOP
+          *** Stopping:    /P NSFS         (restores the SVC slot; allow ~30s for the
+          ***                               in-flight drain before assuming a hang)
+          ***
+          *** Client:      make test-mvs ARGS="--only TSTRQXM"   (NSFS must be started)
+          ***
+    4     XXNSFS     EXEC PGM=NSFS,REGION=4M,TIME=1440
+    5     XXSTEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+    6     XXSYSUDUMP DD  SYSOUT=*
+    7     XXSYSPRINT DD  SYSOUT=*
+    8     XXPROFILE  DD  DSN=&D(&M),DISP=SHR,FREE=CLOSE
+
+Spool file: JESYSMSG (ID #4, Step: JES2)
+ STMT NO. MESSAGE
+-
+    8     IEF653I SUBSTITUTION JCL - DSN=SYS2.PARMLIB(NSFPRM0),DISP=SHR,FREE=CLOSE
+RAKF0010I STC NSFS     STARTED USING DEFAULT STC ACCOUNT
+IEF236I ALLOC. FOR NSFS NSFS
+IEF237I 251  ALLOCATED TO STEPLIB
+IEF237I JES2 ALLOCATED TO SYSUDUMP
+IEF237I JES2 ALLOCATED TO SYSPRINT
+IEF237I 151  ALLOCATED TO PROFILE
+IEF237I JES2 ALLOCATED TO SYS00001
+IEF237I DMY  ALLOCATED TO SYS00002
+NSF851I NSFS NON-SWAPPABLE (SYSEVENT DONTSWAP, NDS=1)
+NSF040I NSFS 0.1.0-dev STARTING (PHASE 2)
+IEF285I   SYS2.PARMLIB                                 KEPT
+IEF285I   VOL SER NOS= MVS000.
+IEF237I 500  ALLOCATED TO SYS00003
+IEF237I 501  ALLOCATED TO SYS00005
+NSF210I CTCI 0500/0501 UP DD SYS00003/SYS00005 MTU 1500
+NSF211I INTERFACE LNK1 CUU 0500 UP
+getmain request for 1048640 bytes from sp=241 failed, rc=0x04 (4)
+getmain request for 1015872 bytes from sp=241 failed, rc=0x04 (4)
+getmain request for 1007680 bytes from sp=241 failed, rc=0x04 (4)
+NSF055I CSA POOL 137280 BYTES (64 SLOTS X 2144) -- LARGEST FREE BLOCK NOW 1003520
+NSF042I SVC 239 STOLEN (EP 00A9C208)
+NSF060I RENDEZVOUS REGISTERED -- ANCHOR=00A9C788
+NSF041I NSFS TRANSPORT READY -- ANCHOR=00A9C788 ECB=000BF490
+NSF001I NSFS INITIALIZATION COMPLETE
+NSF803I NSF OPERATOR INTERFACE ACTIVE
+NSF830I NSF STOP ACCEPTED -- SHUTTING DOWN
+NSF043I SVC 239 RESTORED
+NSF054W 1 CLIENT(S) STILL IN FLIGHT -- CSA AND SVC ROUTINE RETAINED (EXHAUSTED=2)
+NSF044I NSFS TRANSPORT STOPPED
+NSF853I NSFS SWAPPABLE AGAIN (SYSEVENT OKSWAP)
+NSF011I NSFS SHUTDOWN COMPLETE
+IEF285I   JES2.STC00710.SO0103                         SYSOUT
+IEF142I NSFS NSFS - STEP WAS EXECUTED - COND CODE 0000
+IEF285I   NSF.LINKLIB                                  KEPT
+IEF285I   VOL SER NOS= WORK00.
+IEF285I   JES2.STC00710.SO0101                         SYSOUT
+IEF285I   JES2.STC00710.SO0102                         SYSOUT
+
+Spool file: SYSPRINT (ID #102, Step: NSFS, ProcStep: NSFS)
+
+Spool file: UNK0103 (ID #103, Step: JES2)
+

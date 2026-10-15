@@ -1,0 +1,10 @@
+listening on 192.168.200.2:3003, expecting 9353 bytes
+connected from 192.168.200.1:49152
+received 9353 bytes
+PASS: 9353 bytes byte-exact against the pattern
+LISTENER-EXIT 0
+listening on 192.168.200.2:3003, expecting 9353 bytes
+connected from 192.168.200.1:49153
+received 9353 bytes
+PASS: 9353 bytes byte-exact against the pattern
+LISTENER-EXIT 0
