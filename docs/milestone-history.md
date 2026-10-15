@@ -2940,3 +2940,45 @@ byte-identical to the backup.
   139 KB of CSA until IPL);
 - a letterless jobname, which is host-pinned only;
 - adoption, which is round 2.
+
+## M5-2 d2 round 2: adoption, and the tail round 1 never wrote (2026-10-15)
+
+ADR-0048 round 2 (#136): a start adopts the anchor a previous instance
+retained. Built on `d2-round2` (anchor version 4; scrub S1/S2; router reuse
+or free; `g_sct_owned`; `nsfsct_find` never reads a private SSCTSUSE).
+
+**Round 2 live** (`docs/measurements/d2-round2/`) held Q0–Q2:
+- the version-4 pool (137280);
+- TSTSCTM 60/0, TSTRQXC+F 130/0, TSTRQXM batch 32/32;
+- LEAK → `NSF054W` → `CHAINED`.
+
+It was **falsified at Q3**. The next start said `NSF064W ... FOREIGN` and
+allocated a second anchor (−139264).
+
+**The cause was in round 1:** no production code wrote `jobname_tail`. The
+fixtures wrote it themselves and hid that. Round 1b had shown only that the
+SSCT is found. The same falsified start confirmed bdcb8b5 live: a stop that
+had not registered left the SSCT alone.
+
+**Round 2b** (`docs/measurements/d2-round2b/`): red first on the host (8
+failures, FOREIGN). Then register stamps the tail inside its key-0 window
+before `ssct_install`, and `NSF060I` prints it. The predictions held. The
+exception is Job A, which ran on a fresh anchor rather than an adopted one,
+and whose predicted totals were stale (18/23 before the wire arm):
+- the stranded anchor A was repaired by a test role (**the rig wrote its
+  tail**), adopted with REUSE, adopted again with a synthetic-death REAP and a
+  router free, and freed;
+- **a fresh anchor written by NSFS itself (`TAIL=40404040`) was retained by
+  LEAK and adopted by the next start with no rig**, then reaped and freed;
+- REPLACE (`NSF063W BADEYE`) works;
+- NSFS half 130/0, TSTRQXM 32/32 in both steps for the first time in d2, Job
+  A 19/19 and 24/24 (on a fresh anchor, not an adopted one), NSFV half 438/0;
+- no IEA995I and no ABEND.
+
+`NSF.LINKLIB` was restored and verified byte-identical, all 6 members.
+
+**Does not establish:**
+- a real client death in a retained anchor (both reaps synthetic);
+- S2, ASIDE, BADVER and the ESTAE retain path live;
+- a real CL4 collision;
+- why STC00710's ASCB read as ended.

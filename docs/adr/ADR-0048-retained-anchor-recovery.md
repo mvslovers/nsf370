@@ -366,3 +366,41 @@ registered or adopted is removed (`g_sct_owned`).
   deploy.
 
 The gate is #136's list.
+
+## Annotation (2026-10-15): rounds 2 and 2b live, register stamps the tail
+
+**Round 1 never wrote the tail.** `nsfsct_register` derived `jobname_tail`
+and threw it away, so every real anchor carried `00000000`. Job `NSFS`
+derives four blanks, so §6's identity check could never match a real
+predecessor: every adoption was FOREIGN. The fixtures in `tstsct.c` and
+`tstsctm.c` wrote the right tail themselves, which hid this. Round 1b
+established only that the SSCT is **found**; nothing in round 1 classified an
+anchor the production build had registered. Round 2's live Q3 was falsified
+on exactly this (`NSF064W ... FOREIGN`, STC00711,
+`docs/measurements/d2-round2/round.md`).
+
+**Fixed in round 2b.** `nsfsct_plat_register` takes the tail as a required
+argument. It writes the tail into the anchor in the same key-0 window, before
+`ssct_install`, so no chained anchor is ever unstamped. A refused register
+stamps nothing. The classifier is unchanged. `NSF060I` prints the tail read
+back from the anchor. The fixtures now carry a wrong tail (`ZZZZ`), and a
+host section rebuilds the live shape (job `NSFS`, zero tail). It failed
+FOREIGN before the fix.
+
+**Live, dev1, 2026-10-15** (`docs/measurements/d2-round2b/round.md`):
+- a fresh start says `NSF060I ... TAIL=40404040`;
+- that anchor is retained by LEAK and **adopted by the next start with no rig
+  in between** (STC00719), and freed after a synthetic-death reap (STC00720);
+- REUSE (`NSF065W`), REAP plus router free (`NSF065I`), the free-path stop and
+  REPLACE (`NSF063W BADEYE`) are all seen;
+- the Stage-0 set passes on an adopted anchor: NSFS half 130/0, TSTRQXM 32/32
+  in both steps, Job A 19/19 and 24/24 on a fresh one, NSFV half 438/0.
+
+The stranded round-2 anchor was repaired by a test role (`TSTSCTM PARM='TAIL'`,
+which writes the tail only over exactly four zero bytes), adopted twice and
+freed. Its adoptions are real, but the identity was supplied by the rig.
+
+**Still not established:**
+- a real client death in a retained anchor; both reaps are synthetic;
+- S2, ASIDE, BADVER and the ESTAE retain path live;
+- a real CL4 collision on MVS.
