@@ -359,6 +359,43 @@ t_start_action(void)
              (long)NSFSCT_BADVER, "6: a round-1 (version 3) anchor is BADVER");
 }
 
+/* ---- 7. may SSCTSUSE be dereferenced? (round 2) ----------------------- */
+static void
+t_addr(void)
+{
+    /* A private area from 0x6000 for 8 MB, the shape of an MVS 3.8j map. */
+    const UINT ps = 0x00006000u, pz = 0x00800000u, end = ps + pz;
+    const UINT len = 137280u;
+
+    printf("\n--- 7. SSCTSUSE plausibility ---\n");
+
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7C8u, len, ps, pz), 1L,
+             "7: round 1b's real anchor address (CSA) is plausible");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00098464u, len, ps, pz), 0L,
+             "7: round 1b's HOLD fixture (a private address) is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(end, len, ps, pz), 1L,
+             "7: the first byte above the private area is plausible");
+    CHECK_EQ((long)nsfsct_addr_plausible(end - 4u, len, ps, pz), 0L,
+             "7: the last word of the private area is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00000100u, len, ps, pz), 0L,
+             "7: below the private area (PSA / nucleus) is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0u, len, ps, pz), 0L,
+             "7: zero is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7CAu, len, ps, pz), 0L,
+             "7: an unaligned address is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x01000000u - len, len, ps, pz), 1L,
+             "7: an anchor ending exactly at 16 MB is plausible");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x01000000u - len + 4u, len, ps, pz),
+             0L, "7: one that runs past 16 MB is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x7F000000u, len, ps, pz), 0L,
+             "7: an address above 16 MB is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7C8u, len, ps, 0u), 0L,
+             "7: an unknown private area licenses no read");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7C8u, len, 0x00F00000u,
+                                         0xFFFFFFF0u), 0L,
+             "7: a private area that wraps is treated as unknown");
+}
+
 int
 main(void)
 {
@@ -370,5 +407,6 @@ main(void)
     t_find_verdicts();
     t_no_identity();
     t_start_action();
+    t_addr();
     return mbt_test_summary("TSTSCT");
 }

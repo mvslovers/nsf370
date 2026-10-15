@@ -96,6 +96,21 @@ nsfsct_classify(const char *eye, UINT version,
     return NSFSCT_OK;
 }
 
+int
+nsfsct_addr_plausible(UINT addr, UINT len, UINT pa_start, UINT pa_size)
+{
+    const UINT top = 0x01000000u;           /* 16 MB: the 24-bit ceiling     */
+    UINT       pa_end;
+
+    if (addr == 0u || (addr & 3u) != 0u) return 0;
+    if (pa_size == 0u)                   return 0;
+    if (pa_start > top || pa_size > top - pa_start) return 0;
+    pa_end = pa_start + pa_size;
+    if (addr < pa_end)                   return 0;   /* private, or below it  */
+    if (addr > top || len > top - addr)  return 0;   /* runs past 16 MB       */
+    return 1;
+}
+
 const char *
 nsfsct_verdict_name(int verdict)
 {

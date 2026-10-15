@@ -28,6 +28,7 @@
  *
  * 8-char aliases: NSFSCSPL NSFSCCLS NSFSCVDS NSFSCREG NSFSCFND NSFSCRMV
  *                 NSFSCJOB NSFSCPFN NSFSCPRG NSFSCPRM NSFSCSTA NSFSCPST
+ *                 NSFSCADR
  *--------------------------------------------------------------------------*/
 #ifndef NSFSCT_H
 #define NSFSCT_H
@@ -98,6 +99,30 @@ int nsfsct_split(const char *jobname, char *key, char *tail) asm("NSFSCSPL");
 int nsfsct_classify(const char *eye, UINT version,
                     const char *stored_tail, const char *our_tail)
                                                               asm("NSFSCCLS");
+
+/*--------------------------------------------------------------------------
+ * PURE.  May an SSCTSUSE value be DEREFERENCED as an anchor of `len` bytes?
+ *
+ * Round 2 made every start call nsfsct_find, and find reads through SSCTSUSE.
+ * Whatever is chained under our name is read in OUR address space, so a value
+ * that is not common storage names some address in our own private area --
+ * the round-1b HOLD fixture left exactly that (SSCTSUSE=00098464, a private
+ * address of a job that has ended), and so would anything a test or another
+ * product chains under the name.  Reading it is at best a stranger's bytes and
+ * at worst an S0C4 in NSFS's start.
+ *
+ * An anchor is SP=241 CSA, which on MVS 3.8j lies ABOVE the private area.  So
+ * the address must be non-zero, fullword aligned, at or above the private
+ * area's end (`pa_start` + `pa_size`, GDA PASTRT/PASIZE), and the whole anchor
+ * must end at or below 16 MB.  An unknown private area (`pa_size` 0) answers
+ * NO: a check that cannot be made never licenses a read.
+ *
+ * WHAT IT DOES NOT PROVE: that the storage is allocated or ours.  Common
+ * storage above the private area is SQA/CSA/LPA, and the eyecatcher and
+ * version that classify reads next are what decide "ours".
+ *------------------------------------------------------------------------*/
+int nsfsct_addr_plausible(UINT addr, UINT len, UINT pa_start, UINT pa_size)
+                                                              asm("NSFSCADR");
 
 /* PURE.  A verdict's name, for messages and for the record.  Never a decision. */
 const char *nsfsct_verdict_name(int verdict) asm("NSFSCVDS");
