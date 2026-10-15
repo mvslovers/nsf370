@@ -53,6 +53,14 @@ static SVCENTRY     *g_svc_slot;
 static unsigned char g_svc_saved[8];
 static int           g_svc_stolen;
 
+/* The SSCT under our name points at g_anchor -- because WE registered it.
+ * ONLY THEN may a stop remove it.  Without this flag the free path removed by
+ * name unconditionally, so an instance whose registration had been REFUSED
+ * (NSF059W: an SSCT already chained under the name) removed someone else's at
+ * its clean stop -- the one naming an anchor that is still retained, which
+ * makes that anchor unreachable again. */
+static int           g_sct_owned;
+
 /* The executive's wake target: STC-private, key 8 (ADR-0041 addendum). */
 static NSFECB        g_wake_ecb;
 
@@ -617,6 +625,7 @@ nsfsx_start(void)
     ** already chained under our name, which nsfsct_register REFUSES rather than
     ** duplicating (the IEF612I case).  Round 1 does not adopt it, does not
     ** classify it and does not remove it -- that is round 2. */
+    g_sct_owned = 0;
     rc = nsfsct_register(g_anchor);
     if (rc == NSFSCT_RC_NOTSAFE) {
         /* The jobname's first four characters hold no letter, so the derived
@@ -630,6 +639,7 @@ nsfsx_start(void)
         wtof("NSF059W RENDEZVOUS NOT REGISTERED -- A LATER START CANNOT FIND"
              " A RETAINED ANCHOR (ALREADY CHAINED?) -- CONTINUING");
     } else {
+        g_sct_owned = 1;
         wtof("NSF060I RENDEZVOUS REGISTERED -- ANCHOR=%08X", (unsigned)g_anchor);
     }
 
@@ -751,10 +761,11 @@ nsfsx_stop(void)
         /* The free path, and the ONLY path that removes.  Order matters: the
         ** registration goes before the storage it names, so no window exists
         ** in which a chained SSCT points at freed CSA. */
-        (void)nsfsct_remove();
+        if (g_sct_owned) (void)nsfsct_remove();
         nsfsx_router_unload();
         nsfsx_anchor_free();
     }
+    g_sct_owned = 0;
     wtof("NSF044I NSFS TRANSPORT STOPPED");
 }
 
