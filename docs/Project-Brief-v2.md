@@ -1,7 +1,7 @@
 # MVS 3.8j Native TCP/IP Stack — Project Brief for Claude Code
 
 *Version 2 — revised after external architecture review.*
-*Toolchain references reconciled to cc370 / libc370 / MBT V2 per ADR-0013 (2026-07-05); otherwise unchanged from the frozen v2.*
+*Toolchain references reconciled to cc370 / libc370 / MBT V2 per ADR-0013 (2026-07-05), and the build system to MBT 3 (mbt) after the migration of 2026-10-14 (PR #130); otherwise unchanged from the frozen v2.*
 
 ## Executive Summary
 
@@ -73,7 +73,7 @@ The historical `mvs38j-ip` repository (now under the **mvslovers** organization)
 should be treated as a **historical reference and proof of concept**, not as the
 architectural foundation. It contains valuable ideas and experience, but it was
 built under different constraints (Dignus C, Xinu-based, early Hercules). Today's
-ecosystem — cc370, libc370, MBT V2 build tooling, HTTPD, mvsMF, Git
+ecosystem — cc370, libc370, MBT build tooling, HTTPD, mvsMF, Git
 workflows — justifies designing a fresh architecture while **reusing ideas, not code**.
 
 ---
@@ -195,7 +195,7 @@ familiarity and for application compatibility:
 - **C Runtime:** libc370 (the cc370 target C library: headers, libc.a with the C startup, crtm.o, SYS1/crent macros)
 - **Assembler:** IFOX00 (free with MVS 3.8j) for HLASM modules
 - **Linkage Editor:** Standard MVS Linkage Editor (IEWL)
-- **Build System:** MBT V2 (MVS Build Tools) — project.toml drives host cross-compile + on-MVS assemble/link (bootstrap/build/link/package); separate host build for unit tests (see 3.10)
+- **Build System:** MBT 3 (MVS Build Tools, `mbt`) — `mbt.toml` drives the host cross-compile, the deploy to MVS and the test runs (`mbt build` / `mbt deploy` / `mbt test` / `mbt package`); separate host build for unit tests (see 3.10)
 - **Source Control:** Git (GitHub, mvslovers organization)
 - **Target System:** MVS 3.8j on Hercules (TK4- or TK5 distribution)
 
@@ -460,7 +460,7 @@ raw sockets later) a matter of providing callbacks, not modifying the socket lay
 ### Milestone 0: Foundation
 **Goal:** Buildable skeleton + the foundation services from 3.4.
 
-- [ ] cc370 + libc370 cross-compilation pipeline (MBT V2 project)
+- [ ] cc370 + libc370 cross-compilation pipeline (MBT project)
 - [ ] Host build target for unit tests (Linux/macOS)
 - [ ] Memory Manager (fixed pools, counters, exhaustion/leak detection)
 - [ ] Buffer Manager (mbuf-like packet buffers, ownership model)
@@ -582,7 +582,7 @@ proper handshake and teardown.
 ### 5.4 Existing Code (Reference)
 - **mvslovers/mvs38j-ip** — Morrison's unfinished port (historical)
 - **mvslovers/ufsd** — reference for the MVS subsystem model (Phase 2)
-- **cc370 / libc370** — C compiler + target C runtime (built via MBT V2)
+- **cc370 / libc370** — C compiler + target C runtime (the host toolchain and its sysroot, built with make)
 - **Shelby Beach's EZASMI** — existing EZASOKET impl on X'75' (API reference)
 - **HTTPD (Mike Rayborn)** — primary compatibility test target
 - **Jason Winter's x75.c / tcpip.c** — Hercules side of X'75'; shows which socket
