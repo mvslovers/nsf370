@@ -35,15 +35,13 @@ commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 ## Waiting on the maintainer
 
 - #59 SVC table readable from key 8 — a measurement, kept open as a record.
-- The frozen Project Brief still says "Build System: MBT V2 … project.toml";
-  the project is on mbt 3 with `mbt.toml`. Correcting it would be another edit
-  to a frozen document (noted in PR #127).
 
 ## Done recently
 
 - ~~#92 STATS truncation~~ — PR #95; closed 2026-10-15 after the live check
   (52 of 52 counters, STC00732).
 - ~~PR #127 libc370#448 startup docs~~ — rebased and merged.
+- ~~Project Brief build-system references~~ — reconciled to MBT 3, PR #140.
 - ~~#83 A0A inside the recovery exit~~ — PR #139 (ADR-0049); live-green on
   dev1. Not established on MVS: Phase-1 recovery, the `NSF206W` → `NSF068W`
   path.
