@@ -42,7 +42,21 @@
  *        'PROBE'          report whether an SSCT exists under a given name --
  *                         the operator-driven half of the retain/free check,
  *                         which a test program cannot drive by itself because
- *                         it needs a real P NSFS either side.
+ *                         it needs a real P NSFS either side.  Since round 2b
+ *                         it also prints the anchor's jobname_tail in hex, if
+ *                         SSCTSUSE is common storage: 40404040 is NSFS's tail
+ *                         as the 2b build stamps it, 00000000 an anchor whose
+ *                         registering build never wrote it.
+ *        'TAIL'           round 2b's REPAIR of an anchor the round-1/round-2
+ *                         build registered: in the anchor chained under
+ *                         'nsfs', write NSFS's tail (four blanks) over the
+ *                         four zero bytes that build left.  It refuses (CC 20)
+ *                         unless the tail is EXACTLY four zero bytes, which
+ *                         only that defect produces -- a real CL4 collision
+ *                         carries its own tail and is never "repaired" into
+ *                         ours.  THE RIG WRITES THE TAIL, said here and in the
+ *                         round record: the adoption that follows is real,
+ *                         the identity it adopts by was supplied by the test.
  * Return codes: 0 passed, 1 ran and failed, 20 could not run.
  *--------------------------------------------------------------------------*/
 #include "nsfsct.h"
@@ -75,6 +89,21 @@ mk(NSFV_ANCHOR *a, const char *eye, UINT ver, const char *tail)
     memcpy(a->eye, eye, 8);
     a->version = ver;
     memcpy(a->jobname_tail, tail, NSFSCT_TAILLEN);
+}
+
+/* MAY THIS SSCTSUSE BE READ?  The same check nsfsct_find makes (668b1ae):
+ * an address in or below the private area, or past 16 MB, is never
+ * dereferenced.  Every role that reads an anchor it did not allocate asks
+ * this first. */
+static int
+sctm_plausible(const void *a)
+{
+    CVT        *cvt = CVTPTR;
+    const UINT *gda = cvt ? (const UINT *)cvt->cvtgda : NULL;
+
+    return gda != NULL &&
+           nsfsct_addr_plausible((UINT)a, (UINT)sizeof(NSFV_ANCHOR),
+                                 gda[4], gda[5]);
 }
 
 static void
@@ -267,6 +296,11 @@ dead(void)
         wtof("TSTSCTM: DEAD -- NOTHING CHAINED UNDER %.4s", key);
         return -2;
     }
+    if (!sctm_plausible(a)) {
+        wtof("TSTSCTM: DEAD -- SSCTSUSE %08X IS NOT COMMON STORAGE",
+             (unsigned)a);
+        return -2;
+    }
 
     /* Only an anchor in the retain posture, of our layout, is touched. */
     CHECK(memcmp(a->eye, NSFSCT_EYE, NSFSCT_EYELEN) == 0,
@@ -332,6 +366,81 @@ dead(void)
     return 0;
 }
 
+/* ---- TAIL: repair an anchor the pre-2b build registered ------------------
+ *
+ * DEAD's preconditions -- a retained anchor of this layout -- plus one more:
+ * the tail is EXACTLY four zero bytes.  Then a key-0 store of NSFS's tail and
+ * a positive check through the classifier itself.  Nothing else is touched:
+ * the slots, the in-flight count and the router are what the adopting start
+ * is there to deal with. */
+static int
+tail_repair(void)
+{
+    static const char zeros[NSFSCT_TAILLEN] = { 0, 0, 0, 0 };
+    char          job[NSFSCT_JOBLEN], key[NSFSCT_KEYLEN], tail[NSFSCT_TAILLEN];
+    NSFV_ANCHOR  *a;
+    unsigned char savekey;
+    const unsigned char *t;
+
+    printf("\n--- TAIL: repair a pre-2b anchor's jobname_tail ---\n");
+    memcpy(job, "NSFS    ", NSFSCT_JOBLEN);
+    (void)nsfsct_split(job, key, tail);
+    a = (NSFV_ANCHOR *)nsfsct_plat_find(key);
+    printf("  SSCT '%.4s' SSCTSUSE=%08X\n", key, (unsigned)a);
+    if (a == NULL) {
+        wtof("TSTSCTM: TAIL -- NOTHING CHAINED UNDER %.4s", key);
+        return -2;
+    }
+    if (!sctm_plausible(a)) {
+        wtof("TSTSCTM: TAIL -- SSCTSUSE %08X IS NOT COMMON STORAGE",
+             (unsigned)a);
+        return -2;
+    }
+
+    t = (const unsigned char *)a->jobname_tail;
+    printf("  eye '%.8s' version %u flags %08X ecbptr %08X nslots %u\n",
+           a->eye, (unsigned)a->version, (unsigned)a->flags,
+           (unsigned)a->server_ecb_ptr, (unsigned)a->nslots);
+    printf("  server_ascb %08X inflight %u tail %02X%02X%02X%02X\n",
+           (unsigned)a->server_ascb, (unsigned)a->inflight,
+           t[0], t[1], t[2], t[3]);
+    /* The ASCB the adopting start will test for "has the server ended" --
+     * printed so it can be held against D A,L BEFORE the start. */
+    wtof("TSTSCTM: TAIL ANCHOR=%08X SERVER_ASCB=%08X INFLIGHT=%u"
+         " TAIL=%02X%02X%02X%02X", (unsigned)a, (unsigned)a->server_ascb,
+         (unsigned)a->inflight, t[0], t[1], t[2], t[3]);
+
+    if (memcmp(a->eye, NSFSCT_EYE, NSFSCT_EYELEN) != 0 ||
+        a->version != NSFV_ANCHOR_VER ||
+        (a->flags & NSFV_ANCHOR_ACTIVE) || a->server_ecb_ptr != NULL ||
+        a->nslots != NSFV_NSLOTS) {
+        wtof("TSTSCTM: TAIL -- ANCHOR %08X NOT A RETAINED V%u ANCHOR",
+             (unsigned)a, (unsigned)NSFV_ANCHOR_VER);
+        return -2;
+    }
+    if (memcmp(a->jobname_tail, zeros, NSFSCT_TAILLEN) != 0) {
+        wtof("TSTSCTM: TAIL -- NOT FOUR ZERO BYTES, NOT REPAIRED");
+        return -2;
+    }
+    CHECK_EQ((long)nsfsct_classify(a->eye, a->version, a->jobname_tail, tail),
+             (long)NSFSCT_FOREIGN,
+             "TAIL: before -- the classifier reads the anchor FOREIGN, the"
+             " round-2 STC00711 verdict");
+
+    if (__super(PSWKEY0, &savekey) == 0) {
+        memcpy(a->jobname_tail, tail, NSFSCT_TAILLEN);
+        __prob(savekey, NULL);
+    }
+    CHECK(memcmp(a->jobname_tail, tail, NSFSCT_TAILLEN) == 0,
+          "TAIL: the key-0 store took -- the tail reads NSFS's");
+    CHECK_EQ((long)nsfsct_classify(a->eye, a->version, a->jobname_tail, tail),
+             (long)NSFSCT_OK,
+             "TAIL: after -- the classifier reads it OK for job NSFS");
+    wtof("TSTSCTM: TAIL ANCHOR=%08X TAIL=%02X%02X%02X%02X -- NOW S NSFS",
+         (unsigned)a, t[0], t[1], t[2], t[3]);
+    return 0;
+}
+
 /* ---- PROBE: the operator-driven half ------------------------------------ */
 static int
 probe(void)
@@ -350,8 +459,16 @@ probe(void)
     printf("  SSCT '%.4s': %s", key, suse ? "CHAINED" : "not chained");
     if (suse) printf("  SSCTSUSE=%08X", (unsigned)suse);
     printf("\n");
-    wtof("TSTSCTM: PROBE %.4s %s %08X", key,
-         suse ? "CHAINED" : "ABSENT", (unsigned)suse);
+    if (suse != NULL && sctm_plausible(suse)) {
+        const unsigned char *t =
+            (const unsigned char *)((NSFV_ANCHOR *)suse)->jobname_tail;
+        printf("  jobname_tail %02X%02X%02X%02X\n", t[0], t[1], t[2], t[3]);
+        wtof("TSTSCTM: PROBE %.4s CHAINED %08X TAIL=%02X%02X%02X%02X", key,
+             (unsigned)suse, t[0], t[1], t[2], t[3]);
+    } else {
+        wtof("TSTSCTM: PROBE %.4s %s %08X", key,
+             suse ? "CHAINED" : "ABSENT", (unsigned)suse);
+    }
 
     /* A REPORT, NOT AN ASSERTION.  Whether NSFS's SSCT should be chained right
      * now depends on which stop path the STC last took, which this program
@@ -401,6 +518,9 @@ main(int argc, char **argv)
         rc = probe();
     } else if (role[0] == 'D') {
         rc = dead();
+        if (rc == -2) return SCTM_CC_SKIP;
+    } else if (role[0] == 'T') {
+        rc = tail_repair();
         if (rc == -2) return SCTM_CC_SKIP;
     } else if (role[0] == 'H') {
         /* HOLD: chain an SSCT under NSFS's derived key ('nsfs') and LEAVE it.
