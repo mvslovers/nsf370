@@ -47,7 +47,13 @@
  * The order is the contract (ADR-0041 addendum): the slot steal is the "we are
  * open for business" signal, so the ECB address must already be published --
  * a client must never find a stolen slot together with an unpublished or stale
- * address.  Returns 0 on success; on failure nothing is left installed.        */
+ * address.  Returns 0 on success; on failure nothing is left installed.
+ *
+ * d2 round 2 (#136): BEFORE allocating, it looks for a retained anchor under
+ * its SSCT name and, when nsfsct_start_action says ADOPT, takes that anchor
+ * over instead -- re-stamp, scrub (S1 reap DEAD owners, S2 post LIVE ones),
+ * and the routine either reused or freed and reloaded.  A failure after an
+ * adoption retains the anchor again; it never frees it.                        */
 int   nsfsx_start(void) asm("NSFSXSTA");
 
 /* Take it down in the reverse order: restore the SVC slot first (no new client
