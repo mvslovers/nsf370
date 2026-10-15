@@ -12,6 +12,7 @@
                         ** pure half, which is why nsfsct_find lives here     */
 
 #include <mvs/subsys.h> /* ssct_new / ssct_find / ssct_install / _remove_by_name */
+#include <ibm/mvs/cvt.h> /* CVTPTR, cvtgda                                   */
 #include <mvs/dd.h>     /* __jobname                                          */
 #include <string.h>
 #include <mvs/apf.h>    /* PSWKEY0/__prob/__super */
@@ -69,18 +70,25 @@ nsfsct_plat_find(const char *key)
 }
 
 int
-nsfsct_plat_register(const char *key, void *anchor)
+nsfsct_plat_register(const char *key, const char *tail, void *anchor)
 {
     char           z[NSFSCT_KEYLEN + 1];
     unsigned char  savekey;
     SSCT          *ssct;
     int            rc;
 
-    if (key == NULL || anchor == NULL) return -1;
+    if (key == NULL || tail == NULL || anchor == NULL) return -1;
     sct_keyz(key, z);
 
     /* ssct_new and ssct_install both require supervisor state (clibssct.h). */
     if (__super(PSWKEY0, &savekey)) return -1;
+
+    /* STAMP FIRST, THEN CHAIN (round 2b).  The anchor is key-0 CSA, so the
+     * store belongs in this window; doing it before ssct_install means no
+     * reader of the chain can ever meet our key over an unstamped tail.  If
+     * the install fails the stamp is left behind on an anchor nothing chains,
+     * which names its own allocator and misleads no one. */
+    memcpy(((NSFV_ANCHOR *)anchor)->jobname_tail, tail, NSFSCT_TAILLEN);
 
     /* NO SSVT.  The SSCT is a RENDEZVOUS here, not a transport: nothing is
      * dispatched through it, no IEFSSREQ is issued, and no client touches it
@@ -147,6 +155,24 @@ nsfsct_find(void **out)
          * would invite a round-2 caller to remove a registration that may not
          * be there. */
         return NSFSCT_NONE;
+    }
+
+    /* NEVER DEREFERENCE AN SSCTSUSE THAT IS NOT COMMON STORAGE (round 2).
+     * The private area's bounds are the VSM global data area's PASTRT (+X'10')
+     * and PASIZE (+X'14') -- IHAGDA, identical on MVS/CE and TK5 (mvs38src
+     * macro-bytes).  The GDA is SQA and the CVT nucleus: neither is
+     * fetch-protected, so this needs no key.  What fails the check is an SSCT
+     * under our name that cannot be one of ours: BADEYE, no address handed
+     * back, and the start replaces the SSCT by name without reading it. */
+    {
+        CVT        *cvt = CVTPTR;
+        const UINT *gda = cvt ? (const UINT *)cvt->cvtgda : NULL;
+
+        if (gda == NULL ||
+            !nsfsct_addr_plausible((UINT)anchor, (UINT)sizeof(NSFV_ANCHOR),
+                                   gda[4], gda[5])) {
+            return NSFSCT_BADEYE;
+        }
     }
 
     {

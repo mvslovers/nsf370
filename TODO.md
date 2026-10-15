@@ -7,13 +7,13 @@ commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 
 ## M5 — Phase 2
 
-1. **d2 round 2: adopt a retained anchor at start** (#136, ADR-0048). Round 1
-   (register / find / remove) is merged (#135) and live-green on dev1. The
-   survey is on branch `d2-round2` (a31962d, not yet on main) and the
-   decisions (verdicts, router address after `slots[]`, scrub S1 + S2) are in
-   #136. Implementation not started; who writes the SVC-routine and router
-   parts is still open. Why first: every NSFS abend today leaves about
-   139 KB of CSA until IPL.
+1. **d2 round 2: adopt a retained anchor at start** (#136, ADR-0048). Built
+   on branch `d2-round2` (PR #138, not yet on main) and **live-green on dev1**
+   after round 2b fixed round 1's unwritten `jobname_tail`
+   (`docs/measurements/d2-round2/`, `d2-round2b/`). What remains: merge PR
+   #138, which closes #136. Not established live: a real client death in a
+   retained anchor, S2, ASIDE, BADVER and the ESTAE retain path. Why first:
+   every NSFS abend today leaves about 139 KB of CSA until IPL.
 2. **TCP hardening + docs** — the rest of M5's scope; no issue yet.
 3. **#83 `A0A` inside the recovery exit** — `nsf_shutdown()` takes a second
    abend inside ESTAE, so recovery never reaches `NSF901I`.

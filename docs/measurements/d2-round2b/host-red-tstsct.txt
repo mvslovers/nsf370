@@ -1,0 +1,135 @@
+=== nsf370 d2: the rendezvous (TSTSCT) ===
+
+--- 1. jobname split ---
+  PASS: 1: a key with letters is SAFE (it cannot be a procedure name)
+  PASS: 1: key is jobname[0:4] in LOWER case
+  PASS: 1: tail is jobname[4:8], as it is
+  PASS: 1: NSFS is safe
+  PASS: 1: the key for job NSFS is NOT 'NSFS' -- so `S NSFS` cannot meet it
+  PASS: 1: ...it is 'nsfs'
+  PASS: 1: NSFSTACK and NSFSTEST COLLIDE on the CL4 key -- which is the reason the tail exists
+  PASS: 1: ...and the TAILS distinguish them exactly
+  PASS: 1: one letter is enough to be safe
+  PASS: 1: digits and national characters are not changed
+  PASS: 1: a short name keeps its padding
+  PASS: 1: ...tail included
+  PASS: 1: a key without a letter is NOT safe
+  PASS: 1: ...and comes back unchanged
+  PASS: 1: a NULL jobname is not safe
+  PASS: 1: ...and yields blanks, never invented identity
+
+--- 1b. an unsafe key ---
+  PASS: 1b: register REFUSES a key that could be a procedure name
+  PASS: 1b: ...and chains nothing
+  PASS: 1b: (a foreign SSCT under the unsafe name, made by the test)
+  PASS: 1b: find answers NONE for an unsafe key, whatever is chained
+  PASS: 1b: ...and hands back no anchor
+
+--- 2. classify ---
+  PASS: 2: eye + version + identity -> OK
+  PASS: 2: SSCTSUSE null -> BADEYE
+  PASS: 2: wrong eyecatcher -> BADEYE
+  PASS: 2: version mismatch -> BADVER
+  PASS: 2: ...in either direction
+  PASS: 2: eye+version good but the tail differs -> FOREIGN (the CL4 truncation collision, caught rather than silently adopted)
+  PASS: 2: version is checked BEFORE identity -- a foreign layout's tail is not a tail
+  PASS: 2: eye is checked BEFORE version
+  PASS: 2: verdicts have names, for messages and for the record
+  PASS: 2: ...including an unknown one
+
+--- 3. register / find / remove ---
+  PASS: 3: nothing registered yet -> NONE
+  PASS: 3: ...and no anchor handed back
+  PASS: 3: A registers
+  FAIL: 3: ...and STAMPED its tail: 'ZZZZ' became 'TACK' (round 2b)
+  PASS: 3: ...under the FOLDED key 'nsfs'
+  PASS: 3: ...and NOT under 'NSFS', the procedure name
+  PASS: 3: exactly one registration
+  FAIL: 3: A finds its OWN -- the control for every refusal below (got 4, want 1)
+  PASS: 3: ...and gets its own anchor back
+  PASS: 3: registering twice under one name is REFUSED
+  PASS: 3: ...and nothing was chained -- still exactly one
+  PASS: 3: name B does NOT find name A's SSCT
+  PASS: 3: ...and hands back nothing
+  PASS: 3: B registers alongside A
+  FAIL: 3: ...stamped with B's own tail, 'TEST'
+  PASS: 3: TWO names coexist
+  FAIL: 3: B finds its own (got 4, want 1)
+  PASS: 3: ...and gets B's anchor, not A's
+  FAIL: 3: A still finds its own (got 4, want 1)
+  PASS: 3: ...still A's anchor
+  PASS: 3: A removes
+  PASS: 3: a removed SSCT is not found -- and it WAS found immediately before, two assertions up
+  PASS: 3: removing again finds nothing
+  FAIL: 3: removing A left B ALONE -- removal is by name, not a sweep (got 4, want 1)
+  PASS: 3: B removes too
+  PASS: 3: registry empty
+
+--- 4. find verdicts ---
+  PASS: 4: register a stale-version anchor
+  PASS: 4: find says BADVER
+  PASS: 4: ...and still hands the address back, without calling it adoptable
+  PASS: 4: REMOVAL WORKS ANYWAY -- it goes by name and never dereferences the anchor
+  PASS: 4: NSFSTEST registers under the shared key 'nsfs'
+  PASS: 4: find says FOREIGN rather than adopting a stranger's anchor
+  PASS: 4: and it is removable
+  PASS: 4: register a corrupt anchor
+  PASS: 4: find says BADEYE
+  PASS: 4: ...and hands back NOTHING -- an anchor that failed its eyecatcher is not an address a caller may use
+  PASS: 4: REMOVAL SURVIVES A CORRUPT ANCHOR -- the property ADR-0048 5.2 answers the lifecycle objection with
+  PASS: 4: registry empty again
+
+--- 5. no jobname ---
+  PASS: 5: no jobname -> no registration (never under an invented name)
+  PASS: 5: ...and nothing was chained
+  PASS: 5: find answers NONE
+  PASS: 5: remove answers failure
+  PASS: 5: a NULL anchor is refused
+
+--- 6. start action ---
+  PASS: 6: retain posture + server ended -> RETAINED
+  PASS: 6: retain posture, server NOT ended -> ALIVE (still draining?)
+  PASS: 6: ACTIVE set -> SERVED, whatever the ASVT says
+  PASS: 6: wake ECB published -> SERVED
+  PASS: 6: nslots differs -> DAMAGED
+  PASS: 6: DAMAGED is checked first
+  PASS: 6: NONE -> fresh, whatever the posture
+  PASS: 6: OK + RETAINED -> ADOPT
+  PASS: 6: OK + ALIVE -> ASIDE (never adopt a live server's anchor)
+  PASS: 6: OK + SERVED -> ASIDE
+  PASS: 6: OK + DAMAGED -> REPLACE (else every later start goes ASIDE)
+  PASS: 6: BADEYE -> replace the SSCT
+  PASS: 6: BADVER -> replace the SSCT
+  PASS: 6: BADVER is never adopted, whatever the posture (layout unknown)
+  PASS: 6: FOREIGN -> touch nothing
+  PASS: 6: FOREIGN is never adopted, whatever the posture
+  PASS: 6: an unknown verdict touches nothing
+  PASS: 6: the classifier expects version 4
+  PASS: 6: a round-1 (version 3) anchor is BADVER
+
+--- 7. SSCTSUSE plausibility ---
+  PASS: 7: round 1b's real anchor address (CSA) is plausible
+  PASS: 7: round 1b's HOLD fixture (a private address) is NOT
+  PASS: 7: the first byte above the private area is plausible
+  PASS: 7: the last word of the private area is NOT
+  PASS: 7: below the private area (PSA / nucleus) is NOT
+  PASS: 7: zero is NOT
+  PASS: 7: an unaligned address is NOT
+  PASS: 7: an anchor ending exactly at 16 MB is plausible
+  PASS: 7: one that runs past 16 MB is NOT
+  PASS: 7: an address above 16 MB is NOT
+  PASS: 7: an unknown private area licenses no read
+  PASS: 7: a private area that wraps is treated as unknown
+
+--- 8. register stamps the tail ---
+  PASS: 8: precondition -- the tail is four zero bytes, as allocated
+  PASS: 8: job NSFS registers
+  FAIL: 8: ...and the tail now reads four blanks, NSFS's own
+  FAIL: 8: THE NEXT START FINDS ITS OWN PREDECESSOR -- OK, not FOREIGN (got 4, want 1)
+  PASS: 8: ...and gets that anchor back
+  PASS: 8: a second register under 'nsfs' is refused
+  PASS: 8: ...and stamps nothing into the refused anchor
+  PASS: 8: remove
+  PASS: 8: registry empty
+
+=== TSTSCT: 106/114 passed (8 FAILED) ===

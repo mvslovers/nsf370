@@ -230,7 +230,7 @@ RCNOBUF  EQU   16                 POOL FULL -> ENOBUFS (ADR-0042 7)
 *  instructions
 *  turn that into RCCORR.  Bump with every layout move or it is
 *  decorative.
-ANCVERNO EQU   3                  NSFV_ANCHOR_VER
+ANCVERNO EQU   4                  NSFV_ANCHOR_VER
 *  ANCFLAG's high byte carries two bits: X'80' ACTIVE (checked
 *  above) and X'40' -- THIS SERVER SERVICES THE PROBE VERBS.  A
 *  mask, not an offset.  Set by the probe STC (src/nsfv.c) and by

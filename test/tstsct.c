@@ -10,9 +10,16 @@
  * real members); the mechanism is TSTSCTM's.  Said here as well as in the round
  * record, because a green host run is exactly the thing that gets over-read.
  *
- * NOT TESTED HERE AND DELIBERATELY SO: adoption.  Round 1 finds and removes;
- * what a start DOES with a retained anchor is round 2, and no assertion below
- * may quietly assume it.
+ * ROUND 2 (#136) adds section 6: the verdict -> start-action table.  The
+ * adoption itself -- re-stamp, scrub, router -- is nsfsx.c's and is not
+ * simulated here; its per-slot decision is pinned in TSTREQX.
+ *
+ * ROUND 2b adds section 8 and changes the fixtures: register STAMPS the tail.
+ * Round 1 derived it and threw it away, so a real anchor carried four zero
+ * bytes and the next start read its own predecessor as FOREIGN (live on dev1,
+ * STC00711).  Every fixture here used to write the right tail itself, which is
+ * exactly what hid that -- so they now write a WRONG one ("ZZZZ") and assert
+ * that register replaced it.
  *--------------------------------------------------------------------------*/
 #include "nsfsct.h"
 #include "nsfsct_host.h"
@@ -105,7 +112,7 @@ t_unsafe(void)
 
     /* Something someone else chained under that very name must not be read
      * as ours: find answers NONE without dereferencing it. */
-    CHECK_EQ((long)nsfsct_plat_register("@#$1", &a), 0L,
+    CHECK_EQ((long)nsfsct_plat_register("@#$1", "XXXX", &a), 0L,
              "1b: (a foreign SSCT under the unsafe name, made by the test)");
     CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_NONE,
              "1b: find answers NONE for an unsafe key, whatever is chained");
@@ -168,8 +175,10 @@ t_plumbing(void)
 
     printf("\n--- 3. register / find / remove ---\n");
     nsfsct_host_reset();
-    mk_anchor(&a_anchor, NSFSCT_EYE, NSFSCT_VER, "TACK");
-    mk_anchor(&b_anchor, NSFSCT_EYE, NSFSCT_VER, "TEST");
+    /* A WRONG tail on purpose (round 2b): find can only say OK below if
+     * register stamped the right one. */
+    mk_anchor(&a_anchor, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
+    mk_anchor(&b_anchor, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
 
     /* --- name A --- */
     nsfsct_host_set_jobname("NSFSTACK");
@@ -178,6 +187,8 @@ t_plumbing(void)
     CHECK(out == NULL, "3: ...and no anchor handed back");
 
     CHECK_EQ((long)nsfsct_register(&a_anchor), 0L, "3: A registers");
+    CHECK(memcmp(a_anchor.jobname_tail, "TACK", 4) == 0,
+          "3: ...and STAMPED its tail: 'ZZZZ' became 'TACK' (round 2b)");
     CHECK(nsfsct_plat_find("nsfs") != NULL,
           "3: ...under the FOLDED key 'nsfs'");
     CHECK(nsfsct_plat_find("NSFS") == NULL,
@@ -204,6 +215,8 @@ t_plumbing(void)
     CHECK(out == NULL, "3: ...and hands back nothing");
 
     CHECK_EQ((long)nsfsct_register(&b_anchor), 0L, "3: B registers alongside A");
+    CHECK(memcmp(b_anchor.jobname_tail, "TEST", 4) == 0,
+          "3: ...stamped with B's own tail, 'TEST'");
     CHECK_EQ((long)nsfsct_host_count(), 2L, "3: TWO names coexist");
     CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_OK, "3: B finds its own");
     CHECK(out == (void *)&b_anchor, "3: ...and gets B's anchor, not A's");
@@ -251,9 +264,14 @@ t_find_verdicts(void)
              "4: REMOVAL WORKS ANYWAY -- it goes by name and never dereferences"
              " the anchor");
 
-    /* A foreign anchor -- the CL4 collision reaching find. */
-    mk_anchor(&foreign, NSFSCT_EYE, NSFSCT_VER, "TEST");
-    CHECK_EQ((long)nsfsct_register(&foreign), 0L, "4: register a foreign tail");
+    /* A foreign anchor -- the CL4 collision reaching find.  Registered by
+     * the OTHER jobname, as it would be on MVS: since round 2b register
+     * stamps the registering job's tail, so a fixture cannot plant one. */
+    mk_anchor(&foreign, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
+    nsfsct_host_set_jobname("NSFSTEST");
+    CHECK_EQ((long)nsfsct_register(&foreign), 0L,
+             "4: NSFSTEST registers under the shared key 'nsfs'");
+    nsfsct_host_set_jobname("NSFSTACK");
     CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_FOREIGN,
              "4: find says FOREIGN rather than adopting a stranger's anchor");
     CHECK_EQ((long)nsfsct_remove(), 0L, "4: and it is removable");
@@ -293,15 +311,163 @@ t_no_identity(void)
     CHECK_EQ((long)nsfsct_register(NULL), -1L, "5: a NULL anchor is refused");
 }
 
+/* ---- 6. what a start does with the verdict (round 2) -------------------- */
+static void
+t_start_action(void)
+{
+    printf("\n--- 6. start action ---\n");
+
+    /* the posture of an OK anchor */
+    CHECK_EQ((long)nsfsct_posture(1, 0, 0, 1),
+             (long)NSFSCT_POSTURE_RETAINED,
+             "6: retain posture + server ended -> RETAINED");
+    CHECK_EQ((long)nsfsct_posture(1, 0, 0, 0), (long)NSFSCT_POSTURE_ALIVE,
+             "6: retain posture, server NOT ended -> ALIVE (still draining?)");
+    CHECK_EQ((long)nsfsct_posture(1, 1, 0, 1), (long)NSFSCT_POSTURE_SERVED,
+             "6: ACTIVE set -> SERVED, whatever the ASVT says");
+    CHECK_EQ((long)nsfsct_posture(1, 0, 1, 1), (long)NSFSCT_POSTURE_SERVED,
+             "6: wake ECB published -> SERVED");
+    CHECK_EQ((long)nsfsct_posture(0, 0, 0, 1), (long)NSFSCT_POSTURE_DAMAGED,
+             "6: nslots differs -> DAMAGED");
+    CHECK_EQ((long)nsfsct_posture(0, 1, 1, 0), (long)NSFSCT_POSTURE_DAMAGED,
+             "6: DAMAGED is checked first");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_NONE, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_FRESH, "6: NONE -> fresh, whatever the posture");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_ADOPT, "6: OK + RETAINED -> ADOPT");
+    /* THE ROWS THAT KEEP ADOPTION FROM BEING A USE-AFTER-FREE: an anchor that
+     * is ours but is being served, or whose server has not ended -- a second
+     * instance, or the previous one still in its drain -- is neither adopted
+     * nor unchained. */
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_ASIDE,
+             "6: OK + ALIVE -> ASIDE (never adopt a live server's anchor)");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_SERVED),
+             (long)NSFSCT_START_ASIDE, "6: OK + SERVED -> ASIDE");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_OK, NSFSCT_POSTURE_DAMAGED),
+             (long)NSFSCT_START_REPLACE,
+             "6: OK + DAMAGED -> REPLACE (else every later start goes ASIDE)");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_BADEYE, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_REPLACE, "6: BADEYE -> replace the SSCT");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_BADVER, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_REPLACE, "6: BADVER -> replace the SSCT");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_BADVER,
+                                       NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_REPLACE,
+             "6: BADVER is never adopted, whatever the posture (layout unknown)");
+
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_FOREIGN, NSFSCT_POSTURE_ALIVE),
+             (long)NSFSCT_START_ASIDE, "6: FOREIGN -> touch nothing");
+    CHECK_EQ((long)nsfsct_start_action(NSFSCT_FOREIGN,
+                                       NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_ASIDE,
+             "6: FOREIGN is never adopted, whatever the posture");
+    CHECK_EQ((long)nsfsct_start_action(99, NSFSCT_POSTURE_RETAINED),
+             (long)NSFSCT_START_ASIDE, "6: an unknown verdict touches nothing");
+
+    /* The version this build classifies with is the one the anchor header
+     * says: a round-1 anchor (version 3, no router trailer) must come back
+     * BADVER, never OK -- an OK would let the adopting STC read past the end
+     * of a 137272-byte GETMAIN. */
+    CHECK_EQ((long)NSFSCT_VER, 4L, "6: the classifier expects version 4");
+    CHECK_EQ((long)nsfsct_classify(NSFSCT_EYE, 3u, "TACK", "TACK"),
+             (long)NSFSCT_BADVER, "6: a round-1 (version 3) anchor is BADVER");
+}
+
+/* ---- 8. register stamps the tail (round 2b) ------------------------------
+ *
+ * THE LIVE SHAPE, EXACTLY: the job is NSFS, so the tail is four blanks, and
+ * the anchor is what nsfsx_anchor_alloc leaves -- memset to zero, the tail
+ * never written.  Round 2's start found that anchor FOREIGN (STC00711).  Zeros
+ * and not "ZZZZ" because a fix that stamps only a non-zero tail would pass a
+ * "ZZZZ" fixture and fail this one. */
+static void
+t_stamp(void)
+{
+    static const char zeros[NSFSCT_TAILLEN] = { 0, 0, 0, 0 };
+    NSFSCT_HOST_ANCHOR a;
+    void *out = NULL;
+
+    printf("\n--- 8. register stamps the tail ---\n");
+    nsfsct_host_reset();
+    nsfsct_host_set_jobname("NSFS    ");
+    mk_anchor(&a, NSFSCT_EYE, NSFSCT_VER, zeros);
+    CHECK(memcmp(a.jobname_tail, zeros, 4) == 0,
+          "8: precondition -- the tail is four zero bytes, as allocated");
+
+    CHECK_EQ((long)nsfsct_register(&a), 0L, "8: job NSFS registers");
+    CHECK(memcmp(a.jobname_tail, "    ", 4) == 0,
+          "8: ...and the tail now reads four blanks, NSFS's own");
+    CHECK_EQ((long)nsfsct_find(&out), (long)NSFSCT_OK,
+             "8: THE NEXT START FINDS ITS OWN PREDECESSOR -- OK, not FOREIGN");
+    CHECK(out == (void *)&a, "8: ...and gets that anchor back");
+
+    /* A refused register leaves the anchor alone: the refusal is the
+     * IEF612I case, where the anchor belongs to whoever chained first. */
+    {
+        NSFSCT_HOST_ANCHOR b;
+        mk_anchor(&b, NSFSCT_EYE, NSFSCT_VER, "ZZZZ");
+        CHECK_EQ((long)nsfsct_register(&b), -1L,
+                 "8: a second register under 'nsfs' is refused");
+        CHECK(memcmp(b.jobname_tail, "ZZZZ", 4) == 0,
+              "8: ...and stamps nothing into the refused anchor");
+    }
+    CHECK_EQ((long)nsfsct_remove(), 0L, "8: remove");
+    CHECK_EQ((long)nsfsct_host_count(), 0L, "8: registry empty");
+}
+
+/* ---- 7. may SSCTSUSE be dereferenced? (round 2) ----------------------- */
+static void
+t_addr(void)
+{
+    /* A private area from 0x6000 for 8 MB, the shape of an MVS 3.8j map. */
+    const UINT ps = 0x00006000u, pz = 0x00800000u, end = ps + pz;
+    const UINT len = 137280u;
+
+    printf("\n--- 7. SSCTSUSE plausibility ---\n");
+
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7C8u, len, ps, pz), 1L,
+             "7: round 1b's real anchor address (CSA) is plausible");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00098464u, len, ps, pz), 0L,
+             "7: round 1b's HOLD fixture (a private address) is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(end, len, ps, pz), 1L,
+             "7: the first byte above the private area is plausible");
+    CHECK_EQ((long)nsfsct_addr_plausible(end - 4u, len, ps, pz), 0L,
+             "7: the last word of the private area is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00000100u, len, ps, pz), 0L,
+             "7: below the private area (PSA / nucleus) is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0u, len, ps, pz), 0L,
+             "7: zero is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7CAu, len, ps, pz), 0L,
+             "7: an unaligned address is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x01000000u - len, len, ps, pz), 1L,
+             "7: an anchor ending exactly at 16 MB is plausible");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x01000000u - len + 4u, len, ps, pz),
+             0L, "7: one that runs past 16 MB is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x7F000000u, len, ps, pz), 0L,
+             "7: an address above 16 MB is NOT");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7C8u, len, ps, 0u), 0L,
+             "7: an unknown private area licenses no read");
+    CHECK_EQ((long)nsfsct_addr_plausible(0x00A9C7C8u, len, 0x00F00000u,
+                                         0xFFFFFFF0u), 0L,
+             "7: a private area that wraps is treated as unknown");
+}
+
 int
 main(void)
 {
-    printf("=== nsf370 d2 round 1: the rendezvous (TSTSCT) ===\n");
+    printf("=== nsf370 d2: the rendezvous (TSTSCT) ===\n");
     t_split();
     t_unsafe();
     t_classify();
     t_plumbing();
     t_find_verdicts();
     t_no_identity();
+    t_start_action();
+    t_addr();
+    t_stamp();
     return mbt_test_summary("TSTSCT");
 }

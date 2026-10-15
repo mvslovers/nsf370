@@ -748,6 +748,114 @@ int main(void)
                  "land_copy tolerates a NULL source");
     }
 
+    /* ---- d2 round 2: the adoption scrub (#136) ---------------------------
+     * Every state x every verdict x both storage judgements.  The rows that
+     * matter most are the ones that must NEVER happen: a LIVE or UNKNOWN
+     * owner reaped, whatever storage_ok says -- that is the survey's trap
+     * (the NULL wake-ECB pointer of a retained anchor reads as untrusted
+     * storage), closed by the function's shape and asserted here for every
+     * state rather than for the one a reader would think of. */
+    {
+        static const UINT states[] = {
+            NSFREQX_ST_FREE, NSFREQX_ST_PENDING, NSFREQX_ST_DONE,
+            NSFREQX_ST_HELD, NSFREQX_ST_CLAIMED, 99u
+        };
+        static const int verdicts[] = {
+            NSFREQX_CL_LIVE, NSFREQX_CL_DEAD, NSFREQX_CL_UNKNOWN
+        };
+        unsigned si, vi, ok;
+        int never_bad = 1, reap_agrees = 1, post_only_live = 1;
+
+        for (si = 0; si < sizeof(states) / sizeof(states[0]); si++)
+        for (vi = 0; vi < sizeof(verdicts) / sizeof(verdicts[0]); vi++)
+        for (ok = 0; ok <= 1; ok++) {
+            int a = nsfreqx_adopt_action(states[si], verdicts[vi], (int)ok);
+            if (a == NSFREQX_ADOPT_REAP && verdicts[vi] != NSFREQX_CL_DEAD)
+                never_bad = 0;
+            if ((a == NSFREQX_ADOPT_REAP) !=
+                (verdicts[vi] == NSFREQX_CL_DEAD &&
+                 nsfreqx_reap_ok(states[si], NSFREQX_CL_DEAD, 1)))
+                reap_agrees = 0;
+            if (a == NSFREQX_ADOPT_POST &&
+                !(verdicts[vi] == NSFREQX_CL_LIVE && ok))
+                post_only_live = 0;
+        }
+        CHECK(never_bad,
+              "adopt: NO state reaps a LIVE or UNKNOWN owner, at any storage_ok");
+        CHECK(reap_agrees,
+              "adopt: REAP rows == reap_ok(state, DEAD, 1), row for row");
+        CHECK(post_only_live,
+              "adopt: POST only for a LIVE owner on trusted storage");
+
+        /* S1 */
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_PENDING,
+                                            NSFREQX_CL_DEAD, 0),
+                 (long)NSFREQX_ADOPT_REAP, "adopt: DEAD + PENDING -> REAP");
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_HELD,
+                                            NSFREQX_CL_DEAD, 1),
+                 (long)NSFREQX_ADOPT_REAP, "adopt: DEAD + HELD -> REAP");
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_DONE,
+                                            NSFREQX_CL_DEAD, 1),
+                 (long)NSFREQX_ADOPT_REAP, "adopt: DEAD + DONE -> REAP");
+        /* S2 */
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_PENDING,
+                                            NSFREQX_CL_LIVE, 1),
+                 (long)NSFREQX_ADOPT_POST, "adopt: LIVE + PENDING -> POST");
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_HELD,
+                                            NSFREQX_CL_LIVE, 1),
+                 (long)NSFREQX_ADOPT_POST,
+                 "adopt: LIVE + HELD -> POST (ADR-0048 7: now classifies LIVE)");
+        /* the NONE rows */
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_PENDING,
+                                            NSFREQX_CL_LIVE, 0),
+                 (long)NSFREQX_ADOPT_NONE,
+                 "adopt: LIVE on untrusted storage -> NONE (the trap row)");
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_DONE,
+                                            NSFREQX_CL_LIVE, 1),
+                 (long)NSFREQX_ADOPT_NONE, "adopt: LIVE + DONE -> NONE");
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_PENDING,
+                                            NSFREQX_CL_UNKNOWN, 1),
+                 (long)NSFREQX_ADOPT_NONE, "adopt: UNKNOWN -> NONE (#88)");
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_CLAIMED,
+                                            NSFREQX_CL_DEAD, 1),
+                 (long)NSFREQX_ADOPT_NONE, "adopt: CLAIMED -> NONE");
+        CHECK_EQ((long)nsfreqx_adopt_action(NSFREQX_ST_FREE,
+                                            NSFREQX_CL_DEAD, 1),
+                 (long)NSFREQX_ADOPT_NONE, "adopt: FREE -> NONE");
+    }
+
+    /* ---- d2 round 2: has the retaining server ended? ---------------------- */
+    {
+        UINT asvt[4];
+        const UINT srv = 0x00F0A000u, us = 0x00F0B000u, other = 0x00F0C000u;
+
+        asvt[0] = 0x00F00000u;              /* the master                     */
+        asvt[1] = other;
+        asvt[2] = NSFREQX_ASVT_AVAIL | 0x00000010u;   /* a free ASID          */
+        asvt[3] = us;
+
+        CHECK_EQ((long)nsfreqx_server_gone(srv, us, 4u, asvt), 1L,
+                 "gone: the server's ASCB is in no live entry");
+        CHECK_EQ((long)nsfreqx_server_gone(us, us, 4u, asvt), 1L,
+                 "gone: the server's ASCB is OURS now (reused for us)");
+        CHECK_EQ((long)nsfreqx_server_gone(other, us, 4u, asvt), 0L,
+                 "gone: NOT while a live entry holds that ASCB");
+        CHECK_EQ((long)nsfreqx_server_gone(other, us, 1u, asvt), 1L,
+                 "gone: the scan is bounded by asvt_maxu");
+        /* A free ASID's word is a free-chain pointer, not an ASCB: even one
+         * that happens to equal the server's address once the AVAIL bit is
+         * set is not a live address space. */
+        CHECK_EQ((long)nsfreqx_server_gone(NSFREQX_ASVT_AVAIL | 0x10u, us,
+                                           4u, asvt), 1L,
+                 "gone: an AVAIL entry never counts as live");
+        CHECK_EQ((long)nsfreqx_server_gone(0u, us, 4u, asvt), 0L,
+                 "gone: a zero ASCB never licenses an adoption");
+        CHECK_EQ((long)nsfreqx_server_gone(srv, us, 4u, NULL), 0L,
+                 "gone: no ASVT -> NOT gone");
+        CHECK_EQ((long)nsfreqx_server_gone(srv, us, 0u, asvt), 0L,
+                 "gone: an empty ASVT -> NOT gone");
+    }
+
     /* ---- NULL guards: every entry is defensive ------------------------- */
     nsfreqx_slot_in(NULL, &caller);
     nsfreqx_slot_in(&slot, NULL);

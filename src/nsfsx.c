@@ -53,6 +53,24 @@ static SVCENTRY     *g_svc_slot;
 static unsigned char g_svc_saved[8];
 static int           g_svc_stolen;
 
+/* d2 round 2 (#136).  THREE FLAGS, because the three questions they answer
+ * have different answers on different paths:
+ *
+ *   g_sct_owned     the SSCT under our name points at g_anchor -- we registered
+ *                   it, or adopted the anchor it named.  ONLY THEN may a stop
+ *                   remove it.  Before round 2 the free path removed by name
+ *                   unconditionally, so an instance that had been REFUSED the
+ *                   registration (NSF059W) removed someone else's SSCT at its
+ *                   clean stop -- the one naming an anchor still retained.
+ *   g_adopted       g_anchor came from a previous instance, not from our
+ *                   GETMAIN.  A start that fails after adopting must RETAIN it
+ *                   again, never free it: a client may still be parked in it.
+ *   g_router_reused g_router_lpa is the previous instance's copy of the
+ *                   routine, not one we loaded -- see nsfsx_adopt.            */
+static int           g_sct_owned;
+static int           g_adopted;
+static int           g_router_reused;
+
 /* The executive's wake target: STC-private, key 8 (ADR-0041 addendum). */
 static NSFECB        g_wake_ecb;
 
@@ -265,6 +283,13 @@ nsfsx_router_load(void)
     /* Written ONCE, before the slot is stolen, then read-only -- no invocation
     ** ever sees an unpatched value and reentrancy is preserved (ADR-0038 3). */
     *(void **)((unsigned char *)epa + NSFV_ANCH_OFF) = (void *)g_anchor;
+    /* RECORD IT IN THE ANCHOR (d2 round 2, #136).  Both retain paths keep the
+    ** routine with the anchor, and these two words are the only place a later
+    ** start can learn where it is.  Written in the same key window as the
+    ** patch, so there is no moment at which the anchor names a routine that
+    ** does not point back at it. */
+    g_anchor->router_lpa = lpa;
+    g_anchor->router_epa = epa;
     __prob(savekey, NULL);
     return 0;
 }
@@ -276,9 +301,18 @@ nsfsx_router_unload(void)
 
     if (!g_router_lpa) return;
     if (__super(PSWKEY0, &savekey)) return;
+    /* Withdraw the record BEFORE the storage goes, so the anchor never names
+    ** a freed routine -- the SSCT-before-anchor order of nsfsx_stop, one level
+    ** down. */
+    if (g_anchor &&
+        g_anchor->router_lpa == g_router_lpa) {
+        g_anchor->router_lpa = NULL;
+        g_anchor->router_epa = NULL;
+    }
     freemain(g_router_lpa);
-    g_router_lpa = NULL;
-    g_router_epa = NULL;
+    g_router_lpa    = NULL;
+    g_router_epa    = NULL;
+    g_router_reused = 0;
     __prob(savekey, NULL);
 }
 
@@ -542,12 +576,336 @@ nsfsx_reap(NSFV_SLOT *slot, UINT observed, int verdict, int storage_ok)
 }
 
 /* ==========================================================================
+ * d2 round 2: adopting a retained anchor (#136, ADR-0048)
+ * ========================================================================== */
+static void nsfsx_pause(unsigned hsec);
+
+/* How long an adopting start waits for the clients it posted to leave the
+ * routine.  They are LIVE and need only a dispatch to reach WQUIES, so two
+ * seconds is generous; what does not come back by then is UNKNOWN, CLAIMED or
+ * false-LIVE, and no amount of waiting returns those counts. */
+#define NSFSX_ADOPT_POLLS   20U  /* 20 * 0.10 s                               */
+
+/* The posture of an OK-verdict anchor: the four facts, read here, decided by
+ * the host-pinned nsfsct_posture (and the ASVT half by nsfreqx_server_gone).
+ * Reads only -- CSA is not fetch-protected, and the CVT/ASVT reads need no key
+ * (nsfsx_classify_client's argument).  No ASVT reads as "not ended". */
+static int
+nsfsx_posture(const NSFV_ANCHOR *a)
+{
+    CVT  *cvt  = CVTPTR;
+    ASVT *asvt = cvt ? (ASVT *)cvt->cvtasvt : NULL;
+    int   gone = 0;
+
+    if (asvt) {
+        gone = nsfreqx_server_gone((UINT)a->server_ascb, (UINT)__ascb(0),
+                                   (UINT)asvt->asvtmaxu,
+                                   (const UINT *)asvt->asvtenty);
+    }
+    return nsfsct_posture(a->nslots == NSFV_NSLOTS,
+                          (a->flags & NSFV_ANCHOR_ACTIVE) != 0,
+                          a->server_ecb_ptr != NULL, gone);
+}
+
+static const char *
+nsfsx_posture_name(int posture)
+{
+    switch (posture) {
+    case NSFSCT_POSTURE_RETAINED: return "RETAINED";
+    case NSFSCT_POSTURE_DAMAGED:  return "DAMAGED (NSLOTS)";
+    case NSFSCT_POSTURE_SERVED:   return "IN SERVICE";
+    case NSFSCT_POSTURE_ALIVE:    return "ITS SERVER HAS NOT ENDED";
+    default:                      return "?";
+    }
+}
+
+/* Wait for `inflight` to reach zero, without nudging anyone: the posts went
+ * out once, in the scrub.  Same shape as nsfsx_drain_inflight -- and the
+ * SETTLE IS LOAD-BEARING HERE TOO: WQUIES stores FREE and gives the count back
+ * and then still executes the rest of the routine on its way out of the SVC.
+ * A routine freed the instant the count reads zero would be freed under it. */
+static int
+nsfsx_settle_inflight(unsigned polls)
+{
+    volatile unsigned *inflight = &g_anchor->inflight;
+    unsigned           n;
+
+    for (n = 0; n < polls; n++) {
+        if (*inflight == 0) {
+            nsfsx_pause(NSFSX_DRAIN_SETTLE);
+            return (*inflight == 0);
+        }
+        nsfsx_pause(NSFSX_DRAIN_POLL);
+    }
+    return 0;
+}
+
+/* The scrub, S1 + S2: one pass over the slots, deciding each by the
+ * host-pinned nsfreqx_adopt_action.  Caller is in key 0, has re-stamped the
+ * server fields, and has NOT stolen the SVC slot -- so no client can enter
+ * while this runs, and the only parties touching the slots are clients
+ * already inside the routine. */
+static void
+nsfsx_adopt_scrub(unsigned *reaped, unsigned *posted)
+{
+    unsigned i;
+
+    for (i = 0; i < g_anchor->nslots; i++) {
+        NSFV_SLOT *slot = &g_anchor->slots[i];
+        UINT       st   = slot->req_state;
+        int        cl;
+        int        act;
+
+        if (st == NSFV_REQ_FREE) continue;
+
+        cl  = nsfsx_client_state(slot);
+        act = nsfreqx_adopt_action(st, cl,
+                                   nsfreqx_guard_ok(slot->rqe_guard) &&
+                                   g_anchor->server_ecb_ptr ==
+                                       (void *)&g_wake_ecb);
+        switch (act) {
+        case NSFREQX_ADOPT_REAP:
+            /* storage_ok = 1: the reason is liveness and only liveness. */
+            if (nsfsx_reap(slot, st, cl, 1)) (*reaped)++;
+            break;
+        case NSFREQX_ADOPT_POST: {
+            /* HELD FIRST, THEN POST.  A PENDING slot is a drain work item, and
+            ** a LIVE owner's PENDING slot is DISPATCHED -- so if any pass ran
+            ** between the post and the client's WQUIES, the executive would be
+            ** serving a request whose client is freeing the slot.  HELD is
+            ** taken off the work list, and WQUIES tests only for DONE, so the
+            ** client still bails.  A CS, not a store: a slot that moved since
+            ** we read it is not the one we decided about. */
+            UINT want = st;
+            if (st != NSFV_REQ_HELD &&
+                __cas((unsigned *)&slot->req_state, (unsigned *)&want,
+                      NSFV_REQ_HELD) != 0) {
+                break;
+            }
+            __xmpost(slot->req_ascb, &slot->reply_ecb, 0);
+            (*posted)++;
+            break;
+        }
+        default:
+            break;
+        }
+    }
+}
+
+/* Adopt `a`.  On success g_anchor is `a`, a routine is installed for it (the
+ * retained one or a fresh one), the wake ECB is published and ACTIVE is set:
+ * everything nsfsx_start's fresh path leaves behind, minus the SVC steal.  On
+ * failure the anchor is RETAINED again exactly as found (ACTIVE clear, pointer
+ * withdrawn, SSCT chained) and g_anchor is NULL.
+ *
+ * THE ROUTER, which decides most of this function's shape.  Clients parked in
+ * the retained routine resume IN IT, so it may only be freed once nothing is:
+ *   inflight 0 after the settle   -> free the old copy, load a fresh one
+ *   inflight > 0                  -> REUSE the old copy; the parked tasks are
+ *                                    in it, and a second copy would leave one
+ *                                    of the two unrecorded.  The cost is that a
+ *                                    redeployed NSFVSVC does not take effect --
+ *                                    said out loud (NSF065W), because that is
+ *                                    CLAUDE.md 5's most expensive failure class.
+ * Either way exactly one routine is recorded afterwards.  A recorded routine
+ * whose anchor patch does not point back at `a` is not trusted for either: it
+ * is left where it is (NSF066W) and a fresh one is loaded. */
+static int
+nsfsx_adopt(NSFV_ANCHOR *a)
+{
+    unsigned char savekey;
+    unsigned      reaped = 0, posted = 0, before;
+    int           quiet;
+    void         *old_lpa, *old_epa;
+    int           old_ours;
+
+    if (__super(PSWKEY0, &savekey)) return -1;
+    g_anchor = a;
+    before   = a->inflight;
+
+    /* RE-STAMP, ACTIVE STAYING CLEAR.  This instance is the server from here
+    ** on.  The pointer is published BEFORE the scrub so that the scrub's
+    ** storage-trust judgement is made against the value it will be compared
+    ** with for the rest of this instance's life -- the trap row is closed by
+    ** nsfreqx_adopt_action's shape, and this order is the second line. */
+    a->server_ascb = __ascb(0);
+    g_wake_ecb = 0u;
+    a->server_ecb_ptr = (void *)&g_wake_ecb;
+    /* Per-instance diagnostics start over; `reaped` then counts the scrub.
+    ** inflight is NOT touched (no S3): a recount could undercount the tasks
+    ** still inside the routine, and an undercount is what lets a later stop
+    ** free code a task is in. */
+    a->served     = 0;
+    a->reaped     = 0;
+    a->exhausted  = 0;
+    a->collisions = 0;
+
+    nsfsx_adopt_scrub(&reaped, &posted);
+    {
+        unsigned left = nsfsx_csa_largest();
+        __prob(savekey, NULL);
+        wtof("NSF055I CSA POOL %u BYTES (%u SLOTS X %u)"
+             " -- LARGEST FREE BLOCK NOW %u",
+             (unsigned)sizeof(NSFV_ANCHOR), (unsigned)NSFV_NSLOTS,
+             (unsigned)sizeof(NSFV_SLOT), left);
+    }
+
+    quiet = nsfsx_settle_inflight(posted ? NSFSX_ADOPT_POLLS : 1U);
+    wtof("NSF062I ADOPTED ANCHOR=%08X -- REAPED=%u POSTED=%u"
+         " INFLIGHT %u -> %u",
+         (unsigned)a, reaped, posted, before, a->inflight);
+
+    old_lpa  = a->router_lpa;
+    old_epa  = a->router_epa;
+    old_ours = (old_epa != NULL &&
+                *(void **)((unsigned char *)old_epa + NSFV_ANCH_OFF) ==
+                    (void *)a);
+    if (old_epa != NULL && !old_ours) {
+        wtof("NSF066W RECORDED SVC ROUTINE %08X DOES NOT NAME THIS ANCHOR"
+             " -- LEFT IN CSA, LOADING A NEW ONE", (unsigned)old_epa);
+    }
+
+    if (old_ours && !quiet) {
+        g_router_lpa    = old_lpa;
+        g_router_epa    = old_epa;
+        g_router_reused = 1;
+        wtof("NSF065W %u CLIENT(S) STILL IN FLIGHT -- REUSING THE RETAINED"
+             " SVC ROUTINE (EP %08X); A NEW NSFVSVC TAKES EFFECT ONLY AFTER"
+             " A STOP THAT DRAINS", a->inflight, (unsigned)old_epa);
+    } else {
+        if (__super(PSWKEY0, &savekey)) goto fail;
+        if (old_ours) {
+            /* Quiet: nothing is inside it.  Withdraw the record first, then
+            ** free -- the anchor never names freed code. */
+            a->router_lpa = NULL;
+            a->router_epa = NULL;
+            freemain(old_lpa);
+        } else {
+            a->router_lpa = NULL;       /* untrusted or absent: forget it     */
+            a->router_epa = NULL;
+        }
+        __prob(savekey, NULL);
+        if (old_ours) {
+            wtof("NSF065I RETAINED SVC ROUTINE (EP %08X) FREED",
+                 (unsigned)old_epa);
+        }
+        if (nsfsx_router_load()) goto fail;
+    }
+
+    if (__super(PSWKEY0, &savekey)) {
+        if (!g_router_reused) nsfsx_router_unload();
+        goto fail;
+    }
+    a->flags = NSFV_ANCHOR_ACTIVE;
+    __prob(savekey, NULL);
+
+    g_adopted   = 1;
+    g_sct_owned = 1;
+    return 0;
+
+fail:
+    /* Back to the retain posture, exactly: a parked UNKNOWN client may still
+    ** be in this anchor, so it is never freed here. */
+    if (!__super(PSWKEY0, &savekey)) {
+        a->flags &= ~NSFV_ANCHOR_ACTIVE;
+        a->server_ecb_ptr = NULL;
+        __prob(savekey, NULL);
+    }
+    g_router_lpa    = NULL;
+    g_router_epa    = NULL;
+    g_router_reused = 0;
+    g_anchor        = NULL;
+    return -1;
+}
+
+/* Undo a successful nsfsx_adopt when the SVC steal then fails.  The routine
+ * we loaded was never reachable (the slot was never ours), so it can go; one
+ * we reused stays recorded.  The anchor goes back to the retain posture. */
+static void
+nsfsx_unadopt(void)
+{
+    unsigned char savekey;
+
+    if (!g_router_reused) nsfsx_router_unload();
+    if (!__super(PSWKEY0, &savekey)) {
+        g_anchor->flags &= ~NSFV_ANCHOR_ACTIVE;
+        g_anchor->server_ecb_ptr = NULL;
+        __prob(savekey, NULL);
+    }
+    g_router_lpa    = NULL;
+    g_router_epa    = NULL;
+    g_router_reused = 0;
+    g_anchor        = NULL;
+    g_adopted       = 0;
+    g_sct_owned     = 0;
+}
+
+/* ==========================================================================
  * Public: bring-up and teardown
  * ========================================================================== */
 int
 nsfsx_start(void)
 {
-    int rc;
+    int   rc;
+    int   verdict, action, posture = NSFSCT_POSTURE_RETAINED;
+    void *found = NULL;
+
+    g_sct_owned     = 0;
+    g_adopted       = 0;
+    g_router_reused = 0;
+
+    /* LOOK BEFORE ALLOCATING (ADR-0048, round 2).  What the verdict leads to
+    ** is the host-pinned nsfsct_start_action; whether an OK anchor is free to
+    ** take is nsfsx_posture's, host-pinned the same way. */
+    verdict = nsfsct_find(&found);
+    if (verdict == NSFSCT_OK && found != NULL) {
+        posture = nsfsx_posture((const NSFV_ANCHOR *)found);
+    }
+    action  = nsfsct_start_action(verdict, posture);
+
+    if (action == NSFSCT_START_ADOPT) {
+        wtof("NSF061I RENDEZVOUS FOUND A RETAINED ANCHOR=%08X -- ADOPTING",
+             (unsigned)found);
+        if (nsfsx_adopt((NSFV_ANCHOR *)found)) {
+            wtof("NSF067E ADOPTION OF ANCHOR=%08X FAILED -- RETAINED AGAIN"
+                 " -- NSFS NOT STARTED", (unsigned)found);
+            return -1;
+        }
+        if (nsfsx_svc_steal()) {
+            nsfsx_unadopt();
+            return -1;
+        }
+        if (g_wakeposts == NULL) {
+            g_wakeposts = sts_register("NSFSX", "wakeposts");
+        }
+        wtof("NSF041I NSFS TRANSPORT READY -- ANCHOR=%08X ECB=%08X",
+             (unsigned)g_anchor, (unsigned)&g_wake_ecb);
+        return 0;
+    }
+    if (action == NSFSCT_START_REPLACE) {
+        /* Our name, but nothing behind it we can read as ours.  The SSCT goes
+        ** (by name -- ssct_remove_by_name never reads SSCTSUSE), the storage
+        ** it named stays where it is, and this start registers its own. */
+        int         rrc  = nsfsct_remove();
+        const char *what = (verdict == NSFSCT_OK)
+                               ? nsfsx_posture_name(posture)
+                               : nsfsct_verdict_name(verdict);
+        /* BADEYE hands back no address (nsfsct_find never exposes one it
+        ** could not read as ours), so there is nothing to name as left. */
+        if (found != NULL) {
+            wtof("NSF063W RENDEZVOUS %s -- SSCT %s, ANCHOR=%08X LEFT IN CSA",
+                 what, rrc == 0 ? "REMOVED" : "NOT REMOVED", (unsigned)found);
+        } else {
+            wtof("NSF063W RENDEZVOUS %s -- SSCT %s", what,
+                 rrc == 0 ? "REMOVED" : "NOT REMOVED");
+        }
+    } else if (action == NSFSCT_START_ASIDE) {
+        wtof("NSF064W RENDEZVOUS %s ANCHOR=%08X NOT ADOPTED (%s)"
+             " -- NOT REGISTERING",
+             nsfsct_verdict_name(verdict), (unsigned)found,
+             verdict == NSFSCT_OK ? nsfsx_posture_name(posture)
+                                  : "NOT OURS");
+    }
 
     g_anchor = nsfsx_anchor_alloc();
     if (!g_anchor) {
@@ -615,10 +973,19 @@ nsfsx_start(void)
     **
     ** The most likely reason is the one worth naming in the message: an SSCT
     ** already chained under our name, which nsfsct_register REFUSES rather than
-    ** duplicating (the IEF612I case).  Round 1 does not adopt it, does not
-    ** classify it and does not remove it -- that is round 2. */
-    rc = nsfsct_register(g_anchor);
-    if (rc == NSFSCT_RC_NOTSAFE) {
+    ** duplicating (the IEF612I case).  Since round 2 the start has already
+    ** looked (nsfsct_find above), so the cases that reach a refusal here are
+    ** the ones nsfsct_start_action sent ASIDE -- and those skip the call. */
+    if (action == NSFSCT_START_ASIDE) {
+        /* Registering would only be refused (an SSCT is chained under our
+        ** name), and the refusal message would misname the reason. */
+        rc = 1;
+    } else {
+        rc = nsfsct_register(g_anchor);
+    }
+    if (rc == 1) {
+        /* NSF064W above already said why. */
+    } else if (rc == NSFSCT_RC_NOTSAFE) {
         /* The jobname's first four characters hold no letter, so the derived
         ** SSCT name could equal a procedure name -- and a chained SSCT under a
         ** procedure name makes the next `S <name>` fail IEF612I (ADR-0048 6).
@@ -630,7 +997,16 @@ nsfsx_start(void)
         wtof("NSF059W RENDEZVOUS NOT REGISTERED -- A LATER START CANNOT FIND"
              " A RETAINED ANCHOR (ALREADY CHAINED?) -- CONTINUING");
     } else {
-        wtof("NSF060I RENDEZVOUS REGISTERED -- ANCHOR=%08X", (unsigned)g_anchor);
+        /* THE TAIL IS READ BACK FROM THE ANCHOR, not from the jobname (round
+        ** 2b): it is the positive check that register's key-0 store took,
+        ** and the value a later start will classify by.  NSFS reads
+        ** 40404040; round 1 left 00000000. */
+        const unsigned char *t = (const unsigned char *)g_anchor->jobname_tail;
+
+        g_sct_owned = 1;
+        wtof("NSF060I RENDEZVOUS REGISTERED -- ANCHOR=%08X"
+             " TAIL=%02X%02X%02X%02X",
+             (unsigned)g_anchor, t[0], t[1], t[2], t[3]);
     }
 
     wtof("NSF041I NSFS TRANSPORT READY -- ANCHOR=%08X ECB=%08X",
@@ -751,10 +1127,12 @@ nsfsx_stop(void)
         /* The free path, and the ONLY path that removes.  Order matters: the
         ** registration goes before the storage it names, so no window exists
         ** in which a chained SSCT points at freed CSA. */
-        (void)nsfsct_remove();
+        if (g_sct_owned) (void)nsfsct_remove();
         nsfsx_router_unload();
         nsfsx_anchor_free();
     }
+    g_sct_owned = 0;
+    g_adopted   = 0;
     wtof("NSF044I NSFS TRANSPORT STOPPED");
 }
 

@@ -99,7 +99,7 @@ sources = ["test/tstsct.c", "src/nsfsct.c", "src/nsfsct_plat.c"]
 # steal SVC 239, and the rendezvous does not need a second one to be tested.
 [test.TSTSCTM]
 host = false
-sources = ["test/mvs/tstsctm.c", "src/nsfsct.c", "src/nsfsct_plat.c"]
+sources = ["test/mvs/tstsctm.c", "src/nsfsct.c", "src/nsfsct_plat.c", "src/nsfreqx.c"]
 
 [test.TSTXQ]
 sources = ["test/tstxq.c", "asm/nsfxq.asm"]

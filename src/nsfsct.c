@@ -1,7 +1,8 @@
 /*----------------------------------------------------------------------------
  * nsfsct.c -- the d2 rendezvous, PURE half + the three round-1 entry points.
  *
- * ADR-0048 round 1: register, find, remove.  NOT adoption.
+ * ADR-0048 round 1: register, find, remove.  Round 2 adds the start-action
+ * table; the adoption itself is src/nsfsx.c's.
  *
  * Everything in this file that touches MVS goes through the nsfsct_plat_*
  * seam, so the truth table below is pinned by a host test (test/tstsct.c)
@@ -95,6 +96,21 @@ nsfsct_classify(const char *eye, UINT version,
     return NSFSCT_OK;
 }
 
+int
+nsfsct_addr_plausible(UINT addr, UINT len, UINT pa_start, UINT pa_size)
+{
+    const UINT top = 0x01000000u;           /* 16 MB: the 24-bit ceiling     */
+    UINT       pa_end;
+
+    if (addr == 0u || (addr & 3u) != 0u) return 0;
+    if (pa_size == 0u)                   return 0;
+    if (pa_start > top || pa_size > top - pa_start) return 0;
+    pa_end = pa_start + pa_size;
+    if (addr < pa_end)                   return 0;   /* private, or below it  */
+    if (addr > top || len > top - addr)  return 0;   /* runs past 16 MB       */
+    return 1;
+}
+
 const char *
 nsfsct_verdict_name(int verdict)
 {
@@ -105,6 +121,36 @@ nsfsct_verdict_name(int verdict)
     case NSFSCT_BADVER:  return "BADVER";
     case NSFSCT_FOREIGN: return "FOREIGN";
     default:             return "?";
+    }
+}
+
+int
+nsfsct_posture(int nslots_ok, int active, int ecb_published, int server_gone)
+{
+    if (!nslots_ok)               return NSFSCT_POSTURE_DAMAGED;
+    if (active || ecb_published)  return NSFSCT_POSTURE_SERVED;
+    if (!server_gone)             return NSFSCT_POSTURE_ALIVE;
+    return NSFSCT_POSTURE_RETAINED;
+}
+
+int
+nsfsct_start_action(int verdict, int posture)
+{
+    switch (verdict) {
+    case NSFSCT_NONE:
+        return NSFSCT_START_FRESH;
+    case NSFSCT_OK:
+        if (posture == NSFSCT_POSTURE_RETAINED) return NSFSCT_START_ADOPT;
+        if (posture == NSFSCT_POSTURE_DAMAGED)  return NSFSCT_START_REPLACE;
+        return NSFSCT_START_ASIDE;
+    case NSFSCT_BADEYE:
+    case NSFSCT_BADVER:
+        return NSFSCT_START_REPLACE;
+    case NSFSCT_FOREIGN:
+    default:
+        /* An unknown verdict is a newer classifier than this table: touch
+         * nothing, which is the one action that cannot be wrong. */
+        return NSFSCT_START_ASIDE;
     }
 }
 
@@ -146,12 +192,12 @@ nsfsct_register(void *anchor)
      * Note what this does NOT do: it does not look at what the existing SSCT
      * points at, does not classify it and does not remove it.  Deciding
      * between "my own predecessor, adopt it" and "someone else's, refuse" is
-     * ADOPTION, and adoption is round 2. */
+     * nsfsct_start_action's, and nsfsx_start asks it BEFORE calling this. */
     if (nsfsct_plat_find(key) != NULL) {
         return -1;
     }
 
-    return nsfsct_plat_register(key, anchor);
+    return nsfsct_plat_register(key, tail, anchor);
 }
 
 int
