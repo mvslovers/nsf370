@@ -24,6 +24,7 @@ Consult in this order. Do not contradict a higher row without an ADR.
 | `docs/adr/ADR-*.md` | Rationale for individual decisions | Append-only |
 | `CLAUDE.md` (this file) | Operating rules + one-line status | Update on convention changes; **keep under 40k characters** |
 | `docs/milestone-history.md` | The per-round record behind §7 | Append-only |
+| `TODO.md` | Open work, ranked, with the reason for each rank | Update after every commit, push or merge that moves an item |
 | `docs/assembler-rules.md`, `docs/mvsdev-runbook.md` | The full record behind §3's HLASM rules and §5's runbook | Append; keep in step with the short form here |
 | Notion → *Issues & Tasks*, project **mvs38j-ip (NSF)** | Task tracking (`[NSF] Mx-y`) | Mirrors §7 below |
 
@@ -363,6 +364,7 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
 ├── mbt.toml          mbt 3: modules, tests, [build.host], [toolchain], deploy
 ├── .env.example      MVS connection template for `mbt target import`
 ├── CLAUDE.md         this file (repo root — NOT under docs/)
+├── TODO.md           open work, ranked (issues stay the source of truth)
 ├── src/              portable C: nsfmm.c nsfbuf.c nsfque.c nsftmr.c
 │                     nsfevt.c nsftrc.c nsfsts.c nsfip.c nsficmp.c
 │                     nsfudp.c nsftcp.c nsfsoc.c nsfreq.c nsfeza.c
@@ -449,7 +451,7 @@ write-out key categories are closed.
   anchor at the next start via a per-instance SSCT. **Round 1** (register /
   find / remove; the SSCT name is jobname[0:4] in lower case, so `S NSFS`
   never meets it) is live-green on dev1 (`docs/measurements/d2-round1b/`).
-  **Round 2** (adoption) is next.
+  **Round 2** (adoption) is next: #136.
 - **c3 — retire the probe verbs** (`ECHO`/`XFER`/`UNSTAGE`/`SLOT`; promote
   `QUERY`) only once their eight dependent live gates have replacements.
   Obligation #4 stays half-discharged until then.
@@ -462,14 +464,8 @@ write-out key categories are closed.
   one emulator, restored task set, known start order); no absolute free-CSA
   figure is quoted (#120).
 
-**Open issues** (as of 2026-10-14 — verify with `gh issue list` — this list is a snapshot):
-#35 MIH pollutes `ierr` · #53 `tstmvcd.c` 2.2b flaky (false negatives only) ·
-#54 `tstmvck.c` hardcoded SSK restore · #56 `UNSTAGE` on a FREE slot ·
-#59 SVC table readable from key 8 ·
-#83 `A0A` inside the recovery exit · #87 no test drives inline rxq completion or
-cross-AS SELECT · **#88** client liveness not soundly detectable (the real design
-behind the sweep) · #92 STATS truncation (fixed in PR #95; closing is Mike's) ·
-#120 entry CSA drift.
+**Open issues and their order live in `TODO.md`** (ranked, with the reason for
+each rank); the GitHub issues stay the source of truth (`gh issue list`).
 
 Critical path was M0-1 + M0-2; M5 carries the only real schedule risk and is
 isolated so M0–M4 already deliver a usable in-process stack.
