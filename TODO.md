@@ -34,15 +34,16 @@ commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 
 ## Waiting on the maintainer
 
-- #92 STATS truncation — fixed in PR #95; closing is Mike's.
 - #59 SVC table readable from key 8 — a measurement, kept open as a record.
-- PR #127 (libc370#448: one C startup in `libc.a`, plus `crtm.o`) — open since
-  2026-10-05 with CI red from a run before the mbt 3 migration. It edits the
-  Spec and the frozen Project Brief. Needs a decision: rebase onto `main`, or
-  close.
+- The frozen Project Brief still says "Build System: MBT V2 … project.toml";
+  the project is on mbt 3 with `mbt.toml`. Correcting it would be another edit
+  to a frozen document (noted in PR #127).
 
 ## Done recently
 
+- ~~#92 STATS truncation~~ — PR #95; closed 2026-10-15 after the live check
+  (52 of 52 counters, STC00732).
+- ~~PR #127 libc370#448 startup docs~~ — rebased and merged.
 - ~~#83 A0A inside the recovery exit~~ — PR #139 (ADR-0049); live-green on
   dev1. Not established on MVS: Phase-1 recovery, the `NSF206W` → `NSF068W`
   path.
