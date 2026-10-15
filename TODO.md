@@ -8,15 +8,22 @@ commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 ## M5 — Phase 2
 
 1. **TCP hardening + docs** — the rest of M5's scope; no issue yet.
-2. **#83 `A0A` inside the recovery exit** — `nsf_shutdown()` takes a second
-   abend inside ESTAE, so recovery never reaches `NSF901I`.
-3. **#88 client liveness** — not soundly detectable on MVS 3.8j; the real
+2. **#83 `A0A` inside the recovery exit** — fixed on branch
+   `m5-83-recovery-free` (ADR-0049) and live-green on dev1
+   (`docs/measurements/m5-83/`); PR next, which closes #83. The cause was a
+   FREEMAIN of the CTCIBUF region under the parked EXCP READ, not a heap race.
+3. **d2 ESTAE retain round** (ADR-0048) — its own round with predictions
+   (maintainer, 2026-10-15): an abend with a parked client, the recovery
+   retains, the next start adopts and frees. The #83 round already saw two
+   recovery-retained anchors (inflight 0) adopted and freed, ungated. No issue
+   yet.
+4. **#88 client liveness** — not soundly detectable on MVS 3.8j; the real
    design behind the best-effort sweep, and the reason UNKNOWN owners stay out
    of d2's scrub.
-4. **c3 — retire the probe verbs** (`ECHO`/`XFER`/`UNSTAGE`/`SLOT`, promote
+5. **c3 — retire the probe verbs** (`ECHO`/`XFER`/`UNSTAGE`/`SLOT`, promote
    `QUERY`) once their eight dependent live gates have replacements. No issue
    yet.
-5. **#87** no test drives the inline rxq-dequeue completion or a cross-AS
+6. **#87** no test drives the inline rxq-dequeue completion or a cross-AS
    SELECT.
 
 ## Small

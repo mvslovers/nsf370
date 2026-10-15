@@ -2052,9 +2052,13 @@ Two build rules, both enforced in review:
   `@@estae`'s C-environment setup and is the issue-#8 failure class).
   On ABEND `nsf_recover`: WTO a marker, capture is implicit (the trace ring
   "NSFTRACE", the stats registry "NSFSTATS" and every pool header carry
-  eyecatchers and are already in the dump — §17.2), call the **same** teardown
-  the orderly path uses (`nsf_shutdown`: disarm the timer exit, free pool
-  regions; M1+ adds device quiesce), then **percolate** (`SDWARCDE = SDWACWT`).
+  eyecatchers and are already in the dump — §17.2), release **only what nobody
+  else will** (ADR-0049, amending the earlier "same teardown as the orderly
+  path"): restore the stolen SVC slot and mark the CSA anchor inactive (#79),
+  disarm the timer exit (`nsf_recover_shutdown`), and leave the pool regions,
+  the device subtasks and their allocations to MVS, which reclaims the private
+  area at address-space end. Freeing a region under a parked EXCP abends
+  A0A-2 (#83). Then **percolate** (`SDWARCDE = SDWACWT`).
   The ESTAE is deleted **first** in shutdown so a teardown fault cannot re-enter
   recovery.
 - Phase 1 in-process builds establish ESTAE around the stack subtask so an

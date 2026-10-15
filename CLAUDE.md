@@ -110,8 +110,10 @@ Violating one is a review-blocking defect, not a style nit.
 
 **Recovery**
 - The executive task runs under **ESTAE from M0 onward**. The recovery path
-  calls the same destroy/quiesce functions as the orderly path. A crash must
-  never require a Hercules restart to clean up.
+  releases **only what nobody else will** (ADR-0049): the SVC slot and the CSA
+  anchor, never the private-area pools or the devices. A FREEMAIN under a
+  parked EXCP abends A0A-2 (#83), and quiescing a device is blocking work an
+  exit must not do. A crash must never require a Hercules restart to clean up.
 
 **Compatibility & scope**
 - Sockets are **binary-transparent**: NSF never converts payload between EBCDIC

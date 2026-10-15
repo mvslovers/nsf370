@@ -51,6 +51,12 @@ never hardcode them.
   (MIH, IGF991I/995I)** — rapid-fire UDP echo throughput suffers on a degraded
   pair while ping and *paced* echo stay clean; the M3-5 rapid 1000/1000 echo needs
   a fresh/idle pair, not a code fix.
+- **`zowe zos-files download data-set` skips a local file that already exists**
+  (`... skipped as it already exists.`) unless `--overwrite` is given. A content
+  check of a deploy or a restore then reads the PREVIOUS download, and with the
+  output discarded nothing says so. Met in the #83 round: a correct deploy read as
+  the old module. Download every verification copy into a new file or a fresh
+  directory, and keep the command's output (`docs/measurements/m5-83/round.md`).
 - **`make test-mvs ARGS="--only …"` REPLACES the whole TESTLIB** — it is not additive. Two
   consequences that cost time: a later `S <something>` for a module that round did not name
   draws `IEA703I 806-4 … MODULE ACCESSED <name>` (the rig is *absent*, and absence looks like

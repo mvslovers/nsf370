@@ -2982,3 +2982,38 @@ and whose predicted totals were stale (18/23 before the wire arm):
 - S2, ASIDE, BADVER and the ESTAE retain path live;
 - a real CL4 collision;
 - why STC00710's ASCB read as ended.
+
+## M5 #83: recovery no longer frees under I/O (2026-10-15)
+
+ESTAE recovery never reached `NSF901I` with the CTCI pair up. **The survey**
+(`docs/measurements/83-survey/`) decoded `IEA700I A0A- 2` from IEAVGM00 as
+"PART OF AREA BEING FREED IS STILL FIXED". The length `X'A040'` is the
+CTCIBUF region after libc370's rounding, since libc370 has no heap and does
+one GETMAIN per malloc. So `mm_shutdown()` freed the region whose READ buffer
+the parked EXCP held page-fixed. It was not the heap race #83's comment had
+inferred.
+
+**Fix** (ADR-0049, amending Spec §17.1):
+- recovery frees nothing private (`nsf_recover_shutdown`);
+- the `nsfsx_start` failure after the device start quiesces first;
+- `nsf_shutdown()` skips the free while `dev_busy_count` is non-zero and
+  reports `NSF068W`.
+
+**Live on dev1** (`docs/measurements/m5-83/`), RED = main plus a temporary
+S0C4 injection, GREEN = the fix plus the injection:
+- **RED recovery reproduced the defect**: `A0A- 2 ... 0000A040`, no
+  `NSF901I` (STC00726).
+- **GREEN recovery completed**: `NSF901I`, then the original `S0C4`
+  percolated (STC00730). It is the first time with the pair up.
+- The startup failure: **RED gave `SA03`, not the predicted `A0A`** (Q1
+  falsified; the READ had probably not parked yet in the same second).
+  **GREEN ended CC 8, cleanly.**
+- FINAL: TSTRQXC+F 130/0, clean NSFS and NSF stops with no `NSF068W`. No
+  IPL.
+- Both recovery-retained anchors were adopted and freed by the next start.
+  That was recorded but not gated; the ESTAE round of ADR-0048 stays separate.
+
+**Does not establish:**
+- that the fixed pages are the READ buffer (the address was not compared);
+- the Phase-1 recovery on MVS;
+- the `NSF206W` → `NSF068W` path on MVS.

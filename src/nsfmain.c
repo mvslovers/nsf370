@@ -50,12 +50,13 @@ static NSFCFG g_cfg;
  * ESTAE recovery (spec 17.1). MVS enters here on any unhandled abend on the
  * executive task. First-failure data is already captured for the dump: the
  * trace ring ("NSFTRACE"), the statistics registry ("NSFSTATS") and every pool
- * header carry eyecatchers (spec 17.2). We WTO a marker, attempt the SAME
- * orderly teardown the clean path uses (nsf_shutdown: disarm the timer exit,
- * free the pool regions), then percolate (SDWARCDE = SDWACWT == 0) so RTM
- * produces the dump and terminates the address space -- no Hercules restart is
- * ever needed to clean up (goal, ADR-0006). Minimal + defensive: it may run in
- * a damaged environment, so it does the least that is useful and never loops.
+ * header carry eyecatchers (spec 17.2). We WTO a marker, release only what
+ * nobody else will (ADR-0049: here, disarm the timer exit -- the pool regions
+ * and the devices are left to MVS), then percolate (SDWARCDE = SDWACWT == 0)
+ * so RTM produces the dump and terminates the address space -- no Hercules
+ * restart is ever needed to clean up (goal, ADR-0006). Minimal + defensive: it
+ * may run in a damaged environment, so it does the least that is useful and
+ * never loops.
  */
 static void nsf_recover(SDWA *sdwa)
 {
