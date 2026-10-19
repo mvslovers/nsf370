@@ -6,7 +6,7 @@
  *
  * At M0-1 this header carries only the primitives the build skeleton needs.
  * Component interfaces (NSFMM, NSFBUF, NSFQUE, ...) arrive from M0-2 onward,
- * one header per component in include/. See docs/CLAUDE.md and the
+ * one header per component in include/. See CLAUDE.md and the
  * Architecture Specification for the full picture.
  */
 

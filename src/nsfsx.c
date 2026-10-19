@@ -97,7 +97,7 @@ static NSFECB        g_wake_ecb;
  *   arriving between one observation and the next COALESCE into one, exactly
  *   as they do for any ECB.  It is a lower bound on posts, not a tally.
  *
- * EVERY FIGURE IN docs/nsf-64-0*.md WAS TAKEN UNDER THE OLD SEMANTICS, so the
+ * EVERY FIGURE IN internals/nsf-64-0*.md WAS TAKEN UNDER THE OLD SEMANTICS, so the
  * ~8 500/s WAKEPOSTS rates recorded there are the latch tracking evtpasses,
  * not wakes, and nothing in this counter's post-64-1 readings is comparable to
  * them.
@@ -1504,7 +1504,7 @@ nsfsx_drain(void)
      * It reads the bit; step 0 below consumes it.  The counter therefore counts
      * WAKE EVENTS from 64-1 onward, where before it latched -- see the
      * g_wakeposts declaration, which is where a reader comparing a post-64-1
-     * number against docs/nsf-64-0*.md will look. */
+     * number against internals/nsf-64-0*.md will look. */
     if ((g_wake_ecb & NSFECB_POSTED) != 0u && g_wakeposts != NULL) {
         STS_INC(g_wakeposts);
     }
@@ -1518,7 +1518,7 @@ nsfsx_drain(void)
      * does the probe STC (nsfv.c, nsfv_server_ecb_reset).  Phase 2 was the one
      * that diverged.  Measured cost of the divergence: ~8 500 passes per second
      * and 26 % of a host core, permanently, on every instance that had ever
-     * served one request (docs/nsf-64-0-measurements.md 2).
+     * served one request (internals/nsf-64-0-measurements.md 2).
      *
      * WHY THIS POSITION CLOSES THE WINDOW COMPLETELY.  A client publishes its
      * request (req_state = PENDING) and only THEN POSTs, so relative to this

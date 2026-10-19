@@ -2,7 +2,7 @@
 ;
 ; Read at "S NSF" through the PROFILE DD (see jcl/NSFPROC.jcl). The syntax is
 ; PROFILE.TCPIP-compatible where IBM defines it; the NSF* statements are NSF
-; extensions. Full grammar + validation: docs/Architecture-Specification.md ch.14.
+; extensions. Full grammar + validation: internals/Architecture-Specification.md ch.14.
 ;
 ; All-or-nothing: any error rejects startup with an NSF7xxE message and the
 ; 1-based line number -- there is no partial configuration.

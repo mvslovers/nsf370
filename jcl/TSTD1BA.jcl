@@ -9,7 +9,7 @@
 //* B's window.
 //*
 //* A THIRD PARTY IS REQUIRED: the stimulus driver
-//* docs/measurements/m5-2d1-stimulus/d1stim.py, running on the HOST beside
+//* internals/measurements/m5-2d1-stimulus/d1stim.py, running on the HOST beside
 //* the emulator.  It connects to A's port and HOLDS the connection open, so
 //* A's listener becomes read-ready -- which is what makes B's "not ready"
 //* a refusal rather than an idle listener (the #107 annotation).

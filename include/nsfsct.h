@@ -12,7 +12,7 @@
  * one.  The SSCT is the only 3.8j mechanism that is NAMED, system-wide, and
  * outlives the address space that made it: ENQ is purged at task and memory
  * termination (IEAVENQ1.asm), CVTUSER is a single word, and name/token services
- * do not exist.  See docs/measurements/d2-rendezvous/.
+ * do not exist.  See internals/measurements/d2-rendezvous/.
  *
  * THE SPLIT, AND WHY IT IS WHERE IT IS.  `nsfsct_split` and `nsfsct_classify`
  * are PURE -- no MVS call, no CSA, no layout dependency -- so the truth table

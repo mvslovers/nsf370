@@ -388,8 +388,8 @@ int      nsfreq_app_classify(UINT idx) asm("NSFRQACL");
  *
  * READ THIS BEFORE RELYING ON IT: IT IS BEST-EFFORT, AND THE LIMITS ARE NOT
  * IMPLEMENTATION DETAIL.  Client liveness is not soundly detectable on
- * 3.8j (issue #88, measured in docs/measurements/40-chk/ and
- * docs/measurements/40-ident/):
+ * 3.8j (issue #88, measured in internals/measurements/40-chk/ and
+ * internals/measurements/40-ident/):
  *
  *   - A BATCH CLIENT IS NEVER RECLAIMED.  EVER.  Its recorded ASCB is the
  *     INITIATOR's, and an initiator does not end when a job ends -- a normal

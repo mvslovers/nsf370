@@ -12,16 +12,17 @@ compatibility.
 > live on Hercules. **M5 (Phase 2: the cross-AS `NSFS` subsystem)** is in
 > progress: the app↔stack transport is proven both ways on the live target — an
 > SSI probe (Stage-0a) and, for **unauthorized relink-only apps**, a private-SVC
-> probe (Stage-0a′, ADR-0038). See `CLAUDE.md` §7 for the milestone status and `docs/milestone-history.md` for the full record.
+> probe (Stage-0a′, ADR-0038). See `CLAUDE.md` §7 for the milestone status and `internals/milestone-history.md` for the full record.
 
 ## Documentation
 
 | Document | Role |
 |---|---|
-| `docs/Project-Brief-v2.md` | Why / scope / constraints / milestones (frozen) |
-| `docs/Architecture-Specification.md` | How: interfaces, data structures, lifetimes |
+| `internals/Project-Brief-v2.md` | Why / scope / constraints / milestones (frozen) |
+| `internals/Architecture-Specification.md` | How: interfaces, data structures, lifetimes |
 | `CLAUDE.md` (repo root) | Operating rules, conventions, milestone status |
-| `docs/adr/` | Architecture Decision Records |
+| `internals/adr/` | Architecture Decision Records |
+| `docs/ezasoket-conformance.md` | EZASOKET verbs, return codes and ERRNOs against IBM's API |
 
 ## Toolchain
 
@@ -58,7 +59,9 @@ include/       public headers (one per component)
 test/          dual host+MVS tests; test/mvs/ MVS-only; test/asm/ asm callers
 cfg/           sample PROFILE.TCPIP members
 jcl/           install / SAMPLIB jobs
-docs/          brief, spec, ADRs   (CLAUDE.md is at the repo root)
+docs/          for users: EZASOKET conformance
+internals/     for maintainers: brief, spec, ADRs, runbook, measurements
+               (CLAUDE.md is at the repo root)
 ```
 
 ## License

@@ -19,7 +19,7 @@
  * The codes come from SYS1.AMODGEN(SYSEVENT); the field offsets from
  * (IRAOUCB) and (IHAASCB) through the DSECT gate that reproduces every
  * offset a prior IFOX00 CBOFF job proved (17/17 and 13/13) --
- * docs/measurements/64-3-0/cblayout.py.
+ * internals/measurements/64-3-0/cblayout.py.
  */
 
 #include "nsf.h"

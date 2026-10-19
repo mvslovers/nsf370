@@ -8,7 +8,7 @@
 *  DERIVED FROM PRIMARY SOURCE, NOT COPIED. The expansion below is what
 *  SYS1.AMODGEN(SYSEVENT) generates for the no-ASID / ENTRY=SVC case,
 *  read
-*  live off the target (64-3-0, docs/nsf-64-3-0-noswap-survey.md
+*  live off the target (64-3-0, internals/nsf-64-3-0-noswap-survey.md
 *  2.2-2.3):
 *
 *    .OKLAB   LA  0,&EVENTO(0,0)   SYSEVENT CODE      (macro line ~170)
