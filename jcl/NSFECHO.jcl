@@ -8,7 +8,7 @@
 //* and echoes every datagram back to its sender until a 4-byte "QUIT"
 //* datagram arrives. Drive it from the host with samples/host/echo_client.py.
 //*
-//* Install:   mbt deploy                  -> NSF.LINKLIB(NSFECHO)
+//* Install:   mbt deploy                  -> NSF.DEV.LINKLIB(NSFECHO)
 //* Submit:    this member (PARM = UDP port; default 7, the echo port)
 //*            //ECHO EXEC PGM=NSFECHO,PARM='7777'   for another port
 //* Stop:      send a "QUIT" datagram (echo_client.py quit), or CANCEL NSFECHO.
@@ -21,7 +21,8 @@
 //*            should be none.
 //*
 //ECHO     EXEC PGM=NSFECHO,PARM='7'
-//STEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+//STEPLIB  DD  DISP=SHR,DSN=NSF.DEV.LINKLIB
+//         DD  DISP=SHR,DSN=NSF.LINKLIB
 //SYSPRINT DD  SYSOUT=*
 //SYSTERM  DD  SYSOUT=*
 //SYSUDUMP DD  SYSOUT=*

@@ -28,8 +28,8 @@
  * crossing the app<->stack boundary -- is frozen (CLAUDE.md §3).
  *
  * BUILD/RUN. NSFTECHO is its own load module ([[module]] in project.toml, so it
- * carries the whole Phase-1 stack). Deploy it into NSF.LINKLIB (make deploy) and
- * submit jcl/NSFTECHO.jcl; PARM is the TCP port to listen on (default 7, the
+ * carries the whole Phase-1 stack). Deploy it into NSF.DEV.LINKLIB (make deploy)
+ * and submit jcl/NSFTECHO.jcl; PARM is the TCP port to listen on (default 7, the
  * well-known echo port). Drive it from the host with `telnet 192.168.200.1 <port>`.
  * See samples/README.md.
  *

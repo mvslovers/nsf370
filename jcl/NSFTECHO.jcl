@@ -10,7 +10,7 @@
 //*   telnet 192.168.200.1 <port>
 //* Type lines; they echo back. A line beginning "QUIT" ends the server.
 //*
-//* Install:   mbt deploy                  -> NSF.LINKLIB(NSFTECHO)
+//* Install:   mbt deploy                  -> NSF.DEV.LINKLIB(NSFTECHO)
 //* Submit:    this member (PARM = TCP port; default 7, the echo port)
 //*            //ECHO EXEC PGM=NSFTECHO,PARM='3007'   for another port
 //* Stop:      send a "QUIT" line (clean), or CANCEL NSFTECHO. The server blocks
@@ -23,7 +23,8 @@
 //*            means an unexpected abend -- there should be none.
 //*
 //ECHO     EXEC PGM=NSFTECHO,PARM='7'
-//STEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+//STEPLIB  DD  DISP=SHR,DSN=NSF.DEV.LINKLIB
+//         DD  DISP=SHR,DSN=NSF.LINKLIB
 //SYSPRINT DD  SYSOUT=*
 //SYSTERM  DD  SYSOUT=*
 //SYSUDUMP DD  SYSOUT=*

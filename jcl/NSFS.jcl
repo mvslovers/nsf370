@@ -13,11 +13,12 @@
 //*
 //* Installation:
 //*   Copy to SYS2.PROCLIB(NSFS)            (cataloged proc; no // PEND)
-//*   Deploy the load modules:  mbt deploy   -> NSF.LINKLIB
+//*   Deploy the load modules:  mbt deploy   -> NSF.DEV.LINKLIB
+//*     (first in STEPLIB; NSF.LINKLIB behind it is the SMP library)
 //*     (NSFS = this STC, NSFVSVC = the CSA-resident SVC routine it __loadhi's
 //*      and points a stolen SVCTABLE slot at)
 //*   The STC self-authorises at runtime via clib_apf_setup (SVC 244), so
-//*   NSF.LINKLIB need not be APF.  The CLIENT is NOT authorised.
+//*   neither library need be APF.  The CLIENT is NOT authorised.
 //*
 //* Starting:    /S NSFS
 //* Commands:    /F NSFS,DISPLAY | STATS | TRACE comp ON|OFF | STOP
@@ -27,7 +28,8 @@
 //* Client:      mbt test --mvs --only TSTRQXM         (NSFS must be started)
 //*
 //NSFS     EXEC PGM=NSFS,REGION=4M,TIME=1440
-//STEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+//STEPLIB  DD  DISP=SHR,DSN=NSF.DEV.LINKLIB
+//         DD  DISP=SHR,DSN=NSF.LINKLIB
 //SYSUDUMP DD  SYSOUT=*
 //SYSPRINT DD  SYSOUT=*
 //PROFILE  DD  DSN=&D(&M),DISP=SHR,FREE=CLOSE

@@ -6,7 +6,8 @@
 //* Installation:
 //*   Copy to SYS2.PROCLIB(NSF)                 (cataloged proc; no // PEND)
 //*   Copy config member to SYS2.PARMLIB(NSFPRM0)   (see samplib/NSFPRM0)
-//*   Deploy the load module:  make deploy       -> NSF.LINKLIB
+//*   Load modules: NSF.LINKLIB, filled by the SMP install.  A
+//*   development stand puts NSF.DEV.LINKLIB (mbt deploy) ahead of it.
 //*
 //* Starting:    /S NSF
 //*              /S NSF,M=NSFPRM1              (alternate config member)

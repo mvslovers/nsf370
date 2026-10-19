@@ -291,7 +291,7 @@ MVS reachability. mbt 3 cross-compiles with `-Wall -Wextra -Werror`.
 mbt test                  # native build + run of the portable tests (no MVS)
 mbt build --all --tests   # cross-compile every load module and test module
 mbt test --mvs [--only X] # build + deploy the test modules, run them on MVS
-mbt deploy                # put the load modules into NSF.LINKLIB (members replaced)
+mbt deploy                # put the load modules into NSF.DEV.LINKLIB (members replaced)
 mbt package               # release artifacts in dist/
 mbt doctor [--offline]    # toolchain, sysroot, MVS connection
 ```
@@ -315,7 +315,7 @@ zowe `mvsdev` profile — never hardcode them.
 before they are relied on; until then keep following them.
 
 - **Build / deploy / test over mvsMF REST (no SSH):** `mbt deploy`
-  (→ `NSF.LINKLIB`), `mbt test --mvs --only TSTX`. *(mbt 2)* Read the **full
+  (→ `NSF.DEV.LINKLIB`), `mbt test --mvs --only TSTX`. *(mbt 2)* Read the **full
   spool in `build/test-runner.spool`**, not just the matrix. mbt honoured
   **only `[build].cflags`** — a `-D`-gated device test goes there
   **temporarily** (revert before commit), and the source must be touched or a

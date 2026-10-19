@@ -25,7 +25,7 @@
  * only thing crossing the app<->stack boundary -- is frozen (CLAUDE.md §3).
  *
  * BUILD/RUN. NSFECHO is its own load module ([[module]] in project.toml, so it
- * carries the whole Phase-1 stack). Deploy it into NSF.LINKLIB (make deploy)
+ * carries the whole Phase-1 stack). Deploy it into NSF.DEV.LINKLIB (make deploy)
  * and submit jcl/NSFECHO.jcl; PARM is the UDP port to listen on (default 7, the
  * well-known echo port). Drive it from the host with samples/host/echo_client.py.
  * See samples/README.md.
