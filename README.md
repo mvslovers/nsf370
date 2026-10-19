@@ -40,7 +40,7 @@ cd nsf370
 mbt test                      # build + run the portable tests natively (no MVS)
 mbt build --all --tests       # cross-compile every load module and test module
 mbt test --mvs                # deploy + run the tests on MVS
-mbt deploy                    # put the load modules into NSF.LINKLIB
+mbt deploy                    # put the load modules into NSF.DEV.LINKLIB
 mbt doctor                    # check the toolchain and the MVS connection
 ```
 

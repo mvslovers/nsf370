@@ -11,11 +11,13 @@
 //*
 //* Installation:
 //*   Copy to SYS2.PROCLIB(NSFV)            (cataloged proc; no // PEND)
-//*   Deploy the load modules:  mbt deploy   -> NSF.LINKLIB
+//*   Deploy the load modules:  mbt deploy   -> NSF.DEV.LINKLIB
+//*     (first in STEPLIB; NSF.LINKLIB behind it is the SMP library)
 //*     (NSFV = this STC, NSFVSVC = the CSA-resident SVC routine it __loadhi's
 //*      and points a stolen SVCTABLE slot at)
 //*   The STC self-authorizes at runtime via clib_apf_setup (SVC 244) for
-//*   __loadhi / key-0 CSA / the SVCTABLE store, so NSF.LINKLIB need not be APF.
+//*   __loadhi / key-0 CSA / the SVCTABLE store, so neither library need
+//*   be APF.
 //*   The CLIENT is NOT authorized (ADR-0038 red line).
 //*
 //* Starting:    /S NSFV     (steals an unused installation SVC slot; the slot
@@ -26,6 +28,7 @@
 //* Client:      mbt test --mvs --only TSTSVC         (NSFV must be started)
 //*
 //NSFV     EXEC PGM=NSFV,REGION=4M,TIME=1440
-//STEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+//STEPLIB  DD  DISP=SHR,DSN=NSF.DEV.LINKLIB
+//         DD  DISP=SHR,DSN=NSF.LINKLIB
 //SYSUDUMP DD  SYSOUT=*
 //SYSPRINT DD  SYSOUT=*

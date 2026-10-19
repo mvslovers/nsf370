@@ -34,7 +34,7 @@ zowe `mvsdev` profile — never hardcode them.
 before they are relied on; until then keep following them.
 
 - **Build / deploy / test over mvsMF REST (no SSH):** `mbt deploy`
-  (→ `NSF.LINKLIB`), `mbt test --mvs --only TSTX`. *(mbt 2)* Read the **full
+  (→ `NSF.DEV.LINKLIB`), `mbt test --mvs --only TSTX`. *(mbt 2)* Read the **full
   spool in `build/test-runner.spool`**, not just the matrix. mbt honoured
   **only `[build].cflags`** — a `-D`-gated device test goes there
   **temporarily** (revert before commit), and the source must be touched or a
@@ -51,8 +51,9 @@ before they are relied on; until then keep following them.
   `IEA703I 806-4` (absence looks like a broken rig), and two activities needing
   different test sets (e.g. the NSFV Stage-0 round and the row-2 procedure)
   need a redeploy between them.
-- *(mbt 2)* **`make deploy` failed while an STC held `NSF.LINKLIB`, and the
-  next run silently tested the OLD binary.** mbt 3 replaces members instead of
+- *(mbt 2)* **`make deploy` failed while an STC held `NSF.LINKLIB` (the deploy
+  target then; now `NSF.DEV.LINKLIB`), and the next run silently tested the OLD
+  binary.** mbt 3 replaces members instead of
   deleting the library (its own help); that is a prediction until measured.
   Keep the order **`P NSFS`/`P NSFV` → `mbt deploy` → `S NSFS`**. Signature: a mid-chain `HTTP 500 … DELETE /restfiles/ds/NSF.LINKLIB`.
   Tell: *identical values across supposedly different builds* — re-run rather

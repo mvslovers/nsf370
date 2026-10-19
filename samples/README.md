@@ -47,7 +47,7 @@ full Phase-1 stack.
 
 ```sh
 make modules      # cross-compile + assemble on MVS
-make deploy       # upload into NSF.LINKLIB (NSFECHO + NSF)
+make deploy       # upload into NSF.DEV.LINKLIB (NSFECHO + NSF)
 ```
 
 The device is wired to the mvsdev CTCI pair (`0500/0501`,
@@ -142,7 +142,7 @@ raw bytes, and the program relinks unchanged in M5).
 
 ```sh
 make modules      # cross-compile + link (NSFTECHO carries the full stack)
-make deploy       # upload into NSF.LINKLIB
+make deploy       # upload into NSF.DEV.LINKLIB
 ```
 
 Submit `jcl/NSFTECHO.jcl`; `PARM` is the TCP port (default `7`). Drive it from

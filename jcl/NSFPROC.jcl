@@ -6,7 +6,8 @@
 //* Installation:
 //*   Copy to SYS2.PROCLIB(NSF)                 (cataloged proc; no // PEND)
 //*   Copy config member to SYS2.PARMLIB(NSFPRM0)
-//*   Deploy the load module:  mbt deploy        -> NSF.LINKLIB
+//*   Deploy the load module:  mbt deploy        -> NSF.DEV.LINKLIB
+//*     (first in STEPLIB; NSF.LINKLIB behind it is the SMP library)
 //*
 //* Starting:    /S NSF
 //*              /S NSF,M=NSFPRM1              (alternate config member)
@@ -18,7 +19,8 @@
 //* Stopping:    /P NSF   (or  /F NSF,STOP)
 //*
 //NSF      EXEC PGM=NSF,REGION=4M,TIME=1440
-//STEPLIB  DD  DISP=SHR,DSN=NSF.LINKLIB
+//STEPLIB  DD  DISP=SHR,DSN=NSF.DEV.LINKLIB
+//         DD  DISP=SHR,DSN=NSF.LINKLIB
 //SYSUDUMP DD  SYSOUT=*
 //SYSPRINT DD  SYSOUT=*
 //*  PROFILE.TCPIP config member, read at init via fopen("DD:PROFILE").
