@@ -62,7 +62,7 @@ read path would repeat the class §2.1 exists to fix.
 ## 3. The run
 
 Fresh NSFS (STC 1767) on a post-IPL stand — see
-`docs/measurements/post-ipl-2026-09-03.md`. A submitted first; B submitted
+`internals/measurements/post-ipl-2026-09-03.md`. A submitted first; B submitted
 **on A's console marker, not on a timestamp** (`TSTD1B: A HOLDING SOCKET
 (facade 0) -- B MAY RUN NOW`), which is #101 Stage 2's lesson: matching on
 timestamps there cost a run.

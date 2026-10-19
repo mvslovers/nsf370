@@ -623,7 +623,7 @@ identically, calls the identical function, and elides only the `memcpy`. It comp
 the STC `S0C4` (`IEF450I NSFS NSFS - ABEND S0C4 U0000`). The retained anchor reads
 `served = 6` (exactly the requests that completed), slot `req_state` **PENDING**, `xlen`
 **512** — so the length crossed, the store ran with `n > 0`, and the client is parked on a
-`reply_ecb` nobody will ever POST. Full record: `docs/measurements/80-chk/`.
+`reply_ecb` nobody will ever POST. Full record: `internals/measurements/80-chk/`.
 
 **Why this never showed until now.** CSA is key 0 and *not* fetch-protected, so a key-8
 **fetch** succeeds where a key-8 **store** faults (M5-2b0). Every cross-AS path exercised

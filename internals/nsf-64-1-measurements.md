@@ -151,7 +151,7 @@ have been the round's own §8.5 instance.
 | A, after another SOLO | 36 | **36** |
 
 `WAKEPOSTS == SERVED` exactly, at every reading. **Every figure in
-`docs/nsf-64-0*.md` was taken under the latching semantics**, so the ~8 500 /s
+`internals/nsf-64-0*.md` was taken under the latching semantics**, so the ~8 500 /s
 `WAKEPOSTS` rates recorded there are the latch tracking `EVTPASSES`, not wakes,
 and nothing after this change is comparable to them. Documented at the counter's
 declaration, where a reader making that comparison will look.

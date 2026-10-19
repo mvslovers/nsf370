@@ -19,12 +19,12 @@ lives in STC-private key-8 storage), ADR-0042 (the slot pool; §10's *one unit o
 which bounds what a wake can be lost *for*), spec §5.3 (the executive loop and its ECBLIST).
 
 **Evidence pins — every factual claim below cites one of these:**
-`docs/nsf-64-0-measurements.md` (the POST lands; the spin and its cost),
-`docs/nsf-64-0b-measurements.md` (a latched instance still stalls; the POST target read from
-storage), `docs/nsf-64-0c-measurements.md` (what a committed WAIT looks like on this stand;
-the executive is not waiting during a stall), `docs/nsf-64-0d-measurements.md` (the stall is a
-stuck MVS swap-out), `docs/nsf-64-1-measurements.md` and
-`docs/measurements/64-1/round-log.md` (the reset in three deployed states; the floor measured
+`internals/nsf-64-0-measurements.md` (the POST lands; the spin and its cost),
+`internals/nsf-64-0b-measurements.md` (a latched instance still stalls; the POST target read from
+storage), `internals/nsf-64-0c-measurements.md` (what a committed WAIT looks like on this stand;
+the executive is not waiting during a stall), `internals/nsf-64-0d-measurements.md` (the stall is a
+stuck MVS swap-out), `internals/nsf-64-1-measurements.md` and
+`internals/measurements/64-1/round-log.md` (the reset in three deployed states; the floor measured
 and the service measured on the same floorless instance).
 Source pins: `src/nsfsx.c` (`g_wake_ecb`, `nsfsx_drain` step 0, `nsfsx_pending`,
 `nsfsx_next_actionable`), `src/nsfevt.c` (`evt_mainloop`'s ECBLIST and WAIT gate),
@@ -54,7 +54,7 @@ Three things make writing it down now worth a document rather than a comment.
 **It is measured rather than assumed.** Every clause below has a number behind it, taken on the
 live stand, most of them in a controlled pair.
 
-**A consumer already needs it.** `docs/nsf370-provider-contract.md` §4 records that a cross-AS
+**A consumer already needs it.** `internals/nsf370-provider-contract.md` §4 records that a cross-AS
 `selectex()` with an ECB list is *feasible* for NSF where it is meaningless for dyn75 — and it
 is feasible for exactly the reasons this ADR states: a cross-AS branch-entry POST reaching an
 ECB in the target's private key-8 storage, guarded on the reply side. That design (open
@@ -84,10 +84,10 @@ puts it in the executive's ECBLIST.
 read the anchor from storage during a live round: the CSA fallback ECB at `anchor+X'10'` read
 **0** throughout, while `server_ecb_ptr` at `+X'24'` read `000BCF94`, identical to `NSF041I`'s
 own `ECB=`, with the target ASCB valid at ASID `X'000B'`
-(`docs/nsf-64-0b-measurements.md` §3, fact 2). And independently, without reading the anchor at
+(`internals/nsf-64-0b-measurements.md` §3, fact 2). And independently, without reading the anchor at
 all: `NSF812I` reports the **private word itself**, and it read `40000000`, which a POST
 completion code can only reach if `DOPOST`'s `BNZ PSTECBX` branch was taken
-(`docs/nsf-64-0-measurements.md` §4.2). **The fallback did not run.**
+(`internals/nsf-64-0-measurements.md` §4.2). **The fallback did not run.**
 
 It is private and key 8 because the executive WAITs from **problem state, key 8**: a key-0 CSA
 ECB in that ECBLIST is a documented abend (`S047` / `X'201'`), which is ADR-0041's addendum and
@@ -137,7 +137,7 @@ request while one is in flight is declined by design. So the guarantee this ADR 
 The deferred case is real, is deliberate, and is named in **Named gaps** (b).
 
 **The reset is measured in three deployed states, with one assertion moving**
-(`docs/nsf-64-1-measurements.md` §3): absent → `POSTED=Y`, 7 482 passes/s, 25.9–30.5 % of a host
+(`internals/nsf-64-1-measurements.md` §3): absent → `POSTED=Y`, 7 482 passes/s, 25.9–30.5 % of a host
 core; present → `POSTED=N`, 9.98/s, 0.7–1.6 %; commented out, rebuilt and redeployed from source
 verified **identical to `main` at instruction level** → `POSTED=Y`, 8 532/s, 26.0–26.9 %;
 restored → `POSTED=N`, 9.99/s, 0.5–0.7 %. Service was unaffected in every state (8/8 inside one
@@ -170,7 +170,7 @@ It is a measurement, not a preference. On a post-TCP-workload instance with the 
 drained — where ADR-0034's *queue empty ⟺ STIMER disarmed* has taken the startup heartbeat away
 for good, see *What a reader will otherwise measure* below — `EVTPASSES` moved
 **5 854 → 5 855 across 259 s**: one pass in 259 seconds, 0.0039/s, host CPU 0.2–0.7 % user
-(`docs/nsf-64-1-measurements.md` §4). A second, longer window
+(`internals/nsf-64-1-measurements.md` §4). A second, longer window
 on the same build after 164 570 requests read **320 733 → 320 736 across 972 s** — three passes
 (§6 of the same document). And **paired with service deliberately, because `EVTPASSES ≈ 0` read
 alone looks like a dead executive**: on that same floorless instance eight cross-address-space
@@ -214,7 +214,7 @@ the same ECBLIST, and only one of them is what a client POSTs.
 ## Consequences
 
 1. **A consumer may build on §1–§4.** A cross-AS `selectex()` with an ECB list
-   (`docs/nsf370-provider-contract.md` §4 and open question 6) can rely on: a cross-AS POST
+   (`internals/nsf370-provider-contract.md` §4 and open question 6) can rely on: a cross-AS POST
    reaching private key-8 storage in the target; the executive blocking indefinitely between
    wakes; and the reply direction being guarded by ADR-0040. It may **not** rely on anything in
    **Named gaps**.
@@ -229,25 +229,25 @@ the same ECBLIST, and only one of them is what a client POSTs.
 3. **`wakeposts` counts wake events from 64-1 onward, and is a lower bound on POSTs.** Two posts
    arriving between one observation and the next coalesce, exactly as they do for any ECB. At
    small counts it reads exactly: 8/8, 28/28, 36/36 against `SERVED`
-   (`docs/nsf-64-1-measurements.md` §3). Under load it falls **below** it —
+   (`internals/nsf-64-1-measurements.md` §3). Under load it falls **below** it —
    **55 384 against `SERVED` 55 475**, 91 fewer, measured mid-campaign
-   (`docs/measurements/64-1/round-log.md`, "Gate 2 campaign"), and 164 257 against 164 570 by
+   (`internals/measurements/64-1/round-log.md`, "Gate 2 campaign"), and 164 257 against 164 570 by
    its end (CLAUDE.md §7, M5 / 64-1). Reading it as a tally over-reads it.
 
-4. **Every `WAKEPOSTS` figure in `docs/nsf-64-0*.md`, `-64-0b-` and `-64-0c-` was taken under
+4. **Every `WAKEPOSTS` figure in `internals/nsf-64-0*.md`, `-64-0b-` and `-64-0c-` was taken under
    different semantics and is not comparable.** Before the reset the counter latched and
    thereafter tracked `EVTPASSES` at a constant offset — measured at exactly 3 361 across four
-   readings of one instance (`docs/nsf-64-0-measurements.md` §2). The `~8 500/s` rates recorded
+   readings of one instance (`internals/nsf-64-0-measurements.md` §2). The `~8 500/s` rates recorded
    there are the latch, not wakes. The note lives at the counter's declaration in `src/nsfsx.c`,
    which is where such a reader looks; it is repeated here because a contract document is the
    other place.
 
 5. **The wake path costs about two passes per request, not a spin.** Measured across the 64-1
    campaign: `EVTPASSES` 4 204 → 320 733 against `SERVED` 69 → 164 570 — **≈ 1.95 passes per
-   request** (`docs/nsf-64-1-measurements.md` §6). Against the pre-reset instance's
+   request** (`internals/nsf-64-1-measurements.md` §6). Against the pre-reset instance's
    ~8 500 passes/s and 26 % of a host core, permanently, on every instance that had ever
    served one request
-   (`docs/nsf-64-0-measurements.md` §2; ADR-0022's annotation).
+   (`internals/nsf-64-0-measurements.md` §2; ADR-0022's annotation).
 
 6. **64-2 is closed as unnecessary, not deferred.** The step reserved on the plan — *"the floor,
    if 64-0/64-1 show one is still needed"* — is retired by §4: the wake works with no floor at
@@ -261,8 +261,8 @@ the same ECBLIST, and only one of them is what a client POSTs.
 
 - **Issue #64 — the stall.** It is not the wake: during a stall the executive is not waiting
   at all (an ordinary PRB, `WCF=0`, `RBXWAIT` and `RBECBWT` clear —
-  `docs/nsf-64-0c-measurements.md` §6), and its address space is stuck part-way through an MVS
-  swap-out, in fields NSF does not write and cannot see (`docs/nsf-64-0d-measurements.md` §1).
+  `internals/nsf-64-0c-measurements.md` §6), and its address space is stuck part-way through an MVS
+  swap-out, in fields NSF does not write and cannot see (`internals/nsf-64-0d-measurements.md` §1).
   That is the whole of what this ADR says about it. The mechanism lives in those two records and
   in the issue itself — *"NSFS address space stalls mid-swap-out: tasks non-dispatchable while
   `OUCBQFL = 80`"* — which is open.
@@ -295,7 +295,7 @@ post-workload idle §4 measures. That re-trades the "an idle stack takes zero ti
 property ADR-0011 and spec §6.3 state, on an address space whose design point is to be idle
 most of the time.
 
-And it would **re-destroy the stall detector**. `docs/nsf-64-1-measurements.md` §2 records that
+And it would **re-destroy the stall detector**. `internals/nsf-64-1-measurements.md` §2 records that
 the reset already destroyed one detector: with the spin gone, a *correctly idle* executive reads
 `ASCBEJST` bit-identical, exactly as a stalled one does, and the criterion had to be rebuilt as a
 conjunction (EJST flat **and** a slot `PENDING` **and** `served` frozen). A floor puts a second
@@ -322,7 +322,7 @@ a documented abend. Not re-opened.
 ## What a reader will otherwise measure — the floor that is an accident of startup
 
 A fresh NSFS instance carries a **~10 Hz wake**, measured repeatedly and consistently: 9.95/s
-(`docs/nsf-64-0-measurements.md` §2), 9.97/s and 9.99/s (`-64-0b-` §5), 9.98/s and 9.99/s
+(`internals/nsf-64-0-measurements.md` §2), 9.97/s and 9.99/s (`-64-0b-` §5), 9.98/s and 9.99/s
 (`-64-1-` §3). It is not part of this contract, and it is not designed as a floor.
 
 It is `src/nsfsmain.c`'s `nsftmr_plat_arm(1u)` — one arm, for one tick, for operator liveness
@@ -348,7 +348,7 @@ governs the idle rate is in the assembler, and the fact that decides what `WAIT`
 macro expansion.** `libc370/src/clib/@@ecbwl.c` is `WAIT ECBLIST=(2)` with no count operand —
 count 1 over the whole list — which is why 64-0c's blocking reference reads `RBECBWT` set
 (*wait for fewer events than the number waiting*) alongside `RBXWAIT`
-(`docs/nsf-64-0c-measurements.md` §5). Neither fact is discoverable in `nsfsx.c`, and both were
+(`internals/nsf-64-0c-measurements.md` §5). Neither fact is discoverable in `nsfsx.c`, and both were
 needed to interpret a reading.
 
 ---
@@ -357,7 +357,7 @@ needed to interpret a reading.
 
 **1. The RB-address remnant. Test the POSTED bit, never a non-zero test.** A satisfied multi-ECB
 WAIT leaves `X'80……'` in the ECBs that were **not** posted. 64-0 measured `009DCD10` in an
-un-posted `g_wake_ecb` on two fresh instances (`docs/nsf-64-0-measurements.md` §2): a non-zero
+un-posted `g_wake_ecb` on two fresh instances (`internals/nsf-64-0-measurements.md` §2): a non-zero
 test would have reported POSTED for an ECB that had never been posted, and confirmed the exact
 opposite of the truth, in the one place where it would have been believed. CLAUDE.md §4 states
 the rule; this is the sighting that earned it in the wake path.
@@ -371,7 +371,7 @@ away from anything a reader of `src/nsfsx.c` would open.
 **4. A `/.dm` read of a word in NSFS's private storage returns HTTPD's bytes.** The httpd display
 modules run in HTTPD's address space and LSQA is aliased at the same virtual address in every
 address space, so `g_wake_ecb` at virtual `0BCF94` reads as something meaningless and completely
-healthy-looking (`docs/nsf-64-0c-measurements.md` §2 — it read `ABCA0A9A` on one pass). The wake
+healthy-looking (`internals/nsf-64-0c-measurements.md` §2 — it read `ABCA0A9A` on one pass). The wake
 ECB is **private storage by design (§1)**, so this trap is permanent for anyone instrumenting
 this contract from outside the STC. The path that works is `ASCBSTOR` → the DAT-translated real
 address, read through Hercules `r`; or `NSF812I`, which the STC renders itself.
@@ -384,7 +384,7 @@ address, read through Hercules `r`; or `NSF812I`, which the STC renders itself.
 unreachable by construction, with one narrow window that is reasoned rather than measured.**
 What is proven: the fallback arm **is** exercised at scale, by the probe STC — ADR-0041's own
 correction records that all of the Stage-0 assertions (**484 PASS**, `TSTSVC` / `TSTMVCK` /
-`TSTUBUF` / `TSTDEATH` / `TSTXFW`, `docs/nsf-64-1-measurements.md` §8) take it, because `nsfv.c`
+`TSTUBUF` / `TSTDEATH` / `TSTXFW`, `internals/nsf-64-1-measurements.md` §8) take it, because `nsfv.c`
 publishes no `server_ecb_ptr`; and since that loop has no floor of its own, only that POST can
 have woken it. What is **not** proven, and is reasoned: the narrow shutdown window in which a
 client is already inside the routine when `nsfsx_stop` nulls the pointer, loads `ANCSEPTR` as
@@ -446,7 +446,7 @@ contention measured from both ends — `collisions` 0 → 150 against a SOLO neg
 `exhausted` moving by exactly 2 761 + 154 = 2 915 (CLAUDE.md §7, M5-2b4). Extended by the 64-1
 campaign to **164 570 requests across 45 rounds with no stall and no lost service** — 45 × B
 CC 0000 and 42 × A CC 0000, the three CC 0001s being a gate-internal timing assertion, not an
-NSF defect (`docs/nsf-64-1-measurements.md` §6). **Not**
+NSF defect (`internals/nsf-64-1-measurements.md` §6). **Not**
 proved: that no wake was ever lost — `wakeposts` is a lower bound (Consequence 3) and cannot
 distinguish a coalesced POST from a dropped one; what stands in for it is that every one of those
 164 570 requests was served at ≈ 1.95 passes each. Also not proved: hardware arbitration of a
@@ -456,8 +456,8 @@ concurrent *service*, which is out of scope by **Named gaps** (b).
 
 **(e) The executive was blocked in the WAIT during the floorless window — assembled from two
 halves, one read and one reasoned.** Read: `EVTPASSES` moved once in 259 s and host CPU sat at
-0.2–0.7 % user with 99.1–99.8 % idle (`docs/nsf-64-1-measurements.md` §4), and the only WAIT in
+0.2–0.7 % user with 99.1–99.8 % idle (`internals/nsf-64-1-measurements.md` §4), and the only WAIT in
 the loop is `nsfevt_plat_wait` → `@@ECBWL`. Reasoned: **no RB was read in that window.** The
 `WCF=1` / `RBXWAIT` / `RBECBWT` signature that shows what a committed WAIT looks like on this
 stand is 64-0c's REF1, taken on a **fresh** instance in a different round
-(`docs/nsf-64-0c-measurements.md` §5). The two halves agree, and neither is the other.
+(`internals/nsf-64-0c-measurements.md` §5). The two halves agree, and neither is the other.

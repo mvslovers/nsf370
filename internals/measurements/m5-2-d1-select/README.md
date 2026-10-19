@@ -234,7 +234,7 @@ withdrawn**. What changes is what the evidence in this directory can be read as
 proving.
 
 It arrived from the other end. The `role_a` round
-(`docs/measurements/m5-d1b-rolea/`) ran on a stand with **no `tun0`**, noticed
+(`internals/measurements/m5-d1b-rolea/`) ran on a stand with **no `tun0`**, noticed
 that two of B's assertions had passed vacuously, and then — checking the poll
 path against the same standard — found a third. That standard applies here too,
 and this round did not apply it.
@@ -331,7 +331,7 @@ round that invented it is a platitude. This one reached backwards.
 ### POINTER 2026-09-03 -- the re-run is tracked in one place
 
 The "no re-run" above is not a decision to drop it. Arms 1 and 2 are listed in
-**`docs/measurements/awaiting-ctci-pair.md`** as item 1, with the other property
+**`internals/measurements/awaiting-ctci-pair.md`** as item 1, with the other property
 in the tree whose only missing precondition is a working CTCI pair. Nothing is
 restated there that is not already above; the point is that the two do not live
 as separate footnotes in separate files.
@@ -345,7 +345,7 @@ itself, which stays exactly as written.** It was right, and it is the reason
 this round happened.
 
 Arms 1 and 2 have been re-run with a stimulus **in evidence**:
-**`docs/measurements/m5-2d1-stimulus/`**, A **CC 0000 (9/9)** and B **CC 0000
+**`internals/measurements/m5-2d1-stimulus/`**, A **CC 0000 (9/9)** and B **CC 0000
 (13/13)**.
 
 **What was missing is now present, and from two independent directions.** A

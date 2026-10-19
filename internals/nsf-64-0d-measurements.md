@@ -429,5 +429,5 @@ minutes. Neither is shown to provoke the swap-out.
 (assemble-only, `PGM=IFOX00`, `NODECK,NOLOAD`, nothing linked, nothing written), with
 different `DC` lines and macro calls: `CBOFF5` calls `IHAASCB`/`IRAOUCB`/`IHAOUXB`,
 `CBOFF6` calls `CVT DSECT=YES`/`IHAASVT`/`IHAASCB`. Both are preserved under
-`docs/measurements/64-0d/`. **Keep every SYSIN card inside column 71** — the rule that
+`internals/measurements/64-0d/`. **Keep every SYSIN card inside column 71** — the rule that
 bit 64-0c in a diagnostic job, and that was checked mechanically before submission here.

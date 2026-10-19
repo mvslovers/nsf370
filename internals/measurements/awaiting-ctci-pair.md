@@ -15,7 +15,7 @@ decision, an unfixed defect or a missing instrument.
 
 **This is NOT a list of what is broken about the emulator.** The reason the
 pair is down is a finding about the driving system and lives separately, in
-`docs/measurements/ctci-tun-eintr/` -- keeping them apart is what stops "the
+`internals/measurements/ctci-tun-eintr/` -- keeping them apart is what stops "the
 wire is broken" being read as an excuse for either. Fixing the wire does not
 discharge anything below; it only makes the runs possible.
 
@@ -38,7 +38,7 @@ criterion above is worth having when the next one arrives.
 
 ### 1. d1 §2.3 -- the SELECT arms' stimulus -- **CLOSED 2026-09-15**
 
-**Run and green:** `docs/measurements/m5-2d1-stimulus/`. A **CC 0000 (9/9)**,
+**Run and green:** `internals/measurements/m5-2d1-stimulus/`. A **CC 0000 (9/9)**,
 B **CC 0000 (13/13)**. A's own SELECT reports the **same socket READY** across
 both of B's arms -- `READY=0` for eight polls, `READY=1` from the second the
 host connected, `READY=1` at the final poll -- so `foreign.ready=0` is a refusal
@@ -48,7 +48,7 @@ graduations **inside** the 20 s park. No `role_b` assertion changed.
 
 *The original entry follows, unedited, because it states what was wrong.*
 
-`docs/measurements/m5-2-d1-select/README.md`, annotation 2026-09-03.
+`internals/measurements/m5-2-d1-select/README.md`, annotation 2026-09-03.
 
 Arms 1 and 2 (`TSTD1B` roles A + B) have **no confirmed stimulus** on record:
 nothing shows the host connect was made, and nothing shows A ever became
@@ -78,7 +78,7 @@ hope, so what remains is scheduling the d1 round, not waiting for anything.
 
 ### 2. Job A §1.3 -- a protocol op reading `g_land` -- **CLOSED 2026-09-15**
 
-**Run and green:** `docs/measurements/m5-2e-joba-wire/`.
+**Run and green:** `internals/measurements/m5-2e-joba-wire/`.
 
 The gap was that Job A's bulk verb is a non-blocking `RECVFROM` on an empty
 rxq, answered `EWOULDBLOCK` before `udp_recv` touches `ubuf`, so that round

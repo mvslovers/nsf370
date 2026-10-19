@@ -25,7 +25,7 @@ This is the short form that `CLAUDE.md` §5 carried until 2026-10-19, updated fo
 mbt 3. The full record (written for mbt 2) follows it.
 
 Short form; the signatures, examples and incidents are in
-**`docs/mvsdev-runbook.md`**. Target: **MVSCE on Hercules on `mvsdev`**
+**`internals/mvsdev-runbook.md`**. Target: **MVSCE on Hercules on `mvsdev`**
 (`mvsdev.lan`), mbt target `dev1`. Credentials live in the keychain and the
 zowe `mvsdev` profile — never hardcode them.
 
@@ -120,13 +120,13 @@ never hardcode them.
   check of a deploy or a restore then reads the PREVIOUS download, and with the
   output discarded nothing says so. Met in the #83 round: a correct deploy read as
   the old module. Download every verification copy into a new file or a fresh
-  directory, and keep the command's output (`docs/measurements/m5-83/round.md`).
+  directory, and keep the command's output (`internals/measurements/m5-83/round.md`).
 - **`make test-mvs ARGS="--only …"` REPLACES the whole TESTLIB** — it is not additive. Two
   consequences that cost time: a later `S <something>` for a module that round did not name
   draws `IEA703I 806-4 … MODULE ACCESSED <name>` (the rig is *absent*, and absence looks like
   a broken rig), and **two activities needing different test sets cannot run back to back**.
   The NSFV Stage-0 round and the row-2 client-death procedure
-  (`docs/procedure-row2-client-death.md`) are exactly that pair: a **redeploy sits between
+  (`internals/procedure-row2-client-death.md`) are exactly that pair: a **redeploy sits between
   them**, and a milestone gate wanting both must schedule that step.
 - **`make deploy` fails while an STC holds `NSF.LINKLIB` — and the run afterwards
   silently tests the OLD binary.** Order is **`P NSFS` (or `P NSFV`) → `make deploy`

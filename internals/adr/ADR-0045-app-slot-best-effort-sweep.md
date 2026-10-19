@@ -24,10 +24,10 @@ sweep stands down while a request is in service), ADR-0043 (the cross-AS wake co
 the rate limit is not a timer), ADR-0034 (queue empty ⟺ STIMER disarmed — why it is not
 ticks), spec §5.3, §10.5.
 
-**Evidence pins:** `docs/measurements/40-chk/` (a batch client's guard verdict is `LIVE` and
-the POST proceeds), `docs/measurements/40-ident/` (an STC identity dies within a second and is
+**Evidence pins:** `internals/measurements/40-chk/` (a batch client's guard verdict is `LIVE` and
+the POST proceeds), `internals/measurements/40-ident/` (an STC identity dies within a second and is
 then *resurrected* by ASID reuse; `(ASCB, ASID)` is an address, not an identity),
-`docs/measurements/m5-2c1/` (stage a: the recorded ASCB is the **initiator's**, and three
+`internals/measurements/m5-2c1/` (stage a: the recorded ASCB is the **initiator's**, and three
 different jobs reported the same one). Issue #88 carries the position and the study order.
 Source pins: `src/nsfreq.c` (`nsfreq_app_sweep`, `do_initapi`), `src/nsfsx.c`
 (`nsfsx_drain` step 0b, `NSFSX_SWEEP_SECS`, `NSF817I`), `src/nsftime_plat.c` +

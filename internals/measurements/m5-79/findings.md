@@ -214,7 +214,7 @@ five occurrences**, so it is deterministic, not a corruption artefact.
    reached by `F NSFS,STATS`. The STC came up clean, served the operator, and
    then produced the identical `A0A`. Lifecycle position excluded.
 3. **`main` already did this on a neighbouring path.** 40-CHK's own record
-   (`docs/measurements/40-chk/findings.md:128`) has `main`'s refuse-to-start
+   (`internals/measurements/40-chk/findings.md:128`) has `main`'s refuse-to-start
    path — `NSF009E` then `nsf_shutdown()` then `return 8` — abending
    `IEF450I NSFS NSFS - ABEND SA0A U0000`. This round reproduced that line
    byte-identically in arm C run 2. So "`nsf_shutdown()` then terminate" was

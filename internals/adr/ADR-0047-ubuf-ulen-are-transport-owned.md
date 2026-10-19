@@ -1,7 +1,7 @@
 # ADR-0047 — `ubuf` and `ulen` are transport-owned
 
 **Status:** Accepted (M5-2, issue #101) — merged 2026-09-02; the merge is the
-countersign (`docs/adr/README.md` convention 1)
+countersign (`internals/adr/README.md` convention 1)
 **Date:** 2026-09-02
 **Supersedes / amends:** supersedes ADR-0035's `RQ_SELECT` **encoding** of
 `ulen` (ADR-0035 as a whole stays Accepted); annotates ADR-0041 §2, whose
@@ -242,7 +242,7 @@ and what this paragraph asserts is what that control demonstrates.
   Stage 1** and gets its proof in the live round.
 - **The named next candidate is `selectex()`** — an ECB list is an array of
   pointers crossing through `ubuf`, the identical fork, and it would arrive with
-  the same temptation to count elements. Noted at `docs/nsf370-provider-contract.md`
+  the same temptation to count elements. Noted at `internals/nsf370-provider-contract.md`
   §4 and its open question 6. (The kickoff also named a `docs/socket-provider.md`;
   no such file exists in the tree, so the note lives only in the one that does.)
 
@@ -270,7 +270,7 @@ and what this paragraph asserts is what that control demonstrates.
   `g_priv.ecb` never posted, `g_busy` cleared only under `POSTED`), and a
   deduction is not a measurement however many hops hold. It is re-cast as the
   **written prediction for Stage 2 arm 3**, recorded in
-  `docs/measurements/m5-2-101/` before that run. The wedge is a consequence and
+  `internals/measurements/m5-2-101/` before that run. The wedge is a consequence and
   goes away with the cause; the serial-service property it exposes is
   ADR-0042 §10's, and measuring it is (e)'s job.
 
@@ -299,4 +299,4 @@ and what this paragraph asserts is what that control demonstrates.
 
   Also recorded rather than promoted, and for the same reason. The first rule is
   about the claim; this one is about its guard. Both live in
-  `docs/measurements/m5-2-d1-select/`.
+  `internals/measurements/m5-2-d1-select/`.

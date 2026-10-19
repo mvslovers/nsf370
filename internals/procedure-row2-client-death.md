@@ -8,7 +8,7 @@ named is read as a test a year later.
 **What it proves.** A **real** client address space dying with a request genuinely
 outstanding is classified **DEAD** by the ADR-0040 guard, is **never POSTed into**, and has
 its request slot and in-flight count reclaimed. It ran **6 of 6** in the M5-2c2 mapping
-round (`docs/measurements/m5-2c2/`).
+round (`internals/measurements/m5-2c2/`).
 
 **Why it is not a test.** Row 2 needs an address space that really ends. A batch client runs
 in an **initiator**, which does not end when the job does — its recorded ASCB stays LIVE
@@ -28,8 +28,8 @@ full map. The classifier's arithmetic for every row is pinned in `test/tstreqx.c
 |---|---|
 | client program | `test/mvs/tstappd.c` → module `TSTAPPD` in TESTLIB |
 | STC procedure | `jcl/TSTAPPDS.jcl` → copy to `SYS2.PROCLIB(TSTAPPDS)` |
-| optional driver | `docs/measurements/m5-2c2/park.sh` (automates the steps below) |
-| optional ASVT reader | `docs/measurements/m5-2c2/rowwatch.py` (ground truth, read-only) |
+| optional driver | `internals/measurements/m5-2c2/park.sh` (automates the steps below) |
+| optional ASVT reader | `internals/measurements/m5-2c2/rowwatch.py` (ground truth, read-only) |
 
 ## Prerequisites
 
@@ -115,7 +115,7 @@ The address space is now gone. Its request is still published, its slot still he
 in-flight count still taken — exactly what a client that died mid-request leaves behind.
 
 *(Optional ground-truth check, read-only: `python3 rowwatch.py <asid-dec> <ascb-hex> 5 1.0`
-from `docs/measurements/m5-2c2/` should report `DEAD-row2-avail` — the ASVT entry's AVAIL
+from `internals/measurements/m5-2c2/` should report `DEAD-row2-avail` — the ASVT entry's AVAIL
 bit set. This reads the same field the guard reads, from outside, and is the independent
 witness that the row really is row 2 and not row 3.)*
 

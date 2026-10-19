@@ -3,7 +3,7 @@
 Written 2026-09-15, after the host reboot and before `S NSFS`. **Not edited
 after the first run.** This is the third time in this project that a written
 prediction has been made to earn its keep, and the previous one was **falsified
-this morning** (`docs/measurements/ctci-tun-eintr/`), which is the argument for
+this morning** (`internals/measurements/ctci-tun-eintr/`), which is the argument for
 writing them rather than the argument against.
 
 ---

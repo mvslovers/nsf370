@@ -406,8 +406,8 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
 
 - **2026-08-28 — A CORRECTION OF THE READING, NOT A DEFECT IN THE GUARD: THIS CHECK GUARDS
   THE POST AGAINST A STALE POINTER AND WAS NEVER A DEAD-CLIENT DETECTOR.**
-  Measured live (40-CHK, `docs/measurements/40-chk/findings.md`; M5-2c1 stage a,
-  `docs/measurements/m5-2c1/stage-a.md`). **No change to the guard, the classifier or the
+  Measured live (40-CHK, `internals/measurements/40-chk/findings.md`; M5-2c1 stage a,
+  `internals/measurements/m5-2c1/stage-a.md`). **No change to the guard, the classifier or the
   POST path** — this entry records what the check does and does not cover, so that what to
   do about it is decided on a reading rather than on an expectation.
 
@@ -526,7 +526,7 @@ Replace that ASCB with a dummy value and the race turns into a false LIVE.
 
 - **2026-08-28 — A SECOND ANNOTATION, AND IT IS ABOUT THE *OTHER* CLIENT CLASS: A `DEAD`
   VERDICT IS TRANSIENT. THE ASID-REUSE ROW CANNOT CATCH ITS OWN WORST CASE.**
-  Measured live (40-IDENT, `docs/measurements/40-ident/findings.md` §4.2–§4.4).
+  Measured live (40-IDENT, `internals/measurements/40-ident/findings.md` §4.2–§4.4).
   **No change to the guard, the classifier or the POST path** — like the annotation above,
   this records what the check covers, so that what to do about it is decided on a reading.
   It is filed here rather than left in a measurement log because the preceding annotation
@@ -657,7 +657,7 @@ not named is read as a test a year later.
 | row | condition | coverage, and its KIND |
 |---|---|---|
 | **1** LIVE | ASID assigned, ASCB matches | **LIVE, a named probe** — `TSTDEATH` on NSFV, still an isolated Stage-0 probe (no CTCI, no sockets), reduced to this one row. **+ host-pinned.** |
-| **2** DEAD, avail bit | ASVT entry `AVAIL` | **An operator-driven PROCEDURE at milestone gates — NOT a test, NOT in the matrix**: `docs/procedure-row2-client-death.md`. **+ host-pinned.** |
+| **2** DEAD, avail bit | ASVT entry `AVAIL` | **An operator-driven PROCEDURE at milestone gates — NOT a test, NOT in the matrix**: `internals/procedure-row2-client-death.md`. **+ host-pinned.** |
 | **3** DEAD, ASCB reuse | ASID assigned, ASCB differs | **Host-pinned ONLY — not live-producible.** 0 of 9 reuses produced it; every reuse restored the *identical* `(ASCB, ASID)` pair, so the guard reads **LIVE**. |
 | **4** UNKNOWN | four distinct branches | **Host-pinned ONLY — none live-producible by a real client.** `ORPHAN` drove exactly one of the four (`req_ascb == 0`); the others never had live coverage. |
 

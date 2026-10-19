@@ -24,7 +24,7 @@
  *   row 1  LIVE                 LIVE, this named probe, + host-pinned
  *   row 2  DEAD (avail bit)     an operator-driven PROCEDURE at milestone
  *                               gates -- NOT a test, NOT in the matrix
- *                               (docs/procedure-row2-client-death.md)
+ *                               (internals/procedure-row2-client-death.md)
  *                               + host-pinned
  *   row 3  DEAD (ASCB reuse)    host-pinned ONLY -- not live-producible:
  *                               0 of 9 reuses produced it, because the ASCB

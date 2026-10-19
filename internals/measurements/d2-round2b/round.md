@@ -93,7 +93,7 @@ fresh) instead of on the twice-adopted A. **This deviates from Q4.3.**
 
 The predictions said 18/18 and 23/23. That was **a stale figure in the
 prediction**: the wire arm (PR #119) moved both totals to 19 and 24
-(`docs/milestone-history.md`, the Job A wire-arm entry). The result equals the
+(`internals/milestone-history.md`, the Job A wire-arm entry). The result equals the
 last recorded figure.
 
 ### Q6: adopting an anchor nobody repaired

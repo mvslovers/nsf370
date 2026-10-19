@@ -198,7 +198,7 @@ double-checks (ADR-0022), so it owns the reset-before-WAIT discipline."*
 The first cross-address-space POST latched the POSTED bit for the life of the
 STC, and a posted ECB in the ECBLIST makes `WAIT` return immediately — so
 `evt_mainloop` could never block again. One controlled pair, one instance, the
-first request as the only variable (`docs/nsf-64-0-measurements.md` §2):
+first request as the only variable (`internals/nsf-64-0-measurements.md` §2):
 
 | state | POSTED | pass rate | host CPU (user) |
 |---|---|---|---|
@@ -244,7 +244,7 @@ nothing cleared the ECB, so once the first POST landed it tracked `evtpasses` at
 a constant offset (measured at exactly 3 361 across four readings of one
 instance). From this step it counts **wake events** — each observation consumes
 the bit. That is the more useful counter, but every `WAKEPOSTS` figure in
-`docs/nsf-64-0*.md`, `-64-0b-`, `-64-0c-` was taken under the old semantics, so
+`internals/nsf-64-0*.md`, `-64-0b-`, `-64-0c-` was taken under the old semantics, so
 a reader comparing across the change is comparing two different things. It is
 still not a tally of POSTs: two posts between one observation and the next
 coalesce into one, as they do for any ECB. The note lives at the declaration in
@@ -255,9 +255,9 @@ coalesce into one, as they do for any ECB. The note lives at the declaration in
 **It does not claim issue #64 is fixed, and #64 is not closed by it.** Four
 measurement rounds establish that the stall is not in the WAIT/POST path at all:
 the executive is not waiting during a stall (`WCF=0`, `RBXWAIT` and `RBECBWT`
-clear, an ordinary PRB — `docs/nsf-64-0c-measurements.md` §6), and its address
+clear, an ordinary PRB — `internals/nsf-64-0c-measurements.md` §6), and its address
 space is stuck part-way through an MVS swap-out (`OUCBQFL = X'80'`, `OUCBGOO`
-— `docs/nsf-64-0d-measurements.md` §1), which is a state NSF does not write and
+— `internals/nsf-64-0d-measurements.md` §1), which is a state NSF does not write and
 cannot see. The **suspension is outside nsf370**.
 
 What the reset *is*, besides an overdue correction, is the one **single-variable
@@ -280,7 +280,7 @@ whether one is needed is deliberately left open."* That sentence is the one **AD
 with the measurement that was not available when it was written: on a post-TCP-workload instance
 the executive makes **one pass in 259 s** and still serves eight cross-address-space requests
 inside a single console second, so no floor is needed for the healthy case
-(`docs/nsf-64-1-measurements.md` §4). ADR-0043 records the contract in full — who POSTs, what
+(`internals/nsf-64-1-measurements.md` §4). ADR-0043 records the contract in full — who POSTs, what
 resets, that the POST wakes a committed WAIT, and the gaps it does **not** guarantee — and
 retires step 64-2 as unnecessary rather than deferred.
 

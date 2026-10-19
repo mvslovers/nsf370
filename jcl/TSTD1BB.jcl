@@ -14,7 +14,7 @@
 //* 20 s park, so the arm-2 re-scan path is driven by a real readiness EDGE.
 //* Without that driver both SELECT arms are unreadable -- they cannot tell
 //* "refused" from "resolved and idle", which is exactly what the 2026-09-03
-//* annotation on docs/measurements/m5-2-d1-select/ says.
+//* annotation on internals/measurements/m5-2-d1-select/ says.
 //*
 //* B sweeps the WHOLE internal descriptor space (gen<<16)|idx straight into
 //* the request, bypassing its own facade table -- the facade cannot NAME a

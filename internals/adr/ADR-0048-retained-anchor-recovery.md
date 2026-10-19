@@ -1,15 +1,15 @@
 # ADR-0048 — Recovering the CSA a parked client's failure strands
 
 **Status:** Accepted (M5-2, d2) — merged 2026-09-17; the merge is the
-countersign (`docs/adr/README.md` convention 1)
+countersign (`internals/adr/README.md` convention 1)
 **Date:** 2026-09-17
 **Decisions locked by:** Mike, 2026-09-04
 **Builds on:** ADR-0039 (the CSA anchor), ADR-0040 (the client-death guard),
 ADR-0042 (the slot pool), ADR-0043 (the wake contract)
 **Reverses, deliberately and in one named respect:** `src/nsfv.c`'s recorded
 preference for the SVC slot over the SSCT — see §5.3
-**Evidence:** `docs/measurements/40-chk/`, `docs/measurements/d2-anchor-question/`,
-`docs/measurements/d2-rendezvous/`
+**Evidence:** `internals/measurements/40-chk/`, `internals/measurements/d2-anchor-question/`,
+`internals/measurements/d2-rendezvous/`
 
 ---
 
@@ -259,7 +259,7 @@ green would not say which of the two had been demonstrated.
 **Follows from the decision, and is new surface:** NSF acquires a **system-wide
 named registration point** and a **concept of instance identity** it did not
 have, and `nsfsx_start` gains a path it does not have today. That is why
-`docs/measurements/m5-2d0/survey.md` §4.4's sizing no longer describes d2 — see
+`internals/measurements/m5-2d0/survey.md` §4.4's sizing no longer describes d2 — see
 its appended annotation.
 
 ## Annotation (2026-10-14): the naming rule, decided after round 1
@@ -269,7 +269,7 @@ Round 1 measured the rule §6 left open, and it failed the obvious form.
 the jobname is four characters or fewer, and that is the production case (`NSFS`).
 A chained SSCT under a procedure name makes `S <name>` fail `IEF612I PROCEDURE
 NOT FOUND`, because MVS resolves the operand as a subsystem first
-(`docs/measurements/d2-round1/findings.md`). So after any retain-path stop the
+(`internals/measurements/d2-round1/findings.md`). So after any retain-path stop the
 STC could not be started again. This was ADR-0036's "`S NSFP` fails `IEF612I`",
 which §2 quoted and the first form of §6 did not carry through.
 
@@ -296,11 +296,11 @@ check would either lose a character (two jobnames differing only in character
 
 **Not established by this annotation:** that MVS 3.8j accepts a lower-case
 `SSCTSNAM` on the SSI chain and that `S NSFS` then really starts. Both are
-round 1's live re-run (`docs/measurements/d2-round1b/`).
+round 1's live re-run (`internals/measurements/d2-round1b/`).
 
 ## Annotation (2026-10-15): round 2, the adoption protocol (#136)
 
-Decided by Mike after the survey (`docs/measurements/d2-round2-survey/survey.md`);
+Decided by Mike after the survey (`internals/measurements/d2-round2-survey/survey.md`);
 built in `src/nsfsx.c`, with every decision a host-pinned pure function. **Built
 and host-/cross-green only: nothing in this annotation has run on MVS.**
 
@@ -377,7 +377,7 @@ predecessor: every adoption was FOREIGN. The fixtures in `tstsct.c` and
 established only that the SSCT is **found**; nothing in round 1 classified an
 anchor the production build had registered. Round 2's live Q3 was falsified
 on exactly this (`NSF064W ... FOREIGN`, STC00711,
-`docs/measurements/d2-round2/round.md`).
+`internals/measurements/d2-round2/round.md`).
 
 **Fixed in round 2b.** `nsfsct_plat_register` takes the tail as a required
 argument. It writes the tail into the anchor in the same key-0 window, before
@@ -387,7 +387,7 @@ back from the anchor. The fixtures now carry a wrong tail (`ZZZZ`), and a
 host section rebuilds the live shape (job `NSFS`, zero tail). It failed
 FOREIGN before the fix.
 
-**Live, dev1, 2026-10-15** (`docs/measurements/d2-round2b/round.md`):
+**Live, dev1, 2026-10-15** (`internals/measurements/d2-round2b/round.md`):
 - a fresh start says `NSF060I ... TAIL=40404040`;
 - that anchor is retained by LEAK and **adopted by the next start with no rig
   in between** (STC00719), and freed after a synthetic-death reap (STC00720);

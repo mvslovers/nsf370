@@ -395,7 +395,7 @@ no MODIFY and no console command), and `iter.sh` is **orchestration** — it iss
 Not assertions — `git status` on the round's branch shows exactly one added path:
 
 ```
-?? docs/measurements/m5-2c2/
+?? internals/measurements/m5-2c2/
 ```
 
 `asm/nsfvsvc.asm`, `include/nsfvsvc.h`, `src/`, `test/` and `project.toml` are all

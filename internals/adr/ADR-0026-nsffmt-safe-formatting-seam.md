@@ -112,7 +112,7 @@ The libc370 behaviour this ADR works around was fixed upstream in libc370
 the terminator, so a truncated result is NUL-terminated within `size`.
 
 Measured on libc370 2.11.0 during the 2.x port's live round (PR #131,
-`docs/measurements/libc370-2x/`):
+`internals/measurements/libc370-2x/`):
 - `TSTVSNP` failed exactly the assertion that pinned the defect: `target[size-1]`
   read 0 where 1.x wrote data. The write bound, the C99 return value, the
   `size == 0` case and the exact-fit case were unchanged.

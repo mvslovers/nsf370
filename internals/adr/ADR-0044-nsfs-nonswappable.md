@@ -16,12 +16,12 @@ what left the swap-out as the subject), ADR-0038 (the private-SVC transport whos
 ADR-0042 §10 (one unit of work per pass — what a stalled executive is failing to do),
 ADR-0005 (no Xinu code: the ancestor is cited as precedent, never copied), spec §5.3.
 
-**Evidence pins:** `docs/nsf-64-0c-measurements.md` (the executive is non-dispatchable during a
-stall, not waiting; and *"An idle stack does not stall"*, §6), `docs/nsf-64-0d-measurements.md`
-(the stall is an MVS swap-out, `OUCBQFL = X'80'`), `docs/nsf-64-0f-measurements.md` (the cycle
+**Evidence pins:** `internals/nsf-64-0c-measurements.md` (the executive is non-dispatchable during a
+stall, not waiting; and *"An idle stack does not stall"*, §6), `internals/nsf-64-0d-measurements.md`
+(the stall is an MVS swap-out, `OUCBQFL = X'80'`), `internals/nsf-64-0f-measurements.md` (the cycle
 **completed** — `ASCBSTOR 0FAF3C00 → 0FC26C00`, `OUCBSWC 0 → 1`, ~12 minutes),
-`docs/nsf-64-3-0-noswap-survey.md` (the mechanism exists, NSFS already holds the state, the cost
-and the PPT question), `docs/nsf-64-3-1-dontswap.md` (this step: Stage A and the gate).
+`internals/nsf-64-3-0-noswap-survey.md` (the mechanism exists, NSFS already holds the state, the cost
+and the PPT question), `internals/nsf-64-3-1-dontswap.md` (this step: Stage A and the gate).
 Source pins: `asm/nsfsevt.asm`, `src/nsfswap.c`, `src/nsfsmain.c`, `src/nsfopr.c`.
 
 ---
@@ -182,7 +182,7 @@ reset* — it varied the wrong axis relative to the stratification above. Reprod
 phenomenon would have required reverting the **spin**, which is 64-0f's build, not this round's.
 
 **Second: the gate's premise was a measurement lifted out of its configuration.** The gate was
-built on `docs/nsf-64-0c-measurements.md` §6 — "reproduced twice within 90 seconds of a gate
+built on `internals/nsf-64-0c-measurements.md` §6 — "reproduced twice within 90 seconds of a gate
 round starting" — without carrying the fact that **both reproductions were on the spinning
 pre-64-1 module.** That is the second time in this investigation a figure has been used outside
 the configuration it was taken in (64-1's campaign being quoted without its date was the first),

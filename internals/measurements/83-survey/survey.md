@@ -7,7 +7,7 @@ every claim marked *inference* is one.
 ## 1. What `A0A- 2` means
 
 `IEA700I A0A-  2 NSFS NSFS 00 0000A040 0015DFC0 009DC7B0`, byte-identical in
-all five #79 occurrences (`docs/measurements/m5-79/findings.md` §4).
+all five #79 occurrences (`internals/measurements/m5-79/findings.md` §4).
 
 **MVS 3.8 IEAVGM00** (the GETMAIN/FREEMAIN module, mvs38src
 `work/measurements/amvssrc-tk5-run8/IEAVGM00`), in the abend table of the
@@ -91,7 +91,7 @@ and `src/nsfmain.c:257-279`.
 teardown that disarms the STIMER exit and stops there; no `mm_shutdown()`.
 - The regions are private-area storage, which MVS reclaims at address-space
   end. #79's audit already sorts them into that group
-  (`docs/measurements/m5-79/audit.md` §1).
+  (`internals/measurements/m5-79/audit.md` §1).
 - At task end MVS purges the outstanding I/O before it frees the region
   (*inference*, standard end-of-task processing, not re-read here). The `#`
   row above shows that VSM expects fixed storage at end of task, and answers

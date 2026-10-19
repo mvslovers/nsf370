@@ -46,7 +46,7 @@ broken query look identical (CLAUDE.md §8.5).
 reporting. Two offsets this survey needed (`ASCBFMCT`, `OUCBWSS`) were not in
 any prior round's proved set, so rather than submit an IFOX00 job — which
 writes spool, and 64-0e exhausted the spool — the DSECT layouts were computed
-from the macro sources by `docs/measurements/64-3-0/cblayout.py`, **gated on
+from the macro sources by `internals/measurements/64-3-0/cblayout.py`, **gated on
 reproducing every offset a prior `CBOFF` job had already proved**:
 
 ```
@@ -85,7 +85,7 @@ line   4:  &LABEL   SYSEVENT  &EVENT,&ASID=,&ASIDL=,&PGN=,&ENTRY=SVC,&TYPE=
 | **42** | **`OKSWAP`** | **93** | **release it again** |
 | 43 | `REQSWAP` | 95 | request a swap-out |
 
-The full 56-entry list is in `docs/measurements/64-3-0/sysevent-codes.txt`.
+The full 56-entry list is in `internals/measurements/64-3-0/sysevent-codes.txt`.
 **Both halves of the pair the kickoff asked for exist, and are spelled
 `DONTSWAP` and `OKSWAP`** — not `NONSWAP`, not `SETNSWP`.
 
@@ -134,7 +134,7 @@ sequence actually comes from.
 `SYS1.AMODGEN(IRAOUCB)`, the SRM user control block:
 
 (Line numbers throughout are into the captures committed under
-`docs/measurements/64-3-0/`: `SYSEVENT-macro.txt`, `IRAOUCB-macro.txt`,
+`internals/measurements/64-3-0/`: `SYSEVENT-macro.txt`, `IRAOUCB-macro.txt`,
 `IHAASCB-macro.txt`, `IEFZB610-macro.txt`, `SGIEF0PT-macro.txt` — so every
 quotation below is checkable without the stand.)
 
@@ -219,7 +219,7 @@ every installation, not a configuration change.
 
 Read live through `/.dm`, all 11 active address spaces, identity asserted on
 every OUCB (`OUCBASCB` must equal the ASCB chased from — the 64-0c LSQA trap);
-`docs/measurements/64-3-0/swapsurvey.py`:
+`internals/measurements/64-3-0/swapsurvey.py`:
 
 ```
 ASID JOBNAME  ASCB   ASCBFLG1  OUCBSFL   AFL/NDS     FMCT   WSS   PSO ASCBSTOR
@@ -258,7 +258,7 @@ Two further readings from the same table:
 ### 3.1a Over a window: the set is stable, and one server swaps constantly
 
 **12 samples at ~30 s, 21:24:23 → 21:29:53 CEST**
-(`docs/measurements/64-3-0/window.log`):
+(`internals/measurements/64-3-0/window.log`):
 
 - **The non-swappable set never flickered.** `*MASTER*`, `JES2` and `NET` read
   `OUCBNSW` + `OUCBASW` + `NDS > 0` in **12 of 12** samples; every other address
@@ -516,6 +516,6 @@ rather than closed. The ancestor was in exactly this position and said so.
 | 3 | §3.3 answered with a number and its field | §4 — **39 frames / 156 KB**, `ASCBFMCT` (`IHAASCB` line 171, offset `X'98'`), machine 4096 frames |
 | 4 | three predictions quoted, and which fires | §5 — **none as written**, each failing differently |
 | 5 | recommendation + trade-off in one paragraph | §7 |
-| 6 | diff is docs only | this file + `docs/measurements/64-3-0/` |
+| 6 | diff is docs only | this file + `internals/measurements/64-3-0/` |
 | 7 | PR separates live-on-stand from host-side | the PR body does |
 | 8 | nothing issued, changed, started or stopped | no `SYSEVENT`, no deploy, no PPT edit, no STC recycle; NSFS sampled as found (STC01493) |

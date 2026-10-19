@@ -3,11 +3,11 @@
 Mapping round for the first half of M5-2c. **Nothing is deleted and nothing is
 recommended**: no verb retired, no field removed, no test scenario removed. `asm/`, `src/`,
 `test/`, `include/` and `project.toml` are untouched — `git status` shows exactly one added
-path, `docs/measurements/m5-2c2/`. Anchor layout unmoved, `ANCVERNO` 3, `NSFRQE` frozen at
+path, `internals/measurements/m5-2c2/`. Anchor layout unmoved, `ANCVERNO` 3, `NSFRQE` frozen at
 64 B. Host **3342 PASS / 0 FAIL** before and after (a no-regression check only — nothing
 outside `docs/` changed).
 
-Full detail in `docs/measurements/m5-2c2/findings.md`.
+Full detail in `internals/measurements/m5-2c2/findings.md`.
 
 ## The answer in one line
 

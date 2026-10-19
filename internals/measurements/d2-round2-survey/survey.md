@@ -25,7 +25,7 @@ like when the next start finds it, so this survey starts there.
 | ESTAE recovery (#79) | `src/nsfsx.c` `nsfsx_recover_quiesce` | the retain posture **unconditionally**: no drain, no free, no unload; `nsfsct_remove` is not called either |
 
 The second row matters as much as the first: **every abend of NSFS today
-leaves a retained anchor** (139264 bytes with the router, `docs/measurements/40-chk`),
+leaves a retained anchor** (139264 bytes with the router, `internals/measurements/40-chk`),
 whether or not a client was in flight. So adoption is not only the
 `NSF054W` case, it is also the recovery from #79's retained state.
 

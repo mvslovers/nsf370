@@ -807,7 +807,7 @@ meaning** — it counted a latch (tracking `EVTPASSES` at a constant offset of
 3 755), it now counts **wake events**: `WAKEPOSTS == SERVED` exactly at 8/8,
 28/28, 36/36, and at scale it falls **below** `SERVED` (164 257 vs 164 570), which
 is the documented coalescing that makes it a lower bound on posts, not a tally.
-**Every figure in `docs/nsf-64-0*.md` was taken under the old semantics** and is
+**Every figure in `internals/nsf-64-0*.md` was taken under the old semantics** and is
 not comparable — noted at the declaration, where such a reader looks.
 **THE FLOOR IS MEASURED, ON PURPOSE, AND WAS NOT BUILT.** After `TSTRQXM` (TCP:
 connect, 9 353 bytes of short writes, close) the TCP timers cancel and ADR-0034's
@@ -954,7 +954,7 @@ wrong (the 64-1 reset reverted, authorised for this round; **wall clock live: 1 
 SERVED=16`, `EVTPASSES=345` against the spin build's 529 481, and `WAKEPOSTS == SERVED`
 exactly, which is 64-1's wake-event semantics rather than the latch). **The kickoff's
 premise was refuted from primary source before any machine time:** it rested on "the nine
-stalls all occurred in **idle** windows", and `docs/nsf-64-0c-measurements.md` says the
+stalls all occurred in **idle** windows", and `internals/nsf-64-0c-measurements.md` says the
 reverse in so many words — *"An idle stack does not stall"* — with **five** idle
 non-reproductions on record and every stall firing 40–90 s into a round. Run as written,
 the round could not have fired, for two independent reasons: the arm never reproduces
@@ -997,7 +997,7 @@ arm 2 was skipped (its purpose is unattainable against a phenomenon firing one t
 and it is confounded) and the spool purge was left to the maintainer.
 **A CORRECTION TO THE #64 PRECONDITION, recorded here: it SPLITS.** The blocking was
 justified with "the sweep exists for an idle stack, which is the situation the defect
-occupies", and `docs/nsf-64-0c-measurements.md:189` states the opposite in so many words.
+occupies", and `internals/nsf-64-0c-measurements.md:189` states the opposite in so many words.
 So **c1 is RELEASED** — a sweep on an idle stack is not affected by a defect that does not
 occur on an idle stack — and **(e) stays BLOCKED, more firmly than before**: the stalls fire
 under exactly the load (e) measures, and a twelve-minute event inside a throughput round
@@ -1225,7 +1225,7 @@ exactly as a normal end does), and **the CLEAN control earns the other readings 
 meaning** (TERMAPI released its slot, so "2 of 16 in use" is not a registry that never
 empties). Every reading is **cross-checked against an identity the client WTOs before it
 ends** (`__ascb(0)`, `ASCBASID` at ASCB+X'24'), so no line is about some other address
-space. **Predictions recorded BEFORE the CLEAN/CANCEL arms ran** (`docs/measurements/
+space. **Predictions recorded BEFORE the CLEAN/CANCEL arms ran** (`internals/measurements/
 m5-2c1/predictions.md`) — all three fired. **NOT ESTABLISHED, and it is the question a
 follow-up asks: the STC / TSO case.** An STC *is* its own address space and does
 terminate — the case the classifier was built for and the one that matters for M6, since
@@ -1259,7 +1259,7 @@ asks after an idle period"**, which is the normal case. Three options are laid o
 (pass-count / `nsf_now()` with a documented constant / a new tick seam); **none chosen —
 Mike's call.** Each LEAVE/CANCEL arm costs one app slot of 16; the round leaked three and
 `P NSFS`/`S NSFS` reset it (**verified**: STC 1505 came up `0 OF 16 SLOTS IN USE`, no
-`NSF054W`, `SVC 239 RESTORED`, stand left clean). `docs/measurements/m5-2c1/`.
+`NSF054W`, `SVC 239 RESTORED`, stand left clean). `internals/measurements/m5-2c1/`.
 **M5-2c1 stage b (the sweep, shipped best-effort and named that way) — DONE, live-green in
 both arms and all three revert states, maintainer-countersigned (PR #89 merged).** The second half of the first sub-step of
 M5-2c; **M5 stays in progress and no milestone flips.** Stage a stopped on a measurement,
@@ -1484,7 +1484,7 @@ its own result (§8.5); startup is now positively confirmed (`NSF041I`+`NSF001I`
 stimulus. **Still untested, the same gap stage a named:** an STC/TSO client *is* its own address
 space and does terminate — no test in this tree has ever watched a real address space die. **Next
 artifact is an ADR-0040 annotation naming the client class it does not cover, plus a decision — not
-a patch.** Host **2991 PASS / 0 FAIL** unchanged. `docs/measurements/40-chk/`.
+a patch.** Host **2991 PASS / 0 FAIL** unchanged. `internals/measurements/40-chk/`.
 **COUNTERSIGNED (PR #81 merged); the annotation was REFRAMED at the countersign, and the
 reframing is the part that carries.** The guard is **not, and never was, a dead-client
 detector** — `src/nsfsx.c:316-317` states its purpose in the source: "`__xmpost` dereferences
@@ -1569,12 +1569,12 @@ shutdown **DRAINED** (`NSF043I`/`NSF011I`/`IEF404I`, **no `NSF054W`**) and the r
 the round** — no CSA debt, no IPL owed; the arms used `HANG`/`LEAVE`/`CLEAN` and **never**
 `PARK`/`PARKA` precisely because a parked client leaks `inflight` and forces the retain branch.
 **Zero dumps**, stand left as found. Host **2991 PASS / 0 FAIL** unchanged — a no-regression check
-only. `docs/measurements/40-ident/`. [[nsf370-40-ident-identity-reuse]]
+only. `internals/measurements/40-ident/`. [[nsf370-40-ident-identity-reuse]]
 **#79 (an abend must not cost an IPL) — FIXED, live-green, PR #84. Not a milestone step; M5
 stays in progress and nothing flips**; c1 stage b is still with Mike, and #80/#64 are untouched.
 **The finding was a class, not a missing call:** every resource Phase 2 acquired was added to the
 clean teardown and to **nothing else** — Phase 1 never noticed, because `nsf_shutdown()` was
-COMPLETE when it was written. `docs/measurements/m5-79/audit.md` enumerates all **13** and sorts
+COMPLETE when it was written. `internals/measurements/m5-79/audit.md` enumerates all **13** and sorts
 them by the only line that matters: **AS-scoped** (MVS reclaims it at address-space termination —
 recovery need not, and in a damaged environment should not, touch it: the private region, the SVC 99
 device allocations, the I/O subtasks, the OUCB and hence the DONTSWAP) versus **system-scoped**
@@ -1664,7 +1664,7 @@ what arm 2 saw), so the magnitude is unbounded in both directions and the **disc
 (free-chain discipline, unmeasured). The **safe-side asymmetry survives and is stated explicitly** —
 reuse can only convert DEAD → LIVE, never LIVE → DEAD, since an ASID is unique among live address
 spaces — and the window only means anything **relative to the sweep period**, the same knob c1 stage
-a stopped on. `docs/measurements/m5-79/`. **80-CHK (does a data-returning cross-AS receive store into key-0 CSA from key 8?) —
+a stopped on. `internals/measurements/m5-79/`. **80-CHK (does a data-returning cross-AS receive store into key-0 CSA from key 8?) —
 DONE, live-green, docs + one opt-in probe. It fixes nothing; #80 is CONFIRMED and stays
 OPEN.** Not a milestone step; **M5 stays in progress**, c1 stage b is still with Mike, and
 #64/#83 are untouched. **The answer is yes, and the fix is a design decision with ADR
@@ -1740,7 +1740,7 @@ existing window widened, `asm/nsfvsvc.asm` untouched, anchor layout unmoved, `AN
 **139264 bytes measured identically both times** (1073152→933888→794624). **Zero dumps**
 (`IEA995I` 0 against `IEF450I` 4 as the positive control — itself the right number: 2 NSFS
 `S0C4` + 2 client `S222`). Host **2991 PASS / 0 FAIL** unchanged — a no-regression check
-only. `docs/measurements/80-chk/`.
+only. `internals/measurements/80-chk/`.
 **80-FIX (the receive lands in private storage, not in CSA) — DONE, live-green in all
 four arms, COUNTERSIGNED by Mike (PR #86 merged). It FIXES #80's fault; closing the issue
 is Mike's and #80 stays OPEN.** Not a milestone step;
@@ -1949,7 +1949,7 @@ redeployed — a previous `--only` had replaced TESTLIB, so the first `S TSTAPPD
 RESTORED`, **no `NSF054W`**, **zero dumps** against 9 deliberate `S222` cancels as the positive
 control. Host **3342 PASS / 0 FAIL** before and after — a no-regression check only. **Does NOT
 establish:** whether row 3 is reachable on any other stand; the reuse window in general; the
-TSO client class; or whether the retirement should happen. `docs/measurements/m5-2c2/`. **The no-period finding is FILED AS A COMMENT ON #88**, in the
+TSO client class; or whether the retirement should happen. `internals/measurements/m5-2c2/`. **The no-period finding is FILED AS A COMMENT ON #88**, in the
 usable form the countersign asked for — the verdict half is already ≤1 s, so **the direction of
 any fix is LOOK EARLIER, NOT FASTER**. **Nothing is closed:** #88 deferred, **#67 and #87 open**,
 **obligation #4 UNDISCHARGED** — retiring the verb and deciding the fields are two separate
@@ -2029,14 +2029,14 @@ stays a **named, isolated Stage-0 probe on NSFV** (no CTCI, no sockets), reduced
 it can prove there; `NSFV_REQ_ORPHAN` is deleted, the block that held it having been lifted.
 **Chosen over retiring the file because an INCIDENTAL witness still fails when the guard breaks
 but does NOT NAME THE MECHANISM** — which is the property the Stage-0 set exists to provide.
-**THE COVERAGE KIND IS NAMED IN ALL THREE PLACES** (this table, `docs/adr/ADR-0040`'s
+**THE COVERAGE KIND IS NAMED IN ALL THREE PLACES** (this table, `internals/adr/ADR-0040`'s
 annotation, and the test's own header), because a coverage kind that is not named is read as a
 test a year later — so it says **"procedure"**, never "test", for row 2:
 
 | row | coverage, and its KIND |
 |---|---|
 | **1** LIVE | **live, named probe** (`TSTDEATH` on NSFV) + host-pinned |
-| **2** DEAD (avail bit) | **an operator-driven PROCEDURE at milestone gates — NOT a test, NOT in the matrix** (`docs/procedure-row2-client-death.md`) + host-pinned |
+| **2** DEAD (avail bit) | **an operator-driven PROCEDURE at milestone gates — NOT a test, NOT in the matrix** (`internals/procedure-row2-client-death.md`) + host-pinned |
 | **3** DEAD (ASCB reuse) | **host-pinned ONLY — not live-producible**: 0 of 9 reuses, the ASCB comes back unchanged so the guard reads LIVE |
 | **4** UNKNOWN | **host-pinned ONLY** — four branches, none live-producible by a real client; `ORPHAN` drove one |
 
@@ -2083,7 +2083,7 @@ recorded in 5 and in the procedure).
 
 **M5 housekeeping — DONE, docs-only, countersigned (PR #94 merged).** Three items, and one is
 why **checking is not the same as applying**. **ADR status: merged means Accepted**, now written
-in `docs/adr/README.md` so the question stops recurring — **but `ADR-0036` must NOT be flipped**:
+in `internals/adr/README.md` so the question stops recurring — **but `ADR-0036` must NOT be flipped**:
 its transport was superseded (2026-07-21) and its SSI probe code retired (2026-07-22), so it
 reads **`Superseded by ADR-0038`**. **"Superseded" is not the same as "not accepted"**, and a
 blanket flip would have marked a retired document as current; the convention therefore carries a
@@ -2092,11 +2092,11 @@ named found **five more stale markers** (0035, 0038–0041 beyond the named 0042
 backfilled** with 0027–0033 and 0042 — verified mechanically that **no ADR file is now absent
 from the table** — and **the hand curation is preserved and now stated in the file**: `0038`
 deliberately precedes `0037`, whose row exists only to record the intentional numbering gap, so
-**the table must not be sorted**. **The `docs/measurements/` convention is written down** rather
+**the table must not be sorted**. **The `internals/measurements/` convention is written down** rather
 than left as drift: **logs are evidence, scripts are instruments that outlive their round**,
 both live there, and they are **not** in `tools/` because that is for what the build runs while
 these are what a person runs while investigating. The third kind is named too:
-**`docs/procedure-*.md` is an operator-driven gate procedure — not a measurement and not a
+**`internals/procedure-*.md` is an operator-driven gate procedure — not a measurement and not a
 test.**
 **#92 (the STATS renderer truncated silently; the host ring dropped its tail) — FIXED,
 live-green, countersigned (PR #95 merged). #92 is NOT closed by the merge — that is Mike's.**
@@ -2148,7 +2148,7 @@ the gate calling `NSF_DEBUG`-only helpers from outside the guard, 4 unresolved e
 `NSF818W` absent in both, `NSF817I APPSWEEP` still last; NSFV **438 PASS / 0 FAIL**, NSFS
 **122 PASS / 0 FAIL**, **zero dumps**. **No counter removed or renumbered** (verified in the
 diff) — the output adapts to the counters, not the other way round. Captures in
-`docs/measurements/m5-92/`. **Nothing closed by the merge: #67 and #88 open, #92 Mike's to
+`internals/measurements/m5-92/`. **Nothing closed by the merge: #67 and #88 open, #92 Mike's to
 close, obligation #4 still identity-half only.**
 **M5-2d0 (what (d) still contains) — DONE, docs-only, read-only.** A survey, no code. Four
 answers, each against a stated criterion: **(1)** the §17.3 `ubuf`/`ulen` obligation SPLITS —
@@ -2175,7 +2175,7 @@ nobody has taken**: force-reap flips `drained`, which takes `nsfsx_stop`'s `else
 **unloads the router** under a possibly-parked client — the 2026-08-22 ruling was about the
 *slot*, not the *module*. §5 gathered for d1: **THREE** descriptor resolution points, not one
 (`req_socket`, **`sel_scan`** — which a `req_socket`-only check would miss entirely — and
-`soc_complete`'s internal one). `docs/measurements/m5-2d0/`.
+`soc_complete`'s internal one). `internals/measurements/m5-2d0/`.
 **M5-2d1 (the ownership check) — DONE, host-verified + offline gates; NOT live-verified.**
 **ADR-0046.** Closes the sharpest thing in the tree: another client's socket was not merely
 forgeable but **guessable in tens of attempts** from an unauthorised address space (one socket
@@ -2224,7 +2224,7 @@ scan 246 unique ≤ 8 (`NSFRQSOW`, `NSFRQCID`); cross-build clean (6 modules + 5
 so the check is **inert**, so the hand-stamped child in TSTREQ models the *stamp* and TSTTCP's
 real accept (841 green) runs with the check inert — neither exercises it. The case that tests
 an inherited child *under* the check is a **cross-AS accept**, which is live only. Spec §17.3 now carries the status of all three surfaces it named.
-`docs/measurements/m5-2d1/`.
+`internals/measurements/m5-2d1/`.
 **M5-2d1b (the R8 validation) — DONE, offline gates green; NOT live-verified.** d1's second
 half, cut from `m5-2d1-ownership` because #97 had not merged. The router's **20** result
 stores run in **key 0** through a client-supplied pointer, gated only by the `"NSFV"`
@@ -2278,7 +2278,7 @@ combined round. **ADR-0041's category 3 CLOSES** (append-only annotation; the ta
 1,2,3,4 all closed) and spec §17.3 leaves **one** residue, the probe verbs (c3). **Does NOT
 establish:** it is point-in-time not a lock; it proves **writability under the caller's key,
 not ownership** (another task in the same AS at the same key is accepted — d1 §2.3's
-boundary); it says nothing about what the storage *is*. `docs/measurements/m5-2d1b/`.
+boundary); it says nothing about what the storage *is*. `internals/measurements/m5-2d1b/`.
 **d0, d1 and d1b are COUNTERSIGNED (PRs #96, #97, #98 merged, in that order; #98 was
 retargeted from `m5-2d1-ownership` to `main` first and its diff re-confirmed to be its own
 seven files — the b1/b2 stacked-base trap, closed by checking rather than by remembering).**
@@ -2434,7 +2434,7 @@ repair working on a **real** occurrence. Match on **new log lines**, never times
 six deploys, nine STC starts, ZERO dumps**; the one `NSF054W` in the log is at 03.58 from
 #100's round, **checked not assumed**; `INFLIGHT=0` before every stop; both reverts undone in
 the tree and on the machine; left as found. **#67 comment drafted, NOT posted** (8).
-`docs/measurements/m5-2d1c/`.
+`internals/measurements/m5-2d1c/`.
 **COUNTERSIGNED (PR #102 merged). Four things from the review, and the first changes what
 the round is FOR.** **(1) PERMIT-ONE CLOSES A CLASS; REFUSE-BY-NAME ENUMERATES INSTANCES,
 and the fall-through chain is why the distinction is not stylistic** — a named-verb list has
@@ -2594,7 +2594,7 @@ audit omitted **`nsftcp.c:2014`** (`tcp_send`; `:601` is the *parked*
 `tcp_send_resume`) — a byte count, correct, so no conclusion changed, but the
 ADR records **six** read sites; and it named a `docs/socket-provider.md` that
 **does not exist**, so the `selectex()` note lives in
-`docs/nsf370-provider-contract.md` §4, where `selectex()` is actually discussed.
+`internals/nsf370-provider-contract.md` §4, where `selectex()` is actually discussed.
 Spec **v1.36** (§10.4 + changelog). **PROVEN HOST-SIDE:** the length arithmetic
 both ways, array integrity across the crossing, the refusal, the truncation
 consistency, the end-to-end mask round trip. **NOT ESTABLISHED BY ANY OF IT:**
@@ -2608,13 +2608,13 @@ proportionate *because the decision produced one path* (`nsfsel_dispatch` is the
 same code either way), but is said rather than assumed. The truncation control
 pins arithmetic consistency and needs nothing more: **2048 is itself a multiple
 of 8**, so the clamp can never manufacture a non-multiple, and truncation and
-refusal are disjoint. `docs/measurements/m5-2-101/`.
+refusal are disjoint. `internals/measurements/m5-2-101/`.
 **#101 Stage 2 (the live round) — DONE, live-green; all three predictions HELD.**
 Not a milestone step; **M5 stays in progress and nothing flips** — #67, #88 stay
 open, d1's remaining items, (e), c3 and d2 are still ahead, and **#101 stays open
 (Mike closes it)**. **No product source changed**: the diff is `test/mvs/tstd1b.c`,
 two JCL files and the evidence. Predictions were written **before any deploy** and
-not edited (`docs/measurements/m5-2-d1-select/predictions.md`).
+not edited (`internals/measurements/m5-2-d1-select/predictions.md`).
 **ARM 3's PREDICTION WAS AMENDED BEFORE THE RUN, ON A SOURCE FINDING, and the
 original is kept verbatim.** It read *"On the fixed module, B is served"* — and
 the source refutes that half: `soc_complete` is the only thing posting
@@ -2688,7 +2688,7 @@ RETAINED` and the next start came up on a **different anchor AND router EP** wit
 **~136 KB of CSA is retained until IPL** as the arm's cost; restored source
 **byte-identical to `main`** and force-recompiled before the final deploy; host
 **3491 PASS / 0 FAIL** unchanged (a no-regression check only — `tstd1b.c` is
-`host = false`). `docs/measurements/m5-2-d1-select/`.
+`host = false`). `internals/measurements/m5-2-d1-select/`.
 **COUNTERSIGNED (PR #103 merged); ADR-0047 Proposed → Accepted.** Both states were
 **reproduced independently in a clean clone of the PR head** — 3491/0 at head,
 3408 PASS / 10 FAIL with the two product lines reverted, `TSTSEL` `rc=-6` — and the
@@ -2796,10 +2796,10 @@ is "nothing failed" rather than a suppressed dump). **DOES NOT ESTABLISH:** thro
 latency of anything (no figure here is a baseline or comparable with Job B); concurrent
 service; **a protocol op READING `g_land`** (the wire arm did not run — what is proven is the
 transport's copy pair, not an op's use of it; tracked with d1's SELECT stimulus in the ONE
-place `docs/measurements/awaiting-ctci-pair.md`, because a precondition split across two
+place `internals/measurements/awaiting-ctci-pair.md`, because a precondition split across two
 footnotes in two files does not come back); the partial-write residue shape; a bypass of
 the ownership check (a source property); d1's SELECT arms (#107 assigns them to a d1 round);
-or hardware arbitration of a simultaneous `CS`. `docs/measurements/m5-2e-joba/`.
+or hardware arbitration of a simultaneous `CS`. `internals/measurements/m5-2e-joba/`.
 **Job A §1.3's wire arm has since RUN, and the gap above is discharged (PR #119, docs-only,
 no source changed).** Same gate, unchanged, on a stand whose interface was up: `wire=7 ok=7`
 and `dirty=0` on both clients, **A 19/19 and B 24/24, CC 0000** — the totals moving 18→19 and
@@ -2823,7 +2823,7 @@ INVERTS above one anchor** — 139264 is 34 quantisation steps, 167936 is 41, so
 inside the larger discrepancy and on size alone an anchor is exactly what it could be. Had this
 been Job B the clause would have held and the round would have stopped. The drift itself
 (1073152 → 1069056 → 901120, one movement explained) is **#120**, not a line in a round record.
-`docs/measurements/m5-2e-joba-wire/`.
+`internals/measurements/m5-2e-joba-wire/`.
 **M5-2 — Phase 2 request crossing. COMPLETE** (decisions locked by Mike 2026-09-04; **M5 itself
 stays in progress** — TCP hardening and docs remain). The application-to-stack request path
 crosses an address-space boundary: a client in its own address space issues socket verbs
@@ -2900,7 +2900,7 @@ isolated so M0–M4 already deliver a usable in-process stack.
 ADR-0048 round 1: register, find and remove an SSCT that carries the anchor
 address, so a later start can find a retained anchor by name.
 
-**First attempt, 2026-09-17** (`docs/measurements/d2-round1/`). The SSCT name
+**First attempt, 2026-09-17** (`internals/measurements/d2-round1/`). The SSCT name
 was jobname[0:4]. All three predictions held:
 - `NSF060I` on start;
 - `TSTSCTM` 24/24 batch and TSO on the real SSI chain;
@@ -2924,7 +2924,7 @@ lower case**.
 - Rejected: a leading digit, which would cost a character of identity or
   move the layout.
 
-**Re-run live 2026-10-14 on dev1** (`docs/measurements/d2-round1b/`), all
+**Re-run live 2026-10-14 on dev1** (`internals/measurements/d2-round1b/`), all
 three predictions held:
 - the lower-case two-name gate, 50/0 batch and TSO;
 - **with `nsfs` chained, `S NSFS` starts** (STC00703, `NSF059W` instead of a
@@ -2947,7 +2947,7 @@ ADR-0048 round 2 (#136): a start adopts the anchor a previous instance
 retained. Built on `d2-round2` (anchor version 4; scrub S1/S2; router reuse
 or free; `g_sct_owned`; `nsfsct_find` never reads a private SSCTSUSE).
 
-**Round 2 live** (`docs/measurements/d2-round2/`) held Q0–Q2:
+**Round 2 live** (`internals/measurements/d2-round2/`) held Q0–Q2:
 - the version-4 pool (137280);
 - TSTSCTM 60/0, TSTRQXC+F 130/0, TSTRQXM batch 32/32;
 - LEAK → `NSF054W` → `CHAINED`.
@@ -2960,7 +2960,7 @@ fixtures wrote it themselves and hid that. Round 1b had shown only that the
 SSCT is found. The same falsified start confirmed bdcb8b5 live: a stop that
 had not registered left the SSCT alone.
 
-**Round 2b** (`docs/measurements/d2-round2b/`): red first on the host (8
+**Round 2b** (`internals/measurements/d2-round2b/`): red first on the host (8
 failures, FOREIGN). Then register stamps the tail inside its key-0 window
 before `ssct_install`, and `NSF060I` prints it. The predictions held. The
 exception is Job A, which ran on a fresh anchor rather than an adopted one,
@@ -2986,7 +2986,7 @@ and whose predicted totals were stale (18/23 before the wire arm):
 ## M5 #83: recovery no longer frees under I/O (2026-10-15)
 
 ESTAE recovery never reached `NSF901I` with the CTCI pair up. **The survey**
-(`docs/measurements/83-survey/`) decoded `IEA700I A0A- 2` from IEAVGM00 as
+(`internals/measurements/83-survey/`) decoded `IEA700I A0A- 2` from IEAVGM00 as
 "PART OF AREA BEING FREED IS STILL FIXED". The length `X'A040'` is the
 CTCIBUF region after libc370's rounding, since libc370 has no heap and does
 one GETMAIN per malloc. So `mm_shutdown()` freed the region whose READ buffer
@@ -2999,7 +2999,7 @@ inferred.
 - `nsf_shutdown()` skips the free while `dev_busy_count` is non-zero and
   reports `NSF068W`.
 
-**Live on dev1** (`docs/measurements/m5-83/`), RED = main plus a temporary
+**Live on dev1** (`internals/measurements/m5-83/`), RED = main plus a temporary
 S0C4 injection, GREEN = the fix plus the injection:
 - **RED recovery reproduced the defect**: `A0A- 2 ... 0000A040`, no
   `NSF901I` (STC00726).

@@ -181,7 +181,7 @@ visible rather than invisible).
 **What was found.** `tun0` does not exist on the stand: Hercules failed to
 create it at startup (`HHC00138E Error setting TUN/TAP mode : Interrupted
 system call` -> `HHC01463E 0:0501 device initialization failed`), so MVS
-IPLed without 0500/0501 -- the failure `docs/measurements/m5-79/` already
+IPLed without 0500/0501 -- the failure `internals/measurements/m5-79/` already
 records. NSFS still starts and its transport is READY (`NSF212E CTCI 0500
 FAILED TO START`, then `NSF055I ... 1073152`, `NSF042I`, `NSF041I`,
 `NSF001I`), but `nsfip_route` returns NULL, so **every `sendto` answers

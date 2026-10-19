@@ -494,7 +494,7 @@ possibly-parked client — is exactly what turned out to govern.
 
 **What d2 became, once that ruling was made** (Mike, 2026-09-04: option A a
 no-go, option D locked), is recorded in **ADR-0048** and in
-`docs/measurements/d2-anchor-question/` and `d2-rendezvous/`:
+`internals/measurements/d2-anchor-question/` and `d2-rendezvous/`:
 
 - **three parts, none of which works alone** — the retained anchor, a surviving
   named pointer to it, and a reclaim that **adopts rather than frees** (freeing

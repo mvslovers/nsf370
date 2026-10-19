@@ -1,7 +1,7 @@
 # M5-2c2 stage b — retire the `ORPHAN` verb, leave the fields
 
 Implements the decisions locked on the stage-a map (PR #90). Detail in
-`docs/measurements/m5-2c2/stage-b.md`.
+`internals/measurements/m5-2c2/stage-b.md`.
 
 **Nothing is closed.** Obligation #4 is discharged **in substance for the identity half
 only** — the rest of the probe scaffolding is c3, after (e). #67 is **narrowed, not closed**.

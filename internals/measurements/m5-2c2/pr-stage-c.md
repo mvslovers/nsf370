@@ -19,14 +19,14 @@ is the floor under every row and is not part of this restructuring.
 
 ## The coverage table, named in all three places
 
-`docs/adr/ADR-0040`'s annotation, CLAUDE.md's M5 cell, and `test/mvs/tstdeath.c`'s own header
+`internals/adr/ADR-0040`'s annotation, CLAUDE.md's M5 cell, and `test/mvs/tstdeath.c`'s own header
 each carry this. It says **"procedure"**, never "test", for row 2 — a coverage kind that is
 not named is read as a test a year later.
 
 | row | coverage, and its KIND |
 |---|---|
 | **1** LIVE | **live, named probe** (`TSTDEATH` on NSFV) + host-pinned |
-| **2** DEAD (avail bit) | **operator-driven PROCEDURE at milestone gates — not a test, not in the matrix** (`docs/procedure-row2-client-death.md`) + host-pinned |
+| **2** DEAD (avail bit) | **operator-driven PROCEDURE at milestone gates — not a test, not in the matrix** (`internals/procedure-row2-client-death.md`) + host-pinned |
 | **3** DEAD (ASCB reuse) | **host-pinned only — not live-producible**: 0 of 9 reuses, the ASCB comes back unchanged |
 | **4** UNKNOWN | **host-pinned only** — four branches, none live-producible; `ORPHAN` drove one |
 

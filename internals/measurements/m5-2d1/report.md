@@ -212,6 +212,6 @@ only the ownership assertions moved.
 
 ## 8. Housekeeping
 
-`docs/measurements/m5-2d0/` (the d0 survey) is **untracked** and was carried
+`internals/measurements/m5-2d0/` (the d0 survey) is **untracked** and was carried
 across the branch switch. It is the previous step's deliverable and is not part
 of this change; it needs committing wherever Mike wants it.

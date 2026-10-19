@@ -4,7 +4,7 @@
 Branch `m5-2d1b-r8`, cut from **`m5-2d1-ownership`**, not from `main` — **#97 had
 not merged** (both #96 and #97 OPEN, `main` at `a85aedb`).
 
-`docs/measurements/m5-2d1b/findings.md` is §1's answer, written **before** any
+`internals/measurements/m5-2d1b/findings.md` is §1's answer, written **before** any
 code. This is what was built on it.
 
 ---

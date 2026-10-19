@@ -186,7 +186,7 @@ is a pin: it can be flipped to refuse-to-start without disturbing anything else.
 
 **This is the round's most important negative result, and it is stated here rather than
 buried.** The gate was the two-client contention round that reproduced the stall twice within
-90 seconds (`docs/nsf-64-0c-measurements.md` §6): `TSTRQXC PARM='A'` and `PARM='B'` run
+90 seconds (`internals/nsf-64-0c-measurements.md` §6): `TSTRQXC PARM='A'` and `PARM='B'` run
 concurrently and repeatedly, with `OUCBQFL`, `OUCBSFL`, `OUCBNDS`, `ASCBSTOR`, `OUCBSWC` and
 `ASCBFMCT` sampled continuously and identity asserted on every reading. The instrument design
 was right: `QFL` alone cannot carry it — `QFL = 00` before and after is equally consistent with
@@ -372,7 +372,7 @@ reachable: a larger change than the fix it would guard. And the property under t
 supervisor state key 0 and returned without `__prob`, leaving the task authorised. Deployed,
 started, observed, then the shipping source restored and verified `git diff --quiet` identical.
 
-**As emitted** (STC01500, `docs/measurements/64-3-1/forced-failure-console.log`):
+**As emitted** (STC01500, `internals/measurements/64-3-1/forced-failure-console.log`):
 
 ```
 NSF852W NSFS REMAINS SWAPPABLE -- DONTSWAP NOT ACCEPTED (NSW=N NDS=0) -- CONTINUING, SEE ISSUE #64

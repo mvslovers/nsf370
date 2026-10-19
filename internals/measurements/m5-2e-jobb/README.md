@@ -66,7 +66,7 @@ The baseline is not decoration. **`LARGEST FREE BLOCK` before and after every
 run is one of the round's discard criteria**, and an `NSF054W` discards a run
 outright. A baseline taken under a different set of started tasks would make
 every per-run pool reading in this round incomparable with every figure already
-in the tree — and the tree's readings (`docs/measurements/40-chk/`,
+in the tree — and the tree's readings (`internals/measurements/40-chk/`,
 `40-ident/`, `m5-2e/stage-a.md`) all say 1073152.
 
 **Proceeding would have produced numbers that look like the others and are not
@@ -371,7 +371,7 @@ ADR-0044 finding.**
 through HTTPD **on the guest being measured** and this round measures
 throughput — the instrument trap this project has recorded twice. A completed
 cycle still shows retrospectively in `ASCBSTOR`/`OUCBSWC`, so the coarse
-interval loses only mid-flight capture. `docs/measurements/m5-2e-jobb/swapwatch.py`,
+interval loses only mid-flight capture. `internals/measurements/m5-2e-jobb/swapwatch.py`,
 derived from `64-3-1/nsfswatch.py`, which is left untouched as that round's
 artifact.
 

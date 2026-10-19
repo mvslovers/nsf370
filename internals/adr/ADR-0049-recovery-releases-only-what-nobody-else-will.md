@@ -1,15 +1,15 @@
 # ADR-0049 — Recovery releases only what nobody else will
 
 **Status:** Proposed (M5, #83). It is accepted when its PR merges; the merge
-is the countersign (`docs/adr/README.md` convention 1).
+is the countersign (`internals/adr/README.md` convention 1).
 **Date:** 2026-10-15
 **Decisions locked by:** Mike, 2026-10-15 (fix shape A + C, D as the backstop)
 **Amends:** Architecture Specification §17.1 ("call the **same** teardown the
 orderly path uses") and the matching CLAUDE.md §3 recovery rule
 **Builds on:** #79 (the recovery quiesce of the SVC slot and the anchor) and
-its audit, `docs/measurements/m5-79/audit.md` §1
-**Evidence:** `docs/measurements/83-survey/survey.md`,
-`docs/measurements/m5-83/round.md`
+its audit, `internals/measurements/m5-79/audit.md` §1
+**Evidence:** `internals/measurements/83-survey/survey.md`,
+`internals/measurements/m5-83/round.md`
 
 ---
 

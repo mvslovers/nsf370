@@ -1,6 +1,6 @@
 # 64-3-1 measurement artifacts
 
-**Read `docs/nsf-64-3-1-dontswap.md` first.** The three `gate-*.log` files are NOT
+**Read `internals/nsf-64-3-1-dontswap.md` first.** The three `gate-*.log` files are NOT
 interchangeable, and one of them is not evidence.
 
 | file | standing |

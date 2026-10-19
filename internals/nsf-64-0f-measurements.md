@@ -23,14 +23,14 @@ The kickoff's §1 rests on a premise this round could not adopt:
 > load would … stay inside a regime where no stall has ever been observed with
 > or without it."
 
-**Primary source says the reverse, in so many words.** `docs/nsf-64-0c-measurements.md`:
+**Primary source says the reverse, in so many words.** `internals/nsf-64-0c-measurements.md`:
 
 > "**An idle stack does not stall.** 64-0's two arms, 64-0b's prescribed window
 > and this round's first 22 samples over ~8 minutes of post-workload idle all
 > failed to reproduce — that is now **four** non-reproductions in the idle
 > configuration."
 
-and, on what the stalls *did* share, `docs/nsf-64-0e-step0.md` §6(c) and §8:
+and, on what the stalls *did* share, `internals/nsf-64-0e-step0.md` §6(c) and §8:
 
 > "every stall on record fired **40–90 s into a round**, so [64-1's] campaign
 > never reached the window in which stalls occur."
@@ -110,7 +110,7 @@ defective module.
 The red lines forbid a control-block offset from memory, and `ASCBSTOR` was
 **not** in 64-0d's `cboff5-values.txt` / `cboff6-values.txt`. It is this round's
 instrument, so it was derived first, by IFOX00 over `SYS1.AMODGEN` (job
-`CBOFF7`, `docs/measurements/64-0f/CBOFF7.jcl`):
+`CBOFF7`, `internals/measurements/64-0f/CBOFF7.jcl`):
 
 ```
 000000 002C   ASTOR    DC    AL2(ASCBSTOR-ASCB)
@@ -131,7 +131,7 @@ cited from 64-0d's `CBOFF5`, not re-derived.
 
 ### Two cadences, because the expensive read is not the one that matters
 
-`docs/measurements/64-0f/swapwatch.py`. The 64-slot scan is what cost 64-1 a
+`internals/measurements/64-0f/swapwatch.py`. The 64-slot scan is what cost 64-1 a
 contaminated 17–20 % CPU sample; a single ASCB read is nearly free. So the ASCB
 — carrying `ASCBSTOR`, `EJST`, `RCTF`/`DSP1` — is read **every 5 s**, and the
 OUCB flags are added **every 45 s**. The fast cadence is what materially narrows

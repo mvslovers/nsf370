@@ -2,7 +2,7 @@
 ## Architecture Specification
 
 *Version 1.36 — Draft for implementation. Companion document to the frozen
-Project Brief v2 (`docs/Project-Brief-v2.md`). The filename is intentionally
+Project Brief v2 (`internals/Project-Brief-v2.md`). The filename is intentionally
 unversioned; the current version is stated here and in the changelog
 (Appendix A).*
 
@@ -14,7 +14,7 @@ unversioned; the current version is stated here and in the changelog
 |---|---|---|
 | **Project Brief v2** | Why the project exists, scope, constraints, milestones | **Frozen** |
 | **Architecture Specification** (this document) | Component responsibilities, interfaces, data structures, control flow, object lifetime | Living document, versioned |
-| **ADRs** (`docs/adr/`) | Why individual architectural decisions were made | Append-only |
+| **ADRs** (`internals/adr/`) | Why individual architectural decisions were made | Append-only |
 
 This specification is the technical blueprint for implementation. Where it
 resolves questions left open in the Project Brief (naming, buffer classes,
@@ -2016,7 +2016,8 @@ nsf370/
 ├── test/             dual host+MVS tests (tstsmoke.c, …)
 │   ├── mvs/          Level 2/3: on-MVS component & integration jobs
 │   └── asm/          HLASM test callers
-└── docs/
+├── docs/             for users (EZASOKET conformance)
+└── internals/        for maintainers
     ├── Project-Brief-v2.md
     ├── Architecture-Specification.md
     └── adr/          ADR-0001 …
@@ -2111,7 +2112,7 @@ unauthorised caller can still dispatch (retired in M5-2c3).
 
 ## 18 — Architecture Decision Records (index + summaries)
 
-Each ADR gets its own file under `docs/adr/`; the summaries here are
+Each ADR gets its own file under `internals/adr/`; the summaries here are
 normative until the files exist.
 
 | ADR | Decision | Essence |
@@ -2126,14 +2127,14 @@ normative until the files exist.
 | **0008** | Single-owner buffers, no refcounting | Refcounts in C on a memory-starved system create leak/UAF classes; explicit handoff is auditable. Cost: one copy at the app/stack boundary — accepted. |
 | **0009** | Two buffer classes (256/2048) | One class wastes ~87% on ACK-sized traffic; more than two classes complicates sizing for no measured gain. Revisit with M4 stats. |
 | **0010** | Delta-queue timers, no wheel | Tiny active-timer population; zero fixed memory cost; trivially correct. |
-| **0011** | 100 ms tick via STIMER (single interval, re-armed) | Sufficient for RTO ≥ 1 s and 200 ms delayed ACK. 3.8j has STIMER (SVC 47), **not** STIMERM (corrected M0-5). Gate: M0 timer-accuracy job on Hercules (`test/mvs/tsttmacc.c`) — mean ∈ [90,110] ms, no interval > 200 ms — pending a live run before freeze. Full record: `docs/adr/ADR-0011-...md`. |
+| **0011** | 100 ms tick via STIMER (single interval, re-armed) | Sufficient for RTO ≥ 1 s and 200 ms delayed ACK. 3.8j has STIMER (SVC 47), **not** STIMERM (corrected M0-5). Gate: M0 timer-accuracy job on Hercules (`test/mvs/tsttmacc.c`) — mean ∈ [90,110] ms, no interval > 200 ms — pending a live run before freeze. Full record: `internals/adr/ADR-0011-...md`. |
 | **0012** | No IP fragmentation/reassembly in v1 | Reassembly is unbounded memory by nature; explicitly dropped + counted. MSS/EMSGSIZE keep NSF-originated traffic unfragmented. M5+ option with its own budget. |
 | **0013** | Toolchain: cc370 + libc370, orchestrated by MBT V2 | cc370 is a complete host cross-compile suite (no c2asm370 assembler round-trip); libc370 is its target C library. MBT V2 is the ecosystem-standard Python build system (project.toml, host cross-compile + on-MVS assemble/link, XMIT packaging) already proven on mvsMF — so NSF inherits a known-good build/dependency/test model instead of a bespoke one. Rejected: GCCMVS/CRENT370 (superseded in the ecosystem), c2asm370 (extra assembler step, not needed with cc370). |
-| **0014** | Build model & repo layout follow MBT V2 conventions | Building the M0-1 skeleton against the real ecosystem repos showed v1.1's §1.6/§16.2 assumptions were wrong. MBT V2 drives **both** builds — the host build is a first-class target (`make test-host` + a `[host]` table with a `replace` map for MVS-only CSECTs), **not** a separate `host.mk`. Layout is **flat** (`src/*.c`, `asm/*.asm`), not grouped by layer. `libc370` is the cc370 sysroot, not a `[dependencies]` entry. Real targets are `deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs` — no `bootstrap`/`build`/`link`. Supersedes §1.6 and §16.1/§16.2/§16.3, corrected inline in this version. Full record: `docs/adr/ADR-0014-build-model-and-repo-layout.md`. |
-| **0015** | NSFMM pool regions via libc370 `malloc`, not a raw GETMAIN SVC | The one region-per-pool acquisition (§2.3) uses libc370 `malloc`/`free` from portable C. On 24-bit MVS 3.8j that resolves to `GETMAIN` below the 16 MB line, released at `mm_shutdown` — realizing §2.3's intent while keeping NSFMM pure C (no assembler region helper). Load-bearing consequence: do not "restore" a raw GETMAIN SVC believing §2.3 mandates one. Full record: `docs/adr/ADR-0015-region-acquisition-via-libc370-malloc.md`. |
-| **0016** | Shared platform seam `nsftime` (`nsf_now` + `nsf_taskid`) | The two platform facts NSF asks the machine for — a monotonic timestamp and the current task id — live behind one C-callable seam (`include/nsftime.h`): MVS `STCK` + `PSATOLD` in `asm/nsftime.asm`, `gettimeofday` + `0` in `src/nsftime_host.c`, swapped by the `[host].replace` map (the NSFXQ pattern). `nsf_now` is **not** trace-private: NSFTMR reuses it at M0-5. The value's epoch/scale is platform-specific (STCK TOD vs host wall clock), so callers order/relative-time with it but never assume a shared tick unit or wall-clock meaning. First consumer: NSFTRC (§7.2). Full record: `docs/adr/ADR-0016-shared-platform-time-and-task-seam.md`. |
-| **0017** | Timer wakeup via the async STIMER REAL exit (not a subtask) | The 100 ms heartbeat that wakes the loop is a `STIMER REAL` **exit** (`NSFTMEXP`) that POSTs the timer ECB and re-arms — one task, no ATTACH, and the *same* async-exit convention M1 device I/O exits reuse. OS-invoked, so no `FUNHEAD`; built to the documented MVS 3.8 STIMER-exit linkage (a hand-rolled shortcut caused an S0C6). Runtime-validated on 3.8j at M0-6. Full record: `docs/adr/ADR-0017-timer-wakeup-async-stimer-exit.md`. |
-| **0018** | Operator / WTO / ESTAE reuse libc370 seams (no hand-rolled asm) | M0-8's three MVS surfaces — CIB/QEDIT operator commands, WTO, and ESTAE recovery — reuse the proven libc370 seams (`__gtcom`/`__cibset`/`__cibget`/`__cibdel`, `wto`/`wtof`, `__estae` + a C `nsf_recover` percolating via `SDWARCDE = SDWACWT`), exactly as `ufsd`/`httpd` do. Tie-breaker: §17.1 requires recovery to call the same **C** teardown, and reaching C from a *raw asm* OS-exit re-implements `@@estae`'s C-environment bridge — the issue-#8 failure class the from-scratch `asm/nsfestae.asm` would reintroduce. So `asm/nsfestae.asm` / `asm/nsfwto.asm` are not created; M0-8 adds **zero** new assembler. Bakes in the two CIB traps from `ufsd` (drain unconditionally; delete ESTAE first). Ratified with the maintainer. Full record: `docs/adr/ADR-0018-operator-wto-estae-via-libc370-seams.md`. |
+| **0014** | Build model & repo layout follow MBT V2 conventions | Building the M0-1 skeleton against the real ecosystem repos showed v1.1's §1.6/§16.2 assumptions were wrong. MBT V2 drives **both** builds — the host build is a first-class target (`make test-host` + a `[host]` table with a `replace` map for MVS-only CSECTs), **not** a separate `host.mk`. Layout is **flat** (`src/*.c`, `asm/*.asm`), not grouped by layer. `libc370` is the cc370 sysroot, not a `[dependencies]` entry. Real targets are `deps`/`test-host`/`modules`/`package`/`deploy`/`test-mvs` — no `bootstrap`/`build`/`link`. Supersedes §1.6 and §16.1/§16.2/§16.3, corrected inline in this version. Full record: `internals/adr/ADR-0014-build-model-and-repo-layout.md`. |
+| **0015** | NSFMM pool regions via libc370 `malloc`, not a raw GETMAIN SVC | The one region-per-pool acquisition (§2.3) uses libc370 `malloc`/`free` from portable C. On 24-bit MVS 3.8j that resolves to `GETMAIN` below the 16 MB line, released at `mm_shutdown` — realizing §2.3's intent while keeping NSFMM pure C (no assembler region helper). Load-bearing consequence: do not "restore" a raw GETMAIN SVC believing §2.3 mandates one. Full record: `internals/adr/ADR-0015-region-acquisition-via-libc370-malloc.md`. |
+| **0016** | Shared platform seam `nsftime` (`nsf_now` + `nsf_taskid`) | The two platform facts NSF asks the machine for — a monotonic timestamp and the current task id — live behind one C-callable seam (`include/nsftime.h`): MVS `STCK` + `PSATOLD` in `asm/nsftime.asm`, `gettimeofday` + `0` in `src/nsftime_host.c`, swapped by the `[host].replace` map (the NSFXQ pattern). `nsf_now` is **not** trace-private: NSFTMR reuses it at M0-5. The value's epoch/scale is platform-specific (STCK TOD vs host wall clock), so callers order/relative-time with it but never assume a shared tick unit or wall-clock meaning. First consumer: NSFTRC (§7.2). Full record: `internals/adr/ADR-0016-shared-platform-time-and-task-seam.md`. |
+| **0017** | Timer wakeup via the async STIMER REAL exit (not a subtask) | The 100 ms heartbeat that wakes the loop is a `STIMER REAL` **exit** (`NSFTMEXP`) that POSTs the timer ECB and re-arms — one task, no ATTACH, and the *same* async-exit convention M1 device I/O exits reuse. OS-invoked, so no `FUNHEAD`; built to the documented MVS 3.8 STIMER-exit linkage (a hand-rolled shortcut caused an S0C6). Runtime-validated on 3.8j at M0-6. Full record: `internals/adr/ADR-0017-timer-wakeup-async-stimer-exit.md`. |
+| **0018** | Operator / WTO / ESTAE reuse libc370 seams (no hand-rolled asm) | M0-8's three MVS surfaces — CIB/QEDIT operator commands, WTO, and ESTAE recovery — reuse the proven libc370 seams (`__gtcom`/`__cibset`/`__cibget`/`__cibdel`, `wto`/`wtof`, `__estae` + a C `nsf_recover` percolating via `SDWARCDE = SDWACWT`), exactly as `ufsd`/`httpd` do. Tie-breaker: §17.1 requires recovery to call the same **C** teardown, and reaching C from a *raw asm* OS-exit re-implements `@@estae`'s C-environment bridge — the issue-#8 failure class the from-scratch `asm/nsfestae.asm` would reintroduce. So `asm/nsfestae.asm` / `asm/nsfwto.asm` are not created; M0-8 adds **zero** new assembler. Bakes in the two CIB traps from `ufsd` (drain unconditionally; delete ESTAE first). Ratified with the maintainer. Full record: `internals/adr/ADR-0018-operator-wto-estae-via-libc370-seams.md`. |
 
 ---
 
@@ -3183,7 +3184,7 @@ elapsed tick count (`nsftmr_run(UINT ticks)`) so the host can inject ticks with
 no STIMER; §5.3's main loop passes the elapsed count. The sorted delta queue
 (ADR-0010) is implemented on `QELEM` with cancel-hands-delta-to-successor /
 fire-consumes-delta bookkeeping and callback-safe firing. **Corrected: ADR-0011**
-— split into `docs/adr/ADR-0011-100ms-tick-via-stimer.md` and changed from
+— split into `internals/adr/ADR-0011-100ms-tick-via-stimer.md` and changed from
 `STIMERM` to a single **`STIMER`** (SVC 47) re-armed to the head delta: 3.8j has
 no `STIMERM` (an MVS/SP macro absent from the 3.8j macro library), so the
 `STIMERM` phrasing in §6/§18, ADR-0016 and the Brief is superseded. New platform

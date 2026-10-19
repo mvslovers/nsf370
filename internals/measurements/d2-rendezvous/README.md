@@ -209,7 +209,7 @@ best-effort, warning and freeing anyway rather than stranding CSA to an IPL.
 ## 7. Scope of the search
 
 **Searched.** `nsf370`: `src/nsfsx.c`, `asm/nsfvsvc.asm`, `include/nsfvsvc.h`,
-`docs/adr/ADR-0036`. `libc370`: `include/clibenq.h`, `include/clibssct.h`,
+`internals/adr/ADR-0036`. `libc370`: `include/clibenq.h`, `include/clibssct.h`,
 `src/clib/@@ssfind.s`, `src/clib/@@ssrem.c`. `ufsd`: `src/ufsd#csa.c`,
 `src/ufsd#sct.c`, `src/ufsd#rcl.c`, `src/ufsd#ssi.c`. `mvs38j-ip`:
 `src/arch/s370/mvs/findsgd.c`, `src/arch/s370/mvsasm/igg019x8.asm`,

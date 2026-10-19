@@ -51,9 +51,9 @@ onset.
 | 7 | 64-0d | ≈ `11:28:29` (flat, detected `11:28:44`) | **8 027** | 8 027 requests since | **precedes** |
 | 8 | 64-0d | ≈ `11:46:03` (detected `11:46:18`) | not printed; > 8 648 (stall 7's exit reading) | same campaign, continuous | **precedes** |
 
-Sources: `docs/nsf-64-0b-measurements.md` §1/§4/§5; `docs/nsf-64-0c-measurements.md` §6;
-`docs/measurements/64-0d/stall1-passive.log`, `stall2-ladder.log`, `stall3-control.log`,
-`stall4-rung-then-ping.log`; `docs/nsf-64-0-measurements.md` §4.2 for #64's own `served = 0x18D`.
+Sources: `internals/nsf-64-0b-measurements.md` §1/§4/§5; `internals/nsf-64-0c-measurements.md` §6;
+`internals/measurements/64-0d/stall1-passive.log`, `stall2-ladder.log`, `stall3-control.log`,
+`stall4-rung-then-ping.log`; `internals/nsf-64-0-measurements.md` §4.2 for #64's own `served = 0x18D`.
 
 **There is no recorded stall with `served = 0`**, and none detected on an instance that had not
 yet been given a request. Every round that ran an *idle* arm — 64-0, 64-0b's prescribed window,
@@ -151,7 +151,7 @@ residual confound — larger than the two §1 already names, because it is a pro
 |---|---|---|
 | driver | `TSTRQXCA` + `TSTRQXCB` — **two address spaces** | `TSTSVC` (53 sequential ECHO round trips: 50 + 3 edge), `TSTUBUF`, `TSTDEATH`, `TSTXFW`, `TSTMVCK` — all **one** address space, all short |
 | claim rate | ~3 000 attempts per client per ~10 s round | one at a time, one job at a time |
-| pool state | **saturated** — `collisions` 670 052 and `exhausted` 10 364 across 45 rounds (`docs/nsf-64-1-measurements.md` §6); 241 430 → 2 822 998 inside one 64-0d stall | **`COLL=0` across the 126 sequential requests of the Stage-0 four**, measured (ADR-0042 annotation §7) — slot 0 is free every time, so the first `CS` always succeeds |
+| pool state | **saturated** — `collisions` 670 052 and `exhausted` 10 364 across 45 rounds (`internals/nsf-64-1-measurements.md` §6); 241 430 → 2 822 998 inside one 64-0d stall | **`COLL=0` across the 126 sequential requests of the Stage-0 four**, measured (ADR-0042 annotation §7) — slot 0 is free every time, so the first `CS` always succeeds |
 | second client | by design | `TSTSVC` **cannot** be run concurrently with itself: it asserts `req.seq == base_seq + i`, i.e. a monotonic `served` with no interleaving. `TSTUBUF` / `TSTDEATH` carry no such assertion and could pair, but both are short |
 
 So an NSFV arm built from what is deployed today gives **tens of requests per job with zero
@@ -181,7 +181,7 @@ in the device.
 ## 7. A "defect" I found, then refuted — the rows are real, and they prove something better
 
 **A first draft of this section reported the per-slot rows of
-`docs/measurements/64-0d/stall1-passive.log` as untrustworthy. That was wrong, and the
+`internals/measurements/64-0d/stall1-passive.log` as untrustworthy. That was wrong, and the
 retraction is worth more than the claim was.** Both stall passes print:
 
 ```

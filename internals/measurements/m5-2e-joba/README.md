@@ -281,7 +281,7 @@ each names the shape it catches more sharply than the general form does.
 `tun0` does not exist on this stand: Hercules failed to create it at startup
 (`HHC00138E Error setting TUN/TAP mode : Interrupted system call` ->
 `HHC01463E 0:0501 device initialization failed`), so MVS IPLed without
-0500/0501 -- the failure `docs/measurements/m5-79/` already records. NSFS
+0500/0501 -- the failure `internals/measurements/m5-79/` already records. NSFS
 starts anyway and its transport is fully READY (`NSF212E CTCI 0500 FAILED TO
 START`, then `NSF055I`, `NSF042I`, `NSF041I`, `NSF001I`), but `nsfip_route`
 returns NULL, so **every `sendto` answers `EHOSTUNREACH` before `EMSGSIZE` is
@@ -348,7 +348,7 @@ only the *recording* is capped.
 - **A protocol op READING the landing area.** The wire arm did not run. Every
   bulk call is answered before `udp_recv` touches `ubuf`, so what is proven is
   the transport's copy pair, not an op's use of it. Tracked as item 2 of
-  **`docs/measurements/awaiting-ctci-pair.md`** -- one place, with d1's SELECT
+  **`internals/measurements/awaiting-ctci-pair.md`** -- one place, with d1's SELECT
   stimulus, rather than a footnote here that nobody returns to.
 - **The partial-write residue shape** -- an op writing fewer bytes into
   `g_land` than `xlen`. The detector here is the identity round trip at full
@@ -375,7 +375,7 @@ landing area.
 It has now run, on the same gate unchanged, on a stand whose interface was up:
 `wire=7 ok=7 dirty=0` on both clients, **A 19/19 and B 24/24, CC 0000**, with 14
 datagrams of 1024 bytes seen in the host's own `tcpdump` and `NSFUDP out 14` /
-`LNK1 out 16` reconciling exactly. **`docs/measurements/m5-2e-joba-wire/`.**
+`LNK1 out 16` reconciling exactly. **`internals/measurements/m5-2e-joba-wire/`.**
 
 So the "does NOT establish" row above — *a protocol op READING the landing
 area* — is **discharged there, not here**, and `awaiting-ctci-pair.md`'s item 2

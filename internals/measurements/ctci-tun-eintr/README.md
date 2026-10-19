@@ -5,7 +5,7 @@
 **Status:** root cause established by measurement. **Not fixed** -- the fix is a
 change to Hercules, not to this repo, and it is Mike's call.
 
-This is the failure `docs/measurements/m5-79/` recorded and could not chase
+This is the failure `internals/measurements/m5-79/` recorded and could not chase
 (it needed the spool it had just exhausted). It cost M5-2e Job A its wire arm.
 
 ---
@@ -106,10 +106,10 @@ busy when nothing is using it.
 M5-2e Job A was made **device-independent** because of this (its bulk verb is a
 non-blocking `RECVFROM` rather than a `sendto`), so the exit gate now runs on a
 stand with no CTCI pair and says which arms did not. See
-`docs/measurements/m5-2e-joba/`.
+`internals/measurements/m5-2e-joba/`.
 
 The stack properties that are waiting on the pair are listed in
-`docs/measurements/awaiting-ctci-pair.md`. **They are deliberately not part of
+`internals/measurements/awaiting-ctci-pair.md`. **They are deliberately not part of
 this document:** this one is a finding about the driving system, that one is a
 list of stack properties awaiting a stimulus, and fixing the wire discharges
 nothing on it -- it only makes the runs possible. Keeping them apart is what
@@ -280,7 +280,7 @@ instead of checking it.
 
 **"No surviving host-side log records a successful attach" also loses its
 force**, for the same reason: with per-start truncation, no log could record it.
-The 2 September evidence is in the tree (`docs/measurements/m5-2-d1-select/`,
+The 2 September evidence is in the tree (`internals/measurements/m5-2-d1-select/`,
 arm 3's `Ncat: Connected to 192.168.200.1:3013`), not on the host.
 
 ### What survives untouched
@@ -988,7 +988,7 @@ result of asking "is this evidence?" of each; a fifth guess would not be.
 **The milestone does not depend on any of it.** Job B drives `TSTRQXC` with
 `XC_FN_UNKNOWN`: no sockets, no app slots, `ubuf = NULL`, **no wire**.
 Everything that genuinely waits on the CTCI pair is carved out in
-`docs/measurements/awaiting-ctci-pair.md`, with its membership criterion and the
+`internals/measurements/awaiting-ctci-pair.md`, with its membership criterion and the
 explicit statement that fixing the wire discharges nothing on it -- it only
 makes those runs possible.
 
@@ -1100,7 +1100,7 @@ was.
 
 **The wire is now perishable.** It works because the running state is fresh. If
 the cause returns, `tun0` goes with it and **everything in
-`docs/measurements/awaiting-ctci-pair.md` is blocked again.**
+`internals/measurements/awaiting-ctci-pair.md` is blocked again.**
 
 That is the argument for the wire round following immediately after the (e)
 measurement round, with nothing in between.

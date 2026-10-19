@@ -374,5 +374,5 @@ is complete, so ADR-0047 §4 records **six** read sites, verified by grep.
 
 The kickoff also named `docs/socket-provider.md` as carrying the `selectex()`
 note. **No such file exists**; the note lives in
-`docs/nsf370-provider-contract.md` §4, which is where `selectex()` is actually
+`internals/nsf370-provider-contract.md` §4, which is where `selectex()` is actually
 discussed.

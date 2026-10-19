@@ -28,7 +28,7 @@ between samples" -- that is how 64-0e's null turned out unreadable and why
 ASCBSTOR became the instrument. A COMPLETED cycle shows retrospectively in
 ASCBSTOR (and in OUCBSWC) even when QFL=80 is missed.
 
-Offsets: SYS1.AMODGEN(IHAASCB)/(IRAOUCB) via docs/measurements/64-3-0/cblayout.py
+Offsets: SYS1.AMODGEN(IHAASCB)/(IRAOUCB) via internals/measurements/64-3-0/cblayout.py
 (17/17 and 13/13).  Identity asserted on every sample.
 """
 import base64, os, re, sys, time, urllib.request

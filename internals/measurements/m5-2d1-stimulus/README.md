@@ -186,7 +186,7 @@ relied on, so a silent capture would have been a real null.
 
 ## 7 — what this discharges, and what it does not
 
-**Discharges** the 2026-09-03 annotation on `docs/measurements/m5-2-d1-select/`
+**Discharges** the 2026-09-03 annotation on `internals/measurements/m5-2-d1-select/`
 and **item 1** of `awaiting-ctci-pair.md`: arms 1 and 2 now have a stimulus in
 evidence, on both the guest's side (A's own SELECT) and the wire's.
 

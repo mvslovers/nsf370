@@ -104,4 +104,4 @@ reply.
 
 **Zero dumps**; both STCs start and stop clean; stand left with nothing running.
 
-Raw console captures: `docs/measurements/m5-92/stats-before.log`, `stats-after.log`.
+Raw console captures: `internals/measurements/m5-92/stats-before.log`, `stats-after.log`.

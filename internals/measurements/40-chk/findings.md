@@ -62,7 +62,7 @@ NSF815I   SLOT  2 TOKEN=00010002 ASCB=00FE7B58 ASID=0006 LIVE
 
 So **G(i)'s first half is measured**: for a batch client that died with a
 request outstanding, the ADR-0040 guard answers **LIVE**. This is the stage-a
-mechanism (`docs/measurements/m5-2c1/stage-a.md`) reaching the guard: the ASCB
+mechanism (`internals/measurements/m5-2c1/stage-a.md`) reaching the guard: the ASCB
 is the initiator's, the initiator did not end, the ASVT entry never went
 AVAILABLE.
 

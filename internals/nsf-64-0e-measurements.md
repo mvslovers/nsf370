@@ -11,7 +11,7 @@ host times CEST. **No production module was built or deployed** — `NSF.LINKLIB
 took-effect check is recorded there.
 
 **Step §0 — the free question this round was told to settle before spending machine time — is a
-separate record: `docs/nsf-64-0e-step0.md`.** Its answer (*the parked client **precedes** every
+separate record: `internals/nsf-64-0e-step0.md`.** Its answer (*the parked client **precedes** every
 recorded stall*) is what cleared this arm to run, and its §4 and §6 are what shaped it.
 
 **Not read:** `nsf-64-diagnosis-memo.md` is still not in the repo and was not supplied to this
@@ -92,7 +92,7 @@ earlier round's runs. One of them is this:
 
 Elapsed **`00:07:17.57`**, ending MVS `3.51.20` = CEST `10:51:20`, so the step **started at CEST
 10:44:02**. 64-0d recorded **stall 1 as 10:44:10 → 10:51:19**, 7 m 09 s, with `ASCBEJST` going
-flat at ≈ 10:44:06 (`docs/nsf-64-0e-step0.md` §3).
+flat at ≈ 10:44:06 (`internals/nsf-64-0e-step0.md` §3).
 
 **64-0d's stall 1 *is* a single `TSTRQXC` step with a seven-minute elapsed time.** Companion lines
 from the same campaign: `00:03:24.33` and `00:03:25.62` on `TSTRQXCB`, and two `00:01:00.1x` steps
@@ -243,7 +243,7 @@ nor the swap-in is a cost on this path.
 **loaded** (and, in every recorded case, spinning). Those are different SRM decisions, so this is
 informative but **not a matched comparison on its own**. What matches it is the NSFS control arm
 (§7). Offsets are 64-0d's live IFOX00-from-`SYS1.AMODGEN` derivation
-(`docs/measurements/64-0d/cboff5-values.txt`), not from memory, and every reading asserts and
+(`internals/measurements/64-0d/cboff5-values.txt`), not from memory, and every reading asserts and
 prints the OUCB identity — the `/.dm` trap of 64-0c is closed by identity, never by a
 coherent-looking chain.
 
@@ -522,7 +522,7 @@ half of N(iii)'s own disjunction can now be retired, and that is this round's co
 **"The window was too short" is no longer available.** It was the live explanation because
 64-1's campaign never entered the 40–90 s sustained-load window every stall on record fired
 inside — 904 s across 45 rounds at 20.1 s per slot, ~10 s of load then ~10 s of gap
-(`docs/nsf-64-0e-step0.md` §8). Both of this round's arms are **continuous, with a one-second
+(`internals/nsf-64-0e-step0.md` §8). Both of this round's arms are **continuous, with a one-second
 maximum gap**, and each runs an order of magnitude past that window without interruption
 (1 134 s and 988 s against 40–90 s). And the detector is not
 merely able to speak: **it is proven to fire on the phenomenon** (§2 — 64-0d's stall 1 is a
@@ -537,7 +537,7 @@ surviving candidate, not the candidate by elimination.
 
 **And it is testable.** An earlier draft of this section called it *"untestable without
 reintroducing it"*. That is wrong: the **64-1 revert build already exists**, was run four times,
-and was verified identical to `main` at instruction level (`docs/nsf-64-1-measurements.md` §3,
+and was verified identical to `main` at instruction level (`internals/nsf-64-1-measurements.md` §3,
 state C). A run with the spin reactivated under exactly this round's continuous load is the
 **single-variable experiment the investigation has never had** — and this round's NSFS control arm
 (spin off, device up, 988 s continuous, no stall, same detector, same jobs) is already its paired
@@ -586,7 +586,7 @@ nulls*: not the window.
 - **Pool saturation was never reached on either arm** (`exhausted` 0 on NSFV; the control arm
   drives SOLO-shaped traffic, not the pre-claiming gate). If saturation is part of the
   provocation, neither arm tests it. Closing that needs an NSFV pre-claimer — a test change
-  (`docs/nsf-64-0e-step0.md` §6, option b).
+  (`internals/nsf-64-0e-step0.md` §6, option b).
 - **The NSFV swap readings were taken while NSFV was idle**; NSFS's stalls happened under load.
   The control arm matches the load condition, but neither arm can match **the spin**, which 64-1
   removed from both sides and which is the one condition every stall on record shared.

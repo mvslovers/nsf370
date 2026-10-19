@@ -4,7 +4,7 @@ The prose status of the running milestone and its open items. It used to sit in
 `CLAUDE.md` §7 under the milestone table; it moved here verbatim on 2026-10-19 so
 `CLAUDE.md` keeps one status line per milestone. A round updates this file and the
 one-line status in `CLAUDE.md` §7, and appends its record to
-`docs/milestone-history.md`. The ranked order of open work is `TODO.md`; the GitHub
+`internals/milestone-history.md`. The ranked order of open work is `TODO.md`; the GitHub
 issues stay the source of truth.
 
 ---
@@ -25,11 +25,11 @@ write-out key categories are closed.
   unproven property of M5-2. ADR-0048 (PR #125) decides to adopt a retained
   anchor at the next start via a per-instance SSCT. **Round 1** (register /
   find / remove; the SSCT name is jobname[0:4] in lower case, so `S NSFS`
-  never meets it) is live-green on dev1 (`docs/measurements/d2-round1b/`).
+  never meets it) is live-green on dev1 (`internals/measurements/d2-round1b/`).
   **Round 2** (adoption, #136; anchor version 4) is **live-green on dev1
   after round 2b**: round 1 never wrote `jobname_tail`, so round 2's first
   live adoption read FOREIGN; register now stamps it, and a start adopted an
-  anchor NSFS itself retained (`docs/measurements/d2-round2b/`). Both reaps
+  anchor NSFS itself retained (`internals/measurements/d2-round2b/`). Both reaps
   were of a synthetic death.
 - **c3 — retire the probe verbs** (`ECHO`/`XFER`/`UNSTAGE`/`SLOT`; promote
   `QUERY`) only once their eight dependent live gates have replacements.
