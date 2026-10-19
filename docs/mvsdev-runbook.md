@@ -2,15 +2,72 @@
 
 The complete operational runbook for driving the live MVS target, with the
 incidents that produced each rule. It used to be `CLAUDE.md` §5 "Live MVS target
-& autonomous operation"; it moved here verbatim on 2026-10-14. `CLAUDE.md` §5
-keeps the short form; this file has the signatures, the examples and the
-reasoning.
+& autonomous operation"; it moved here verbatim on 2026-10-14. The short form followed on
+2026-10-19 and opens this file; the full record below has the signatures, the
+examples and the reasoning.
 
 **Written for mbt 2** (`make deploy`, `make test-mvs`, the `.env`). nsf370 moved
 to mbt 3 on 2026-10-14; the tool-specific rules below are mbt 2 measurements
 until re-measured.
 
 ---
+
+## Short form (moved from `CLAUDE.md` §5 on 2026-10-19)
+
+This is the short form that `CLAUDE.md` §5 carried until 2026-10-19, updated for
+mbt 3. The full record (written for mbt 2) follows it.
+
+Short form; the signatures, examples and incidents are in
+**`docs/mvsdev-runbook.md`**. Target: **MVSCE on Hercules on `mvsdev`**
+(`mvsdev.lan`), mbt target `dev1`. Credentials live in the keychain and the
+zowe `mvsdev` profile — never hardcode them.
+
+**The runbook below was measured on mbt 2** (`make …`). The rules marked
+*(mbt 2)* describe that tool's behaviour and are to be re-measured on mbt 3
+before they are relied on; until then keep following them.
+
+- **Build / deploy / test over mvsMF REST (no SSH):** `mbt deploy`
+  (→ `NSF.LINKLIB`), `mbt test --mvs --only TSTX`. *(mbt 2)* Read the **full
+  spool in `build/test-runner.spool`**, not just the matrix. mbt honoured
+  **only `[build].cflags`** — a `-D`-gated device test goes there
+  **temporarily** (revert before commit), and the source must be touched or a
+  stale `.o` is reused.
+- **Console = ZOWE + the console log.** `zowe zos-console issue command "<cmd>"`;
+  direct output is unreliable, so read `ssh mvsdev "grep -A6 '<marker>'
+  ~/MVSCE/mvslog.txt"` or `zowe zos-logs list logs --range 15m` (the syslog
+  lags). STATS answers `NSF810/811I`, only DISPLAY answers `NSF800-802I`.
+- *(mbt 2)* **Don't trust a "NO RC"/FAIL matrix on a long device job** — poll the jobid and
+  read its spool. **`zowe zos-console` 500s on `P`/`S` but the command lands** —
+  confirm from `mvslog.txt`, don't re-issue. **Back-to-back heavy CTCI runs
+  degrade the pair** (MIH, `IGF991I/995I`) — a fresh pair, not a code fix.
+- *(mbt 2)* **`--only` REPLACES the whole TESTLIB.** A rig not named that round draws
+  `IEA703I 806-4` (absence looks like a broken rig), and two activities needing
+  different test sets (e.g. the NSFV Stage-0 round and the row-2 procedure)
+  need a redeploy between them.
+- *(mbt 2)* **`make deploy` failed while an STC held `NSF.LINKLIB`, and the
+  next run silently tested the OLD binary.** mbt 3 replaces members instead of
+  deleting the library (its own help); that is a prediction until measured.
+  Keep the order **`P NSFS`/`P NSFV` → `mbt deploy` → `S NSFS`**. Signature: a mid-chain `HTTP 500 … DELETE /restfiles/ds/NSF.LINKLIB`.
+  Tell: *identical values across supposedly different builds* — re-run rather
+  than reason about it.
+- **A MIXED (half-)deploy tells the inverse: a value NEITHER pure build can
+  produce** (#101: `EINVAL` from a dispatcher that has no `EINVAL` path). When a
+  change alters a verb's error set, note the difference *before* deploying —
+  and enumerate each pure build's error paths, or the tell is not loud.
+- **`ssh mvsdev`** is keychain-independent (`~/.ssh/config` block, user `mike`);
+  a reinstall changes the host key → `ssh-keygen -R mvsdev`. `ping`/`tcpdump`
+  run without sudo; **sudo needs a password we do not have** — ask the user.
+- **Hercules / CTCI:** config `~/MVSCE/conf/local/custom.cnf`; the running
+  source is `~/hercules/hyperion/` (primary source beats docs). Pair `0500,0501
+  CTCI 192.168.200.1 192.168.200.2` on `tun0` (guest `.1`, host `.2`). Device
+  tests build with `-DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u
+  -DNSFCTCI_DST=0xC0A8C802u`; the guest READ blocks until inbound traffic, so
+  background `ssh mvsdev "ping -i 0.5 192.168.200.1"` and watch `tcpdump -ni
+  tun0`. A missing `tun0` at Hercules start (`HHC01463E`) needs a full Hercules
+  restart — never `devinit`.
+
+---
+
 
 ### Live MVS target & autonomous operation (`mvsdev`)
 
