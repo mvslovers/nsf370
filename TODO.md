@@ -2,7 +2,7 @@
 
 Holds order and rationale only. The GitHub issues are the source of truth for
 each item; CLAUDE.md §7 carries the one-line milestone status and
-`docs/milestone-history.md` the per-round record. Update this file after every
+`internals/milestone-history.md` the per-round record. Update this file after every
 commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 
 ## M5 — Phase 2

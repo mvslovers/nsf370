@@ -22,7 +22,7 @@
  *
  * LIVE-RUN STATUS (M0-5): PASSES on MVS after the issue #8 entry-convention fix.
  * Measured N=100: mean 100.1/100.2 ms, min/max 100 ms, jitter 0 ms -- both
- * criteria pass, so ADR-0011 is FROZEN. See docs/adr/ADR-0011.
+ * criteria pass, so ADR-0011 is FROZEN. See internals/adr/ADR-0011.
  *
  * TOD arithmetic: nsf_now returns the 64-bit STCK value in NSFTIME{hi,lo}. TOD
  * bit 51 ticks at 1 microsecond, so microseconds = (TOD64 >> 12).

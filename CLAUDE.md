@@ -19,24 +19,24 @@ Consult in this order. Do not contradict a higher row without an ADR.
 
 | Document | Role | Status |
 |---|---|---|
-| `docs/Project-Brief-v2.md` | Why / scope / constraints / milestones | **Frozen** — do not expand |
-| `docs/Architecture-Specification.md` | How: interfaces, data structures, lifetimes | Living, versioned |
-| `docs/adr/ADR-*.md` | Rationale for individual decisions | Append-only |
+| `internals/Project-Brief-v2.md` | Why / scope / constraints / milestones | **Frozen** — do not expand |
+| `internals/Architecture-Specification.md` | How: interfaces, data structures, lifetimes | Living, versioned |
+| `internals/adr/ADR-*.md` | Rationale for individual decisions | Append-only |
 | `CLAUDE.md` (this file) | Operating rules + one-line status | Update on convention changes; **keep under 40k characters** |
-| `docs/milestone-history.md` | The per-round record behind §7 | Append-only |
-| `docs/m5-status.md` | M5 status and open items (moved out of §7) | Update with each M5 round |
+| `internals/milestone-history.md` | The per-round record behind §7 | Append-only |
+| `internals/m5-status.md` | M5 status and open items (moved out of §7) | Update with each M5 round |
 | `TODO.md` | Open work, ranked, with the reason for each rank | Update after every commit, push or merge that moves an item |
-| `docs/assembler-rules.md`, `docs/mvsdev-runbook.md` | The full record behind §3's HLASM rules; the live-target runbook (short form first) | Append; keep §3 in step with its record |
+| `internals/assembler-rules.md`, `internals/mvsdev-runbook.md` | The full record behind §3's HLASM rules; the live-target runbook (short form first) | Append; keep §3 in step with its record |
 | Notion → *Issues & Tasks*, project **mvs38j-ip (NSF)** | Task tracking (`[NSF] Mx-y`) | Mirrors §7 below |
 
 **Read when relevant** — not by default:
 
 | Before you … | read |
 |---|---|
-| change or review any `asm/*.asm` | `docs/assembler-rules.md` |
-| deploy, run `mbt test --mvs`, drive the console, touch Hercules/CTCI on `mvsdev` | `docs/mvsdev-runbook.md` |
-| work on M5 or pick up an open M5 item | `docs/m5-status.md`, then `TODO.md` |
-| cite or build on an earlier round's result | `docs/milestone-history.md`, `docs/measurements/` |
+| change or review any `asm/*.asm` | `internals/assembler-rules.md` |
+| deploy, run `mbt test --mvs`, drive the console, touch Hercules/CTCI on `mvsdev` | `internals/mvsdev-runbook.md` |
+| work on M5 or pick up an open M5 item | `internals/m5-status.md`, then `TODO.md` |
+| cite or build on an earlier round's result | `internals/milestone-history.md`, `internals/measurements/` |
 | cut a release or touch `[distribution]` / the FMID | `~/repos/mvs/.workspace/context/smp.md` |
 
 Reference material only (**never copy code from these**): the old
@@ -157,7 +157,7 @@ Violating one is a review-blocking defect, not a style nit.
   symbols in the `cc370 -S` output (or a clean on-MVS link).
 
 **C-callable HLASM (entry convention)** — short form; the measurements and
-incidents behind every rule are in **`docs/assembler-rules.md`** (read it before
+incidents behind every rule are in **`internals/assembler-rules.md`** (read it before
 changing any `asm/*.asm`).
 - Every C-callable HLASM routine is built the **standard cc370 way** — `COPY
   MVSMACS` + `COPY PDPTOP`, `FUNHEAD` prologue, `FUNEXIT` epilogue (`FUNEXIT
@@ -318,7 +318,7 @@ every other stand; a write to `SYS1.*` needs its own approval per task. The
 root `CLAUDE.md` is the rule; this paragraph only names nsf370's cycle.
 
 **Before you deploy, run `mbt test --mvs`, drive the console, or touch
-Hercules/CTCI, read `docs/mvsdev-runbook.md`** (short form first, then the full
+Hercules/CTCI, read `internals/mvsdev-runbook.md`** (short form first, then the full
 record). The one trap to carry: keep the order **`P NSFS`/`P NSFV` → `mbt
 deploy` → `S NSFS`/`S NSFV`**, or the next run may silently test the old binary.
 
@@ -333,7 +333,7 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
 <repo>/
 ├── mbt.toml          mbt 3: modules, tests, [build.host], [toolchain], deploy
 ├── .env.example      MVS connection template for `mbt target import`
-├── CLAUDE.md         this file (repo root — NOT under docs/)
+├── CLAUDE.md         this file (repo root — NOT under docs/ or internals/)
 ├── TODO.md           open work, ranked (issues stay the source of truth)
 ├── src/              portable C: nsfmm.c nsfbuf.c nsfque.c nsftmr.c
 │                     nsfevt.c nsftrc.c nsfsts.c nsfip.c nsficmp.c
@@ -352,7 +352,9 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
 ├── test/             dual host+MVS tests (tstsmoke.c, …)
 │   ├── mvs/          Level 2/3: on-MVS component & integration jobs
 │   └── asm/          HLASM test callers
-└── docs/
+├── docs/             for USERS of NSF
+│   └── ezasoket-conformance.md  EZASOKET verbs, return codes, ERRNOs vs IBM
+└── internals/        for MAINTAINERS (sessions included)
     ├── Project-Brief-v2.md
     ├── Architecture-Specification.md
     ├── adr/          ADR-0001 …
@@ -364,17 +366,17 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
     └── procedure-*.md  operator-driven gate procedures (not tests)
 ```
 
-**`docs/measurements/` holds both evidence and instruments, and that is deliberate.** Logs
+**`internals/measurements/` holds both evidence and instruments, and that is deliberate.** Logs
 are **evidence**: what a round measured, kept so a later claim can be checked against what
 was actually seen rather than re-derived. Scripts are **instruments that outlive their
 round** — `40-ident/arm1.py`'s `/.dm` reader with its proved control-block offsets,
 `m5-2c2/rowwatch.py`, the various drivers — and every one of them has been reused by a later
-round than the one that wrote it. Both live under `docs/measurements/<round>/`. Do not move
+round than the one that wrote it. Both live under `internals/measurements/<round>/`. Do not move
 the scripts to `tools/`: `tools/` is for things the build or CI runs, these are things a
 person runs while investigating, and their value is inseparable from the round's write-up
 that says what they were pointed at and what the reading meant.
 
-**A procedure is not a measurement and not a test.** `docs/procedure-*.md` is for something
+**A procedure is not a measurement and not a test.** `internals/procedure-*.md` is for something
 an operator executes at a gate — steps, expected output at each, what a broken result looks
 like, and the honest limit that keeps it out of `mbt test --mvs`. Name the coverage kind
 wherever it is referenced: **a coverage kind that is not named is read as a test a year
@@ -390,7 +392,7 @@ deliverable shown on Hercules via mbt + **leak gate** (all pools back to
 baseline in-use after quiesce) + spec/ADRs updated.
 
 **The full per-round record — what each round built, measured live, and did
-NOT establish — is `docs/milestone-history.md`.** Keep this section to one
+NOT establish — is `internals/milestone-history.md`.** Keep this section to one
 status line per milestone; a round appends its record
 there and updates the line here (§8.7). References such as "CLAUDE.md §7,
 M5-2b4" in older ADRs point into that file.
@@ -405,7 +407,7 @@ M5-2b4" in older ADRs point into that file.
 | **M5** | Phase 2: `NSFS` subsystem + cross-memory + TCP hardening + docs | 2 address spaces share one stack; stress passes; docs complete | 🔄 In progress — see below |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 
-**M5 — where it stands, and its open items:** `docs/m5-status.md` (d2, the
+**M5 — where it stands, and its open items:** `internals/m5-status.md` (d2, the
 stranded retained anchor; c3, retiring the probe verbs; TCP hardening + docs).
 **Open issues and their order live in `TODO.md`** (ranked, with the reason for
 each rank); the GitHub issues stay the source of truth (`gh issue list`).
@@ -434,7 +436,7 @@ each rank); the GitHub issues stay the source of truth (`gh issue list`).
      with a distinct skip code (`XF_CC_GATE_SKIPPED`, `test/mvs/tstrqxf.c`);
      return it **from the test**, never by changing the mbt harness;
    - **`make deploy` (mbt 2) failing mid-chain**, after which the run silently tests the
-     previous module (`docs/mvsdev-runbook.md` has the signature and the tell);
+     previous module (`internals/mvsdev-runbook.md` has the signature and the tell);
    - a **`str.replace` that no-op'd** because a linter had quoted the target
      line — an unasserted edit that reported success having changed nothing;
    - a **self-check word never written** reading the same as one that ran and
@@ -446,8 +448,8 @@ each rank); the GitHub issues stay the source of truth (`gh issue list`).
 6. **Definition of Done** (§7) must hold, including the leak gate.
 7. **Keep docs honest:** when a decision changes, update the affected spec
    chapter and add/append an ADR in the same change. Update the one-line
-   status in §7 here (and `docs/m5-status.md`) and **append the round's record to
-   `docs/milestone-history.md`** — never grow §7 itself; this file must stay
+   status in §7 here (and `internals/m5-status.md`) and **append the round's record to
+   `internals/milestone-history.md`** — never grow §7 itself; this file must stay
    under 40k characters (`wc -c CLAUDE.md`).
 8. **Ask before changing an Issue's STATE** (`gh issue close` / `reopen` /
    `edit`), because the audit trail cannot tell us apart — every action is

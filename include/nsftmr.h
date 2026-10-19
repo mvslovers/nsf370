@@ -22,7 +22,7 @@
  * (asm/nsfstim.asm on MVS, src/nsfstim_host.c on the host). NOTE (correction to
  * the published spec/Brief): 3.8j provides STIMER, NOT STIMERM -- STIMERM is an
  * MVS/SP addition absent from the 3.8j macro library; a single STIMER re-armed
- * to the head delta reproduces the intended behaviour. See docs/adr/ADR-0011.
+ * to the head delta reproduces the intended behaviour. See internals/adr/ADR-0011.
  *
  * DELTA QUEUE. Each armed timer stores `delta` = ticks after its PREDECESSOR
  * fires (or after "now" for the head). The absolute time of timer i is the sum

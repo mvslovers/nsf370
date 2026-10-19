@@ -16,7 +16,7 @@
 //*
 //*     ssh mvsdev "printf x | nc -u -w1 192.168.200.1 7799"
 //*
-//* RISK, and the recovery ladder is in docs/measurements/40-chk/predictions.md:
+//* RISK, and the recovery ladder is in internals/measurements/40-chk/predictions.md:
 //* the task is cancelled in supervisor state, key 0, inside the SVC routine,
 //* holding a CSA slot.  VERIFY IT ACTUALLY TERMINATED (D A,L and the jobid in
 //* OUTPUT) before doing anything else.  P NSFS is NOT a recovery path -- its
