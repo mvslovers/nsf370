@@ -24,9 +24,20 @@ Consult in this order. Do not contradict a higher row without an ADR.
 | `docs/adr/ADR-*.md` | Rationale for individual decisions | Append-only |
 | `CLAUDE.md` (this file) | Operating rules + one-line status | Update on convention changes; **keep under 40k characters** |
 | `docs/milestone-history.md` | The per-round record behind §7 | Append-only |
+| `docs/m5-status.md` | M5 status and open items (moved out of §7) | Update with each M5 round |
 | `TODO.md` | Open work, ranked, with the reason for each rank | Update after every commit, push or merge that moves an item |
-| `docs/assembler-rules.md`, `docs/mvsdev-runbook.md` | The full record behind §3's HLASM rules and §5's runbook | Append; keep in step with the short form here |
+| `docs/assembler-rules.md`, `docs/mvsdev-runbook.md` | The full record behind §3's HLASM rules; the live-target runbook (short form first) | Append; keep §3 in step with its record |
 | Notion → *Issues & Tasks*, project **mvs38j-ip (NSF)** | Task tracking (`[NSF] Mx-y`) | Mirrors §7 below |
+
+**Read when relevant** — not by default:
+
+| Before you … | read |
+|---|---|
+| change or review any `asm/*.asm` | `docs/assembler-rules.md` |
+| deploy, run `mbt test --mvs`, drive the console, touch Hercules/CTCI on `mvsdev` | `docs/mvsdev-runbook.md` |
+| work on M5 or pick up an open M5 item | `docs/m5-status.md`, then `TODO.md` |
+| cite or build on an earlier round's result | `docs/milestone-history.md`, `docs/measurements/` |
+| cut a release or touch `[distribution]` / the FMID | `~/repos/mvs/.workspace/context/smp.md` |
 
 Reference material only (**never copy code from these**): the old
 `mvslovers/mvs38j-ip` Xinu tree; Comer, *Internetworking with TCP/IP Vol. 2*;
@@ -204,14 +215,11 @@ changing any `asm/*.asm`).
   MVS-runtime only.
 
 **Standard library truncation (libc370, ADR-0026)**
-- `vsnprintf`/`snprintf` on libc370 **1.0.2 and earlier** did not NUL-terminate
-  on truncation (issue #25): `size` was a hard write bound, but the target was
-  filled solid through byte `size-1`. libc370 1.0.3 fixed it (libc370#128);
-  `TSTVSNP` now pins the C99 behaviour (issue #132). The rule stands: **never call
-  `vsnprintf`/`snprintf` directly** — use `nsf_vsnprintf`/`nsf_snprintf`
-  (`include/nsffmt.h`), which always NUL-terminate when `size > 0` and return
-  the count of characters actually in the buffer (clamped), not the raw C99
-  value.
+- **Never call `vsnprintf`/`snprintf` directly** (libc370 1.0.2 and earlier did
+  not NUL-terminate on truncation, issue #25; the history is in ADR-0026) — use
+  `nsf_vsnprintf`/`nsf_snprintf` (`include/nsffmt.h`), which always
+  NUL-terminate when `size > 0` and return the count of characters actually in
+  the buffer (clamped), not the raw C99 value.
 
 **Contracts**
 - `NSFRQE` (the app↔stack request block) **freezes at the M3 exit gate**.
@@ -219,17 +227,12 @@ changing any `asm/*.asm`).
 - **`ubuf` and `ulen` are transport-owned (ADR-0047):** `ubuf` is an address in
   the caller's address space and `ulen` is a length in **bytes, for every verb**.
   A verb-specific meaning belongs in `sockdesc`/`p1`/`p2`/`p3`, which the
-  transport never interprets. This is the **dual of ADR-0003** — that one says
-  the protocol layer never learns the transport; this one says the transport
-  never learns the verbs, and it cannot: it moves `min(ulen, 2048)` bytes and
-  never reads `fn`. `RQ_SELECT` encoded an *item* count until #101, which cost
-  nothing in Phase 1 (same address space, nothing measures it) and made a
-  cross-AS SELECT over N sockets cross **N bytes to be read as 8N**. When the
-  two sides of such a pair are in **separately linked load modules** — the
-  facade in the application, the engine in the STC — a host test cannot see a
-  disagreement, because one compilation makes the multiply and the divide
-  cancel whatever the size is; that is what an `NSF_SIZE_ASSERT` on the element
-  is for.
+  transport never interprets (the **dual of ADR-0003**; the transport moves
+  `min(ulen, 2048)` bytes and never reads `fn`). When the two sides of such a
+  pair are in **separately linked load modules** — the facade in the
+  application, the engine in the STC — a host test cannot see a disagreement;
+  that is what an `NSF_SIZE_ASSERT` on the element is for (`RQ_SELECT`, #101,
+  the record is in ADR-0047).
 
 ---
 
@@ -261,24 +264,21 @@ changing any `asm/*.asm`).
 ## 5. Toolchain & Build
 
 **Toolchain (decided — ADR-0013):**
-- **C compiler:** `cc370` — complete host cross-compile suite. **Not**
-  `c2asm370`.
+- **C compiler:** `cc370` — complete host cross-compile suite.
 - **C runtime:** `libc370` — the `cc370` **sysroot** (target C library),
   provided by the toolchain; **not** a `[dependencies]` entry (ADR-0014).
-  **Not** `CRENT370`.
-- **Assembler / linker:** IFOX00 / IEWL on the target (HLASM modules).
-- **Build orchestration:** **mbt 3** (MVS Build Tools), the `mbt` program on
-  `PATH`, configured by `mbt.toml` at the root (`[toolchain]` pins mbt and the
-  release toolchain). The MVS system is a target in `~/.mbt/targets.toml`
-  (`mbt target list`; password in the keychain). `.env.example` stays as the
-  template `mbt target import .env --name NAME` reads.
+- **Assembler / linker:** `as370` / `ld370` on the host (mbt 3 runs
+  `as370 -o build/x.o asm/x.asm` and `ld370 … -o build/NSF`).
+- **Build orchestration:** **mbt 3**, configured by `mbt.toml` at the root
+  (`[toolchain]` pins mbt and the release toolchain). `.env.example` stays as
+  the template `mbt target import .env --name NAME` reads.
 
 **Two build worlds, both driven by mbt (ADR-0014):**
 
 | World | Builds | Compiler | Needs MVS? | Runs in CI? |
 |---|---|---|---|---|
 | Host (`mbt test`) | portable C + `nsf*_host.c` shims | native cc | No | **Yes** |
-| MVS (`mbt test --mvs`, `mbt deploy`, …) | full stack incl. `asm/*.asm` | cc370 + IFOX00 | Yes (live 3.8j over IP) | No |
+| MVS (`mbt test --mvs`, `mbt deploy`, …) | full stack incl. `asm/*.asm` | cc370 + as370 + ld370 | Yes (live 3.8j over IP) | No |
 
 The host build is configured by `[build.host]` in `mbt.toml`; its `replace`
 map swaps each MVS-only CSECT (`asm/*.asm`) for its `src/*_host.c` shim.
@@ -303,56 +303,24 @@ target. `cc370` accepted these flags on both host and MVS at M0-1; record any
 later `cc370` limit surprises in an ADR. Comments and documentation in
 **English**.
 
-### Live MVS target & autonomous operation (`mvsdev`)
+### Live MVS target: what runs on `dev1` without asking
 
-Short form; the signatures, examples and incidents are in
-**`docs/mvsdev-runbook.md`**. Target: **MVSCE on Hercules on `mvsdev`**
-(`mvsdev.lan`), mbt target `dev1`. Credentials live in the keychain and the
-zowe `mvsdev` profile — never hardcode them.
+Target: **MVSCE on Hercules on `mvsdev`** (`mvsdev.lan`), mbt target `dev1`.
+Credentials live in the keychain and the zowe `mvsdev` profile — never hardcode
+them.
 
-**The runbook below was measured on mbt 2** (`make …`). The rules marked
-*(mbt 2)* describe that tool's behaviour and are to be re-measured on mbt 3
-before they are relied on; until then keep following them.
+**Without asking** (the one exception the root `CLAUDE.md`, "Working
+autonomously", grants an nsf370 session): its own cycle on `dev1` —
+`P NSFS`/`P NSFV`, `mbt deploy --target dev1`, `S NSFS`/`S NSFV`, and
+`mbt test --mvs --target dev1`. **Everything else on `dev1` asks first**
+(submit, allocate, delete, PARMLIB/PROCLIB, APF, any other STC), and so does
+every other stand; a write to `SYS1.*` needs its own approval per task. The
+root `CLAUDE.md` is the rule; this paragraph only names nsf370's cycle.
 
-- **Build / deploy / test over mvsMF REST (no SSH):** `mbt deploy`
-  (→ `NSF.LINKLIB`), `mbt test --mvs --only TSTX`. *(mbt 2)* Read the **full
-  spool in `build/test-runner.spool`**, not just the matrix. mbt honoured
-  **only `[build].cflags`** — a `-D`-gated device test goes there
-  **temporarily** (revert before commit), and the source must be touched or a
-  stale `.o` is reused.
-- **Console = ZOWE + the console log.** `zowe zos-console issue command "<cmd>"`;
-  direct output is unreliable, so read `ssh mvsdev "grep -A6 '<marker>'
-  ~/MVSCE/mvslog.txt"` or `zowe zos-logs list logs --range 15m` (the syslog
-  lags). STATS answers `NSF810/811I`, only DISPLAY answers `NSF800-802I`.
-- *(mbt 2)* **Don't trust a "NO RC"/FAIL matrix on a long device job** — poll the jobid and
-  read its spool. **`zowe zos-console` 500s on `P`/`S` but the command lands** —
-  confirm from `mvslog.txt`, don't re-issue. **Back-to-back heavy CTCI runs
-  degrade the pair** (MIH, `IGF991I/995I`) — a fresh pair, not a code fix.
-- *(mbt 2)* **`--only` REPLACES the whole TESTLIB.** A rig not named that round draws
-  `IEA703I 806-4` (absence looks like a broken rig), and two activities needing
-  different test sets (e.g. the NSFV Stage-0 round and the row-2 procedure)
-  need a redeploy between them.
-- *(mbt 2)* **`make deploy` failed while an STC held `NSF.LINKLIB`, and the
-  next run silently tested the OLD binary.** mbt 3 replaces members instead of
-  deleting the library (its own help); that is a prediction until measured.
-  Keep the order **`P NSFS`/`P NSFV` → `mbt deploy` → `S NSFS`**. Signature: a mid-chain `HTTP 500 … DELETE /restfiles/ds/NSF.LINKLIB`.
-  Tell: *identical values across supposedly different builds* — re-run rather
-  than reason about it.
-- **A MIXED (half-)deploy tells the inverse: a value NEITHER pure build can
-  produce** (#101: `EINVAL` from a dispatcher that has no `EINVAL` path). When a
-  change alters a verb's error set, note the difference *before* deploying —
-  and enumerate each pure build's error paths, or the tell is not loud.
-- **`ssh mvsdev`** is keychain-independent (`~/.ssh/config` block, user `mike`);
-  a reinstall changes the host key → `ssh-keygen -R mvsdev`. `ping`/`tcpdump`
-  run without sudo; **sudo needs a password we do not have** — ask the user.
-- **Hercules / CTCI:** config `~/MVSCE/conf/local/custom.cnf`; the running
-  source is `~/hercules/hyperion/` (primary source beats docs). Pair `0500,0501
-  CTCI 192.168.200.1 192.168.200.2` on `tun0` (guest `.1`, host `.2`). Device
-  tests build with `-DNSFCTCI_CUU=0x0500 -DNSFCTCI_SRC=0xC0A8C801u
-  -DNSFCTCI_DST=0xC0A8C802u`; the guest READ blocks until inbound traffic, so
-  background `ssh mvsdev "ping -i 0.5 192.168.200.1"` and watch `tcpdump -ni
-  tun0`. A missing `tun0` at Hercules start (`HHC01463E`) needs a full Hercules
-  restart — never `devinit`.
+**Before you deploy, run `mbt test --mvs`, drive the console, or touch
+Hercules/CTCI, read `docs/mvsdev-runbook.md`** (short form first, then the full
+record). The one trap to carry: keep the order **`P NSFS`/`P NSFV` → `mbt
+deploy` → `S NSFS`/`S NSFV`**, or the next run may silently test the old binary.
 
 ---
 
@@ -390,7 +358,8 @@ per-layer subdirectories. Components stay grouped by prefix and the §9 map.
     ├── adr/          ADR-0001 …
     ├── milestone-history.md  the per-round record behind CLAUDE.md §7
     ├── assembler-rules.md    the full record behind CLAUDE.md §3 (HLASM)
-    ├── mvsdev-runbook.md     the full record behind CLAUDE.md §5 (live target)
+    ├── mvsdev-runbook.md     the live-target runbook (moved out of CLAUDE.md §5)
+    ├── m5-status.md          M5 status + open items (moved out of CLAUDE.md §7)
     ├── measurements/ per-round evidence AND the instruments that took it
     └── procedure-*.md  operator-driven gate procedures (not tests)
 ```
@@ -422,7 +391,7 @@ baseline in-use after quiesce) + spec/ADRs updated.
 
 **The full per-round record — what each round built, measured live, and did
 NOT establish — is `docs/milestone-history.md`.** Keep this section to one
-status line per milestone plus the open-items list; a round appends its record
+status line per milestone; a round appends its record
 there and updates the line here (§8.7). References such as "CLAUDE.md §7,
 M5-2b4" in older ADRs point into that file.
 
@@ -436,46 +405,10 @@ M5-2b4" in older ADRs point into that file.
 | **M5** | Phase 2: `NSFS` subsystem + cross-memory + TCP hardening + docs | 2 address spaces share one stack; stress passes; docs complete | 🔄 In progress — see below |
 | **M6** | *(stretch)* HTTPD + mvsMF on NSF; DNS; LCS + ARP | HTTPD & mvsMF run unchanged (relink) on TK4-/TK5 | ☐ Planned |
 
-**M5 — where it stands.** Stage-0 probes done (private SVC 239 transport
-ADR-0038, keyed CSA bounce ADR-0039, client-death guard ADR-0040). **M5-2, the
-Phase 2 request crossing, is COMPLETE** (PR #121): NSFRQE copied into a CSA slot
-and dispatched from an STC-private copy (ADR-0041); 64-slot `CS` pool (ADR-0042);
-wake contract (ADR-0043); DONTSWAP (ADR-0044); best-effort app sweep (ADR-0045);
-descriptor ownership at the request boundary (ADR-0046); `ubuf`/`ulen`
-transport-owned bytes (ADR-0047). Gated by Job A (`TSTRQX2`, two clients, A 18/18
-B 23/23; wire arm since run, PR #119) and Job B (`TSTRQXC` baseline, three valid
-runs; two clients reach 2.38–2.42× one client, **unexplained**). All four
-write-out key categories are closed.
-
-**Open — M5:**
-- **d2 — UNKNOWN at shutdown / the stranded retained anchor:** the only named
-  unproven property of M5-2. ADR-0048 (PR #125) decides to adopt a retained
-  anchor at the next start via a per-instance SSCT. **Round 1** (register /
-  find / remove; the SSCT name is jobname[0:4] in lower case, so `S NSFS`
-  never meets it) is live-green on dev1 (`docs/measurements/d2-round1b/`).
-  **Round 2** (adoption, #136; anchor version 4) is **live-green on dev1
-  after round 2b**: round 1 never wrote `jobname_tail`, so round 2's first
-  live adoption read FOREIGN; register now stamps it, and a start adopted an
-  anchor NSFS itself retained (`docs/measurements/d2-round2b/`). Both reaps
-  were of a synthetic death.
-- **c3 — retire the probe verbs** (`ECHO`/`XFER`/`UNSTAGE`/`SLOT`; promote
-  `QUERY`) only once their eight dependent live gates have replacements.
-  Obligation #4 stays half-discharged until then.
-- **TCP hardening + docs** — the rest of M5's scope.
-- Closed on GitHub: #67 (probe-verb slot stranding), #101 (`ulen` as bytes) and
-  **#64** (NSFS mid-swap-out stall) — but the record calls #64 *mitigated by
-  DONTSWAP (ADR-0044), not fixed*; 64-1's wake-ECB reset may be the fix (weak
-  evidence). Do not cite it as fixed.
-- No figure from (e) may be quoted without its conditions (fresh host reboot,
-  one emulator, restored task set, known start order); no absolute free-CSA
-  figure is quoted (#120).
-
+**M5 — where it stands, and its open items:** `docs/m5-status.md` (d2, the
+stranded retained anchor; c3, retiring the probe verbs; TCP hardening + docs).
 **Open issues and their order live in `TODO.md`** (ranked, with the reason for
 each rank); the GitHub issues stay the source of truth (`gh issue list`).
-
-Critical path was M0-1 + M0-2; M5 carries the only real schedule risk and is
-isolated so M0–M4 already deliver a usable in-process stack.
-
 
 ---
 
@@ -501,7 +434,7 @@ isolated so M0–M4 already deliver a usable in-process stack.
      with a distinct skip code (`XF_CC_GATE_SKIPPED`, `test/mvs/tstrqxf.c`);
      return it **from the test**, never by changing the mbt harness;
    - **`make deploy` (mbt 2) failing mid-chain**, after which the run silently tests the
-     previous module (§5 has the signature and the tell);
+     previous module (`docs/mvsdev-runbook.md` has the signature and the tell);
    - a **`str.replace` that no-op'd** because a linter had quoted the target
      line — an unasserted edit that reported success having changed nothing;
    - a **self-check word never written** reading the same as one that ran and
@@ -513,15 +446,14 @@ isolated so M0–M4 already deliver a usable in-process stack.
 6. **Definition of Done** (§7) must hold, including the leak gate.
 7. **Keep docs honest:** when a decision changes, update the affected spec
    chapter and add/append an ADR in the same change. Update the one-line
-   status in §7 here and **append the round's record to
+   status in §7 here (and `docs/m5-status.md`) and **append the round's record to
    `docs/milestone-history.md`** — never grow §7 itself; this file must stay
    under 40k characters (`wc -c CLAUDE.md`).
-8. **Ask before changing an Issue's STATE, not just before creating one:**
-   `gh issue close` / `reopen` / `edit` join `create` under the root
-   CLAUDE.md's confirm-first rule, because the audit trail cannot tell us
-   apart — every action is `mgrossmann` — so a state change nobody intended
-   is unattributable afterwards and reads as a decision (issue #64 was
-   closed `COMPLETED` while three places in the tree carried it as open).
+8. **Ask before changing an Issue's STATE** (`gh issue close` / `reopen` /
+   `edit`), because the audit trail cannot tell us apart — every action is
+   `mgrossmann` — so a state change nobody intended is unattributable afterwards
+   and reads as a decision (issue #64 was closed `COMPLETED` while three places
+   in the tree carried it as open).
 9. **English** for all code comments, commit messages, and docs.
 
 ---
@@ -551,25 +483,8 @@ isolated so M0–M4 already deliver a usable in-process stack.
 | NSFS / NSFSX / NSFREQX / NSFV | Phase 2: NSFS STC (`src/nsfsmain.c`, `src/nsfsx.c`), crossing + classifier (`src/nsfreqx.c`), client seam (`src/nsfreqc.c`), SVC routine `asm/nsfvsvc.asm`, probe STC NSFV (`src/nsfv.c`); ADR-0038–0048 | — | 000–099 |
 | (recovery) | ESTAE via libc370 `__estae` + C `nsf_recover` (ADR-0018; no NSFESTAE CSECT) | 17 | 900–999 |
 
-## SMP4 FMID — one per release
+## SMP4 FMID
 
-The id is the release: `T` + three product letters + the three version digits.
-One id per release, **spent exactly once**, and each release's SYSMOD deletes
-its predecessor:
-
-```toml
-[distribution.smp]
-fmid   = "TNSF010"
-```
-
-**No version component may ever exceed 9** — a 7-character id has no room for
-a second digit. At patch 9 cut the next minor, at minor 9 the next major;
-nsf370 0.1.10 cannot be expressed and must not be released.
-
-Proposed: **`TNSF010`** for 0.1.0. Nothing has ever been installed, so the first
-level carries no `delete`; every level after it deletes the one before.
-
-Never re-spend an id, and never install a test package under the real one: a
-test needs a throwaway id **and** throwaway module names, because SMP keys
-element ownership on `MOD(name)`, not on the target library. See the root
-`CLAUDE.md` for the full rule and the measurements behind it.
+Proposed: **`TNSF010`** for 0.1.0, the first level (no `delete`). The FMID
+rules, the burned ids and the test-install trap are in the root `CLAUDE.md` and
+`~/repos/mvs/.workspace/context/smp.md`.
