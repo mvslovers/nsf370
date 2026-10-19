@@ -10,6 +10,13 @@ examples and the reasoning.
 to mbt 3 on 2026-10-14; the tool-specific rules below are mbt 2 measurements
 until re-measured.
 
+**This file says how, not whether.** What may run on `dev1` without asking
+(nsf370's own cycle only: `P NSFS`/`P NSFV`, `mbt deploy --target dev1`,
+`S NSFS`/`S NSFV`, `mbt test --mvs --target dev1`) is set by the root
+`CLAUDE.md`, "Working autonomously", and summarised in `CLAUDE.md` §5. Anything
+else below that writes to the stand (a Hercules restart, a PROCLIB edit, ...)
+asks first, whatever the full record's "without a human in the loop" says.
+
 ---
 
 ## Short form (moved from `CLAUDE.md` §5 on 2026-10-19)

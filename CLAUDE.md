@@ -303,14 +303,24 @@ target. `cc370` accepted these flags on both host and MVS at M0-1; record any
 later `cc370` limit surprises in an ADR. Comments and documentation in
 **English**.
 
-### Live MVS target & autonomous operation (`mvsdev`)
+### Live MVS target: what runs on `dev1` without asking
 
 Target: **MVSCE on Hercules on `mvsdev`** (`mvsdev.lan`), mbt target `dev1`.
 Credentials live in the keychain and the zowe `mvsdev` profile — never hardcode
-them. **Before you deploy, run `mbt test --mvs`, drive the console, or touch
+them.
+
+**Without asking** (the one exception the root `CLAUDE.md`, "Working
+autonomously", grants an nsf370 session): its own cycle on `dev1` —
+`P NSFS`/`P NSFV`, `mbt deploy --target dev1`, `S NSFS`/`S NSFV`, and
+`mbt test --mvs --target dev1`. **Everything else on `dev1` asks first**
+(submit, allocate, delete, PARMLIB/PROCLIB, APF, any other STC), and so does
+every other stand; a write to `SYS1.*` needs its own approval per task. The
+root `CLAUDE.md` is the rule; this paragraph only names nsf370's cycle.
+
+**Before you deploy, run `mbt test --mvs`, drive the console, or touch
 Hercules/CTCI, read `docs/mvsdev-runbook.md`** (short form first, then the full
 record). The one trap to carry: keep the order **`P NSFS`/`P NSFV` → `mbt
-deploy` → `S NSFS`**, or the next run may silently test the old binary.
+deploy` → `S NSFS`/`S NSFV`**, or the next run may silently test the old binary.
 
 ---
 
