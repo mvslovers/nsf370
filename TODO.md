@@ -34,10 +34,25 @@ commit, push or merge that moves an item (root CLAUDE.md, Git Workflow).
 
 ## Waiting on the maintainer
 
+- **PR #143 — deploy into `NSF.DEV.LINKLIB`** (ready, CI green, not merged).
+  `NSF.LINKLIB` becomes SMP's once TNSF010 ships. Merge only after these dev1
+  steps, which are outside the nsf370 cycle and need the maintainer's go:
+  1. Read `SYS1.PARMLIB(IEAAPF00)` on dev1. ADR-0036 §5 says `NSF.LINKLIB` is
+     not in it (the STCs self-authorize via SVC 244); if that still holds, no
+     APF entry and no IPL are needed. If it is in there, `NSF.DEV.LINKLIB`
+     needs its own entry with its real volser, and an IPL.
+  2. Allocate `NSF.DEV.LINKLIB` with `NSF.LINKLIB`'s DCB; note the volume.
+  3. NSFS/NSFV procs in `SYS2.PROCLIB`: STEPLIB `NSF.DEV.LINKLIB` first, then
+     `NSF.LINKLIB` (as `jcl/NSFS.jcl`, `jcl/NSFV.jcl` on the PR branch).
+  4. Merge #143, then the cycle: `P NSFS`/`P NSFV`, `mbt deploy --target dev1`,
+     `S NSFS`/`S NSFV`; check the member list of `NSF.DEV.LINKLIB` and the
+     startup banner.
 - #59 SVC table readable from key 8 — a measurement, kept open as a record.
 
 ## Done recently
 
+- ~~CLAUDE.md slimmed, `docs/` split into `docs/` + `internals/`~~ — PRs #141,
+  #144 (2026-10-19).
 - ~~#92 STATS truncation~~ — PR #95; closed 2026-10-15 after the live check
   (52 of 52 counters, STC00732).
 - ~~PR #127 libc370#448 startup docs~~ — rebased and merged.
